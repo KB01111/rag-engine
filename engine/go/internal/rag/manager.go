@@ -8,6 +8,7 @@ import (
 
 	"github.com/ai-engine/go/internal/config"
 	pb "github.com/ai-engine/proto/go"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -137,11 +138,10 @@ func (m *Manager) Search(ctx context.Context, req *pb.SearchRequest) (*pb.Search
 		topK = m.topK
 	}
 
-	// Simple text search (in production, use Rust embedding/search)
 	var results []*pb.SearchResult
+	g, ctx := errgroup.WithContext(ctx)
 
 	for _, doc := range m.documents {
-		// Check filters
 		if len(req.Filters) > 0 {
 			match := true
 			for k, v := range req.Filters {
@@ -155,21 +155,32 @@ func (m *Manager) Search(ctx context.Context, req *pb.SearchRequest) (*pb.Search
 			}
 		}
 
-		// Simple substring match for demo
 		for _, chunk := range doc.Chunks {
-			score := m.computeSimilarity(req.Query, chunk.Text)
-			if score > 0.1 {
-				results = append(results, &pb.SearchResult{
-					DocumentId: doc.ID,
-					ChunkText:  chunk.Text,
-					Score:      score,
-					Metadata:   doc.Metadata,
-				})
-			}
+			chunk := chunk
+			g.Go(func() error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+					score := m.computeSimilarity(req.Query, chunk.Text)
+					if score > 0.1 {
+						results = append(results, &pb.SearchResult{
+							DocumentId: doc.ID,
+							ChunkText:  chunk.Text,
+							Score:      score,
+							Metadata:   doc.Metadata,
+						})
+					}
+					return nil
+				}
+			})
 		}
 	}
 
-	// Sort by score and limit to topK
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
 	if len(results) > topK {
 		results = results[:topK]
 	}

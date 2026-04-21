@@ -1,18 +1,17 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/ai-engine/go/internal/api"
 	"github.com/ai-engine/go/internal/config"
 	"github.com/ai-engine/go/internal/supervisor"
-	"log"
+	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 	"net/http"
 )
 
@@ -25,62 +24,64 @@ var (
 func main() {
 	flag.Parse()
 
+	logger := zerolog.New(os.Stdout).With().Timestamp().Caller().Logger()
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+
 	if *showVersion {
 		fmt.Printf("AI Engine v%s\n", version)
 		os.Exit(0)
 	}
 
+	logger.Info().Msg("Starting AI Engine")
+
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Fatal().Err(err).Msg("Failed to load config")
 	}
 
 	sup := supervisor.NewSupervisor(cfg)
 	if err := sup.Start(); err != nil {
-		log.Fatalf("Failed to start supervisor: %v", err)
+		logger.Fatal().Err(err).Msg("Failed to start supervisor")
 	}
 
-	server := api.NewServer(cfg, sup)
+	server := api.NewServer(cfg, sup, logger)
 
-	errCh := make(chan error, 2)
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.New()
+	router.Use(gin.Recovery())
+	server.RegisterHTTP(router)
 
-	// Start HTTP server
+	errCh := make(chan error, 1)
+
 	go func() {
 		addr := cfg.Addr()
-		log.Printf("Starting HTTP server on %s", addr)
-		if err := server.StartHTTP(addr); err != nil && err != http.ErrServerClosed {
+		logger.Info().Str("addr", addr).Msg("Starting HTTP server")
+		if err := server.StartHTTP(addr, router); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("HTTP server error: %w", err)
 		}
 	}()
 
-	// Start gRPC server
 	go func() {
 		addr := cfg.GRPCAddr()
-		log.Printf("Starting gRPC server on %s", addr)
+		logger.Info().Str("addr", addr).Msg("Starting gRPC server")
 		if err := server.StartGRPC(addr); err != nil {
 			errCh <- fmt.Errorf("gRPC server error: %w", err)
 		}
 	}()
 
-	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case err := <-errCh:
-		log.Printf("Server error: %v", err)
+		logger.Error().Err(err).Msg("Server error")
 	case sig := <-sigCh:
-		log.Printf("Received signal: %v", sig)
+		logger.Info().Str("signal", sig.String()).Msg("Received signal")
 	}
 
-	// Graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	log.Println("Shutting down...")
+	logger.Info().Msg("Shutting down...")
 	server.Stop()
 	sup.Stop()
 
-	_ = ctx // suppress unused warning
-	log.Println("Server stopped")
+	logger.Info().Msg("Server stopped")
 }

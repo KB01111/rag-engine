@@ -5,18 +5,18 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
+	"time"
 
 	"github.com/ai-engine/go/internal/config"
 	"github.com/ai-engine/go/internal/supervisor"
 	pb "github.com/ai-engine/proto/go"
+	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/protobuf/types/known/emptypb"
-	"log"
-	"time"
 )
 
 type Server struct {
@@ -28,15 +28,17 @@ type Server struct {
 	mu         sync.RWMutex
 	config     *config.Config
 	supervisor *supervisor.Supervisor
+	log        zerolog.Logger
 
 	httpServer *http.Server
 	grpcServer *grpc.Server
 }
 
-func NewServer(cfg *config.Config, sup *supervisor.Supervisor) *Server {
+func NewServer(cfg *config.Config, sup *supervisor.Supervisor, log zerolog.Logger) *Server {
 	return &Server{
 		config:     cfg,
 		supervisor: sup,
+		log:        log,
 	}
 }
 
@@ -48,7 +50,6 @@ func (s *Server) RegisterGRPC(server *grpc.Server) {
 	grpc_health_v1.RegisterHealthServer(server, health.NewServer())
 }
 
-// Runtime gRPC handlers
 func (s *Server) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RuntimeStatus, error) {
 	return s.supervisor.Runtime.GetStatus(ctx, &emptypb.Empty{})
 }
@@ -69,7 +70,6 @@ func (s *Server) StreamInference(stream pb.Runtime_StreamInferenceServer) error 
 	return s.supervisor.Runtime.StreamInference(stream.Context(), stream)
 }
 
-// RAG gRPC handlers
 func (s *Server) UpsertDocument(ctx context.Context, req *pb.UpsertRequest) (*pb.UpsertResponse, error) {
 	return s.supervisor.RAG.UpsertDocument(ctx, req)
 }
@@ -90,7 +90,6 @@ func (s *Server) ListDocuments(ctx context.Context, _ *emptypb.Empty) (*pb.Docum
 	return s.supervisor.RAG.ListDocuments(ctx, &emptypb.Empty{})
 }
 
-// Training gRPC handlers
 func (s *Server) StartRun(ctx context.Context, req *pb.TrainingRunRequest) (*pb.TrainingRun, error) {
 	return s.supervisor.Training.StartRun(ctx, req)
 }
@@ -111,7 +110,6 @@ func (s *Server) StreamLogs(req *pb.LogsRequest, stream pb.Training_StreamLogsSe
 	return s.supervisor.Training.StreamLogs(req, stream)
 }
 
-// MCP gRPC handlers
 func (s *Server) Connect(ctx context.Context, req *pb.MCPConnectionRequest) (*pb.MCPConnection, error) {
 	return s.supervisor.MCP.Connect(ctx, req)
 }
@@ -128,50 +126,40 @@ func (s *Server) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.Cal
 	return s.supervisor.MCP.CallTool(ctx, req)
 }
 
-// HTTP handlers for REST compatibility
-func (s *Server) RegisterHTTP(mux *http.ServeMux) {
-	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/api/v1/status", s.handleStatus)
-	mux.HandleFunc("/api/v1/runtime/models", s.handleListModels)
+func (s *Server) RegisterHTTP(router *gin.Engine) {
+	router.GET("/health", s.handleHealth)
+	router.GET("/api/v1/status", s.handleStatus)
+	router.GET("/api/v1/runtime/models", s.handleListModels)
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok"}`))
+func (s *Server) handleHealth(c *gin.Context) {
+	c.JSON(200, gin.H{"status": "ok"})
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStatus(c *gin.Context) {
 	health := s.supervisor.Health()
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"running":%v}`, health["running"])
+	c.JSON(200, gin.H{"running": health["running"]})
 }
 
-func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+func (s *Server) handleListModels(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
 	models, err := s.supervisor.Runtime.ListModels(ctx, &emptypb.Empty{})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"models":%d}`, len(models.Models))
+	c.JSON(200, gin.H{"models": len(models.Models)})
 }
 
-func (s *Server) StartHTTP(addr string) error {
-	mux := http.NewServeMux()
-	s.RegisterHTTP(mux)
-
+func (s *Server) StartHTTP(addr string, router *gin.Engine) error {
 	s.httpServer = &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      router,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
-
 	return s.httpServer.ListenAndServe()
 }
 
@@ -182,12 +170,12 @@ func (s *Server) StartGRPC(addr string) error {
 	}
 
 	s.grpcServer = grpc.NewServer(
-		grpc.StreamInterceptor(loggingStreamInterceptor),
-		grpc.UnaryInterceptor(loggingUnaryInterceptor),
+		grpc.StreamInterceptor(s.logStreamInterceptor),
+		grpc.UnaryInterceptor(s.logUnaryInterceptor),
 	)
 	s.RegisterGRPC(s.grpcServer)
 
-	log.Printf("gRPC server listening on %s", addr)
+	s.log.Info().Str("addr", addr).Msg("gRPC server listening")
 	return s.grpcServer.Serve(lis)
 }
 
@@ -201,42 +189,16 @@ func (s *Server) Stop() error {
 	return nil
 }
 
-func loggingStreamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+func (s *Server) logStreamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 	start := time.Now()
 	err := handler(srv, ss)
-	log.Printf("stream: %s duration: %v error: %v", info.FullMethod, time.Since(start), err)
+	s.log.Debug().Str("method", info.FullMethod).Dur("duration", time.Since(start)).Err(err).Msg("stream")
 	return err
 }
 
-func loggingUnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+func (s *Server) logUnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	start := time.Now()
 	resp, err := handler(ctx, req)
-	log.Printf("unary: %s duration: %v error: %v", info.FullMethod, time.Since(start), err)
+	s.log.Debug().Str("method", info.FullMethod).Dur("duration", time.Since(start)).Err(err).Msg("unary")
 	return resp, err
-}
-
-type responseWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *responseWriter) WriteHeader(status int) {
-	w.status = status
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rw, r)
-		log.Printf("%s %s %d %v", r.Method, r.URL.Path, rw.status, time.Since(start))
-	})
-}
-
-func normalizeAddress(addr string) string {
-	if !strings.Contains(addr, ":") {
-		return ":" + addr
-	}
-	return addr
 }
