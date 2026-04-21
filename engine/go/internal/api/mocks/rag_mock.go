@@ -28,7 +28,8 @@ func (m *MockRagServer) Search(ctx context.Context, req *pb.SearchRequest) (*pb.
 	return args.Get(0).(*pb.SearchResponse), args.Error(1)
 }
 
-func (m *MockRagServer) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatus, error) {
+func (m *MockRagServer) GetStatus(ctx context.Context, req *emptypb.Empty) (*pb.RagStatus, error) {
+    args := m.Called(ctx, req)
 	args := m.Called(ctx)
 	return args.Get(0).(*pb.RagStatus), args.Error(1)
 }
