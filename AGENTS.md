@@ -32,7 +32,7 @@ Generated code lives in two places:
 
 ## Server Entry Point
 
-`engine/go/cmd/server/main.go` starts the Supervisor, then launches HTTP (`:8080`) and gRPC (`:50051`) servers concurrently. Both ports must be available. Uses zerolog for structured logging and Gin for HTTP routing.
+`engine/go/cmd/server/main.go` starts the Supervisor, then launches HTTP (`:8080`) and gRPC (`:50051`) servers concurrently. Both ports must be available. It uses zerolog for structured logging and Gin for HTTP routing.
 
 ## Config
 
