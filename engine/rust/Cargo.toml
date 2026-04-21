@@ -1,0 +1,9 @@
+[workspace]
+members = ["crates/chunking", "crates/embedding", "crates/storage", "crates/rag_engine"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["AI Engine Team"]

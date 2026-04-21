@@ -1,0 +1,236 @@
+syntax = "proto3";
+
+package engine;
+
+option go_package = "github.com/ai-engine/proto/go;engine";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+service Runtime {
+  rpc GetStatus(google.protobuf.Empty) returns (RuntimeStatus);
+  rpc ListModels(google.protobuf.Empty) returns (ModelList);
+  rpc LoadModel(LoadModelRequest) returns (ModelInfo);
+  rpc UnloadModel(UnloadModelRequest) returns (google.protobuf.Empty);
+  rpc StreamInference(stream InferenceRequest) returns (stream InferenceResponse);
+}
+
+service Rag {
+  rpc UpsertDocument(UpsertRequest) returns (UpsertResponse);
+  rpc DeleteDocument(DeleteRequest) returns (google.protobuf.Empty);
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc GetRagStatus(google.protobuf.Empty) returns (RagStatus);
+  rpc ListDocuments(google.protobuf.Empty) returns (DocumentList);
+}
+
+service Training {
+  rpc StartRun(TrainingRunRequest) returns (TrainingRun);
+  rpc CancelRun(CancelRequest) returns (google.protobuf.Empty);
+  rpc ListRuns(google.protobuf.Empty) returns (TrainingRunList);
+  rpc ListArtifacts(ArtifactsRequest) returns (ArtifactList);
+  rpc StreamLogs(LogsRequest) returns (stream TrainingLog);
+}
+
+service MCP {
+  rpc Connect(MCPConnectionRequest) returns (MCPConnection);
+  rpc Disconnect(DisconnectRequest) returns (google.protobuf.Empty);
+  rpc ListTools(MCPConnectionRequest) returns (ToolList);
+  rpc CallTool(CallToolRequest) returns (CallToolResponse);
+}
+
+message RuntimeStatus {
+  string version = 1;
+  repeated ModelInfo loaded_models = 2;
+  SystemResources resources = 3;
+  bool healthy = 4;
+}
+
+message SystemResources {
+  double cpu_percent = 1;
+  uint64 memory_used_bytes = 2;
+  uint64 memory_total_bytes = 3;
+}
+
+message ModelList {
+  repeated ModelInfo models = 1;
+}
+
+message ModelInfo {
+  string id = 1;
+  string name = 2;
+  string path = 3;
+  int64 size_bytes = 4;
+  bool loaded = 5;
+  map<string, string> metadata = 6;
+}
+
+message LoadModelRequest {
+  string model_id = 1;
+  map<string, string> options = 2;
+}
+
+message UnloadModelRequest {
+  string model_id = 1;
+}
+
+message InferenceRequest {
+  string model_id = 1;
+  string prompt = 2;
+  map<string, string> parameters = 3;
+}
+
+message InferenceResponse {
+  string token = 1;
+  bool complete = 2;
+  map<string, string> metrics = 3;
+}
+
+message UpsertRequest {
+  string document_id = 1;
+  string content = 2;
+  map<string, string> metadata = 3;
+}
+
+message UpsertResponse {
+  string document_id = 1;
+  int32 chunks_indexed = 2;
+}
+
+message DeleteRequest {
+  string document_id = 1;
+}
+
+message SearchRequest {
+  string query = 1;
+  int32 top_k = 2;
+  map<string, string> filters = 3;
+}
+
+message SearchResult {
+  string document_id = 1;
+  string chunk_text = 2;
+  float score = 3;
+  map<string, string> metadata = 4;
+}
+
+message SearchResponse {
+  repeated SearchResult results = 1;
+  double query_time_ms = 2;
+}
+
+message RagStatus {
+  int64 document_count = 1;
+  int64 chunk_count = 2;
+  int64 index_size_bytes = 3;
+  string embedding_model = 4;
+}
+
+message DocumentList {
+  repeated DocumentInfo documents = 1;
+}
+
+message DocumentInfo {
+  string id = 1;
+  string title = 2;
+  int64 chunk_count = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message TrainingRunRequest {
+  string name = 1;
+  string model_id = 2;
+  string dataset_path = 3;
+  map<string, string> config = 4;
+}
+
+message TrainingRun {
+  string id = 1;
+  string name = 2;
+  string status = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp completed_at = 5;
+  float progress = 6;
+  string error = 7;
+}
+
+message CancelRequest {
+  string run_id = 1;
+}
+
+message TrainingRunList {
+  repeated TrainingRun runs = 1;
+}
+
+message ArtifactsRequest {
+  string run_id = 1;
+}
+
+message Artifact {
+  string name = 1;
+  string path = 2;
+  int64 size_bytes = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message ArtifactList {
+  repeated Artifact artifacts = 1;
+}
+
+message LogsRequest {
+  string run_id = 1;
+  bool follow = 2;
+}
+
+message TrainingLog {
+  string run_id = 1;
+  string level = 2;
+  string message = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  map<string, string> fields = 5;
+}
+
+message MCPConnectionRequest {
+  string server_url = 1;
+  map<string, string> auth = 2;
+}
+
+message MCPConnection {
+  string connection_id = 1;
+  bool connected = 2;
+  string server_name = 3;
+}
+
+message DisconnectRequest {
+  string connection_id = 1;
+}
+
+message ToolList {
+  repeated Tool tools = 1;
+}
+
+message Tool {
+  string name = 1;
+  string description = 2;
+  repeated ToolParameter parameters = 3;
+}
+
+message ToolParameter {
+  string name = 1;
+  string type = 2;
+  bool required = 3;
+  string description = 4;
+}
+
+message CallToolRequest {
+  string connection_id = 1;
+  string tool_name = 2;
+  google.protobuf.Struct arguments = 3;
+}
+
+message CallToolResponse {
+  bool success = 1;
+  google.protobuf.Struct result = 2;
+  string error = 3;
+}

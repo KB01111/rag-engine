@@ -1,0 +1,32 @@
+# Build artifacts
+engine/go/bin/
+engine/go/bin
+*.exe
+
+# Rust build output
+engine/rust/target/
+engine/rust/target
+**/*.rlib
+**/*.rlib
+**/*.d
+
+# Go vendor and modules (keep go.mod and go.sum)
+engine/go/vendor/
+engine/proto/go/vendor/
+
+# Config with secrets
+config.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.log

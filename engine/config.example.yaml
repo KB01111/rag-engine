@@ -1,0 +1,30 @@
+server:
+  host: "127.0.0.1"
+  port: 8080
+  grpc:
+    host: "127.0.0.1"
+    port: 50051
+
+runtime:
+  models_path: "~/ai-engine/models"
+  max_memory_mb: 8192
+  providers: []
+
+rag:
+  storage_path: "~/ai-engine/rag"
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  chunk_size: 512
+  chunk_overlap: 50
+  top_k: 10
+
+training:
+  working_dir: "~/ai-engine/training"
+  max_concurrent_jobs: 2
+
+mcp:
+  timeout: 30s
+  retries: 3
+
+logging:
+  level: "info"
+  format: "json"

@@ -1,0 +1,24 @@
+[package]
+name = "rag_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+parking_lot = "0.12"
+uuid = { version = "1.0", features = ["v4"] }
+lazy_static = "1.4"
+log = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+validator = { version = "0.16", features = ["derive"] }
+
+chunking = { path = "../chunking" }
+embedding = { path = "../embedding" }
+storage = { path = "../storage" }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
