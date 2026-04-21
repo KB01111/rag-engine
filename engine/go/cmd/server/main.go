@@ -51,7 +51,9 @@ func main() {
 	router.Use(gin.Recovery())
 	server.RegisterHTTP(router)
 
-	errCh := make(chan error, 1)
+	// Buffered with capacity 2 so both HTTP and gRPC server goroutines can report errors
+	// without blocking, even though main only receives once before shutting down.
+	errCh := make(chan error, 2)
 
 	go func() {
 		addr := cfg.Addr()
