@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -97,7 +98,7 @@ type SearchRequest struct {
 	TopK     int               `json:"top_k,omitempty"`
 	Filters  map[string]string `json:"filters,omitempty"`
 	Layer    Layer             `json:"layer,omitempty"`
-	Rerank   bool              `json:"rerank,omitempty"`
+	Rerank   *bool             `json:"rerank,omitempty"`
 }
 
 type SearchHit struct {
@@ -304,13 +305,14 @@ func (m *Manager) startProcess() error {
 	if m.cfg.OpenVikingURL != "" {
 		args = append(args, "--openviking-url", m.cfg.OpenVikingURL)
 	}
-	if m.cfg.OpenVikingAPIKey != "" {
-		args = append(args, "--openviking-api-key", m.cfg.OpenVikingAPIKey)
-	}
 
-	cmd := exec.Command(filepath.Clean(m.cfg.BinaryPath), args...)
+	binaryPath := m.resolveBinaryPath()
+	cmd := exec.Command(binaryPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if m.cfg.OpenVikingAPIKey != "" {
+		cmd.Env = append(os.Environ(), "CONTEXT_OPENVIKING_API_KEY="+m.cfg.OpenVikingAPIKey)
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start context service: %w", err)
 	}
@@ -321,6 +323,20 @@ func (m *Manager) startProcess() error {
 	}()
 
 	return nil
+}
+
+func (m *Manager) resolveBinaryPath() string {
+	cleaned := filepath.Clean(m.cfg.BinaryPath)
+	if _, err := os.Stat(cleaned); err == nil {
+		return cleaned
+	}
+	if runtime.GOOS == "windows" {
+		withExt := cleaned + ".exe"
+		if _, err := os.Stat(withExt); err == nil {
+			return withExt
+		}
+	}
+	return cleaned
 }
 
 func (m *Manager) Stop(ctx context.Context) error {

@@ -12,48 +12,24 @@ import (
 
 	"github.com/ai-engine/go/internal/config"
 	pb "github.com/ai-engine/proto/go"
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-func TestListModelsIncludesFilesystemAndProviderModels(t *testing.T) {
-	modelDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(modelDir, "local.gguf"), []byte("model"), 0o644))
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/models":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o-mini","owned_by":"openai"}]}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	cfg := config.DefaultConfig()
-	cfg.Runtime.ModelsPath = modelDir
-	cfg.Runtime.Providers = []config.ProviderConfig{
-		{Name: "cloud", Type: "openai-compatible", URL: server.URL},
-	}
-
-	manager := NewManager(cfg)
-	models, err := manager.ListModels(context.Background(), &emptypb.Empty{})
-	require.NoError(t, err)
-
-	var ids []string
-	for _, model := range models.Models {
-		ids = append(ids, model.Id)
-	}
-
-	require.Contains(t, ids, "local.gguf")
-	require.Contains(t, ids, "cloud/gpt-4o-mini")
+type ManagerTestSuite struct {
+	suite.Suite
+	server   *httptest.Server
+	cfg      *config.Config
+	modelDir string
+	manager  *Manager
 }
 
-func TestLoadAndStreamInferenceWithProvider(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func (s *ManagerTestSuite) SetupTest() {
+	s.modelDir = s.T().TempDir()
+
+	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
 			w.Header().Set("Content-Type", "application/json")
@@ -74,21 +50,44 @@ func TestLoadAndStreamInferenceWithProvider(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
 
-	cfg := config.DefaultConfig()
-	cfg.Runtime.ModelsPath = t.TempDir()
-	cfg.Runtime.Providers = []config.ProviderConfig{
-		{Name: "cloud", Type: "openai-compatible", URL: server.URL},
+	s.cfg = config.DefaultConfig()
+	s.cfg.Runtime.ModelsPath = s.modelDir
+	s.cfg.Runtime.Providers = []config.ProviderConfig{
+		{Name: "cloud", Type: "openai-compatible", URL: s.server.URL},
 	}
 
-	manager := NewManager(cfg)
-	loaded, err := manager.LoadModel(context.Background(), &pb.LoadModelRequest{
+	s.manager = NewManager(s.cfg)
+}
+
+func (s *ManagerTestSuite) TearDownTest() {
+	if s.server != nil {
+		s.server.Close()
+	}
+}
+
+func (s *ManagerTestSuite) TestListModelsIncludesFilesystemAndProviderModels() {
+	s.Require().NoError(os.WriteFile(filepath.Join(s.modelDir, "local.gguf"), []byte("model"), 0o644))
+
+	models, err := s.manager.ListModels(context.Background(), &emptypb.Empty{})
+	s.Require().NoError(err)
+
+	var ids []string
+	for _, model := range models.Models {
+		ids = append(ids, model.Id)
+	}
+
+	s.Contains(ids, "local.gguf")
+	s.Contains(ids, "cloud/gpt-4o-mini")
+}
+
+func (s *ManagerTestSuite) TestLoadAndStreamInferenceWithProvider() {
+	loaded, err := s.manager.LoadModel(context.Background(), &pb.LoadModelRequest{
 		ModelId: "cloud/gpt-4o-mini",
 	})
-	require.NoError(t, err)
-	require.Equal(t, "cloud/gpt-4o-mini", loaded.Id)
-	require.True(t, loaded.Loaded)
+	s.Require().NoError(err)
+	s.Equal("cloud/gpt-4o-mini", loaded.Id)
+	s.True(loaded.Loaded)
 
 	stream := &inferenceStreamStub{
 		ctx: context.Background(),
@@ -102,37 +101,36 @@ func TestLoadAndStreamInferenceWithProvider(t *testing.T) {
 		},
 	}
 
-	err = manager.StreamInference(stream.ctx, stream)
-	require.NoError(t, err)
-	require.NotEmpty(t, stream.sent)
+	err = s.manager.StreamInference(stream.ctx, stream)
+	s.Require().NoError(err)
+	s.NotEmpty(stream.sent)
 
 	var combined strings.Builder
 	for _, resp := range stream.sent {
 		combined.WriteString(resp.Token)
 	}
 
-	require.Equal(t, "Hello world", combined.String())
-	require.True(t, stream.sent[len(stream.sent)-1].Complete)
-	require.Equal(t, "cloud", stream.sent[len(stream.sent)-1].Metrics["provider"])
+	s.Equal("Hello world", combined.String())
+	s.True(stream.sent[len(stream.sent)-1].Complete)
+	s.Equal("cloud", stream.sent[len(stream.sent)-1].Metrics["provider"])
 }
 
-func TestListModelsConcurrentAccess(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Runtime.ModelsPath = t.TempDir()
-
-	require.NoError(t, os.WriteFile(filepath.Join(cfg.Runtime.ModelsPath, "model.gguf"), []byte("weights"), 0o644))
-
-	manager := NewManager(cfg)
+func (s *ManagerTestSuite) TestListModelsConcurrentAccess() {
+	s.Require().NoError(os.WriteFile(filepath.Join(s.cfg.Runtime.ModelsPath, "model.gguf"), []byte("weights"), 0o644))
 
 	var g errgroup.Group
 	for i := 0; i < 8; i++ {
 		g.Go(func() error {
-			_, err := manager.ListModels(context.Background(), &emptypb.Empty{})
+			_, err := s.manager.ListModels(context.Background(), &emptypb.Empty{})
 			return err
 		})
 	}
 
-	require.NoError(t, g.Wait())
+	s.Require().NoError(g.Wait())
+}
+
+func TestManagerTestSuite(t *testing.T) {
+	suite.Run(t, &ManagerTestSuite{})
 }
 
 type inferenceStreamStub struct {

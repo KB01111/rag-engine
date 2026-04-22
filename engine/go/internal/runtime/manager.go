@@ -186,6 +186,8 @@ func (m *Manager) ListModels(ctx context.Context, _ *emptypb.Empty) (*pb.ModelLi
 	for id, model := range m.models {
 		if model.Loaded {
 			discovered[id] = model.toProto()
+		} else if _, inDiscovered := discovered[id]; !inDiscovered {
+			delete(m.models, id)
 		}
 	}
 
@@ -246,10 +248,10 @@ func (m *Manager) LoadModel(ctx context.Context, req *pb.LoadModelRequest) (*pb.
 func (m *Manager) UnloadModel(ctx context.Context, req *pb.UnloadModelRequest) (*emptypb.Empty, error) {
 	_, _, _ = ctx, req, time.Now()
 
+	modelID, providerName, providerModelID := m.resolveRequestedModel(req.GetModelId(), "")
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	modelID, providerName, providerModelID := m.resolveRequestedModel(req.GetModelId(), "")
 	if providerName != "" {
 		modelID = providerModelIDToID(providerName, providerModelID)
 	}
@@ -286,6 +288,13 @@ func (m *Manager) StreamInference(ctx context.Context, stream pb.Runtime_StreamI
 				return err
 			}
 			continue
+		}
+
+		if req.GetProvider() != "" {
+			return fmt.Errorf("unknown provider: %s", req.GetProvider())
+		}
+		if providerName, _, ok := splitProviderModelID(req.GetModelId()); ok {
+			return fmt.Errorf("unknown provider: %s", providerName)
 		}
 
 		if err := streamLocalFallback(ctx, req, stream.Send); err != nil {
@@ -384,6 +393,12 @@ func (m *Manager) resolveProviderForInference(req *pb.InferenceRequest) (*openAI
 	modelID, providerName, providerModelID := m.resolveRequestedModel(req.GetModelId(), req.GetProvider())
 	_ = modelID
 	if providerName == "" {
+		if req.GetProvider() != "" {
+			return nil, "", false
+		}
+		if _, _, ok := splitProviderModelID(req.GetModelId()); ok {
+			return nil, "", false
+		}
 		return nil, "", false
 	}
 

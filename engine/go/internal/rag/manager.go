@@ -9,7 +9,6 @@ import (
 	contextsvc "github.com/ai-engine/go/internal/contextsvc"
 	pb "github.com/ai-engine/proto/go"
 	"google.golang.org/protobuf/types/known/emptypb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Service interface {
@@ -143,8 +142,6 @@ func (m *Manager) ListDocuments(ctx context.Context, _ *emptypb.Empty) (*pb.Docu
 			Id:         documentIDFromURI(resource.URI, ""),
 			Title:      resource.Title,
 			ChunkCount: 0,
-			CreatedAt:  timestamppb.Now(),
-			UpdatedAt:  timestamppb.Now(),
 		})
 	}
 

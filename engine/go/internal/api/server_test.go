@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ai-engine/go/internal/api"
 	"github.com/ai-engine/go/internal/config"
+	"github.com/ai-engine/go/internal/contextsvc"
 	"github.com/ai-engine/go/internal/supervisor"
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
@@ -56,7 +58,7 @@ func (s *ServerSuite) SetupSuite() {
 			_, _ = w.Write([]byte(`{"from_path":"docs/readme.md","to_path":"archive/readme.md","version":9}`))
 		case r.URL.Path == "/v1/sessions/append":
 			_, _ = w.Write([]byte(`{"session_id":"sess-1","entries":[{"session_id":"sess-1","role":"user","content":"hello","metadata":{"source":"test"},"created_at":1710000000}]}`))
-		case r.URL.Path == "/v1/sessions/sess-1":
+		case strings.HasPrefix(r.URL.Path, "/v1/sessions/"):
 			_, _ = w.Write([]byte(`{"session_id":"sess-1","entries":[{"session_id":"sess-1","role":"user","content":"hello","metadata":{"source":"test"},"created_at":1710000000}]}`))
 		default:
 			http.NotFound(w, r)
@@ -116,8 +118,12 @@ func (s *ServerSuite) TestContextStatusEndpoint() {
 	s.router.ServeHTTP(w, req)
 
 	s.Equal(http.StatusOK, w.Code)
-	s.Contains(w.Body.String(), "document_count")
-	s.Contains(w.Body.String(), "chunk_count")
+
+	var resp contextsvc.StatusResponse
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	s.Require().NoError(err)
+	s.Equal(int64(1), resp.DocumentCount)
+	s.Equal(int64(2), resp.ChunkCount)
 }
 
 func (s *ServerSuite) TestContextSearchEndpoint() {
@@ -135,8 +141,13 @@ func (s *ServerSuite) TestContextSearchEndpoint() {
 	s.router.ServeHTTP(w, req)
 
 	s.Equal(http.StatusOK, w.Code)
-	s.Contains(w.Body.String(), "hello world")
-	s.Contains(w.Body.String(), "doc-1")
+
+	var resp contextsvc.SearchResponse
+	err = json.Unmarshal(w.Body.Bytes(), &resp)
+	s.Require().NoError(err)
+	s.Require().Len(resp.Results, 1)
+	s.Equal("doc-1", resp.Results[0].DocumentID)
+	s.Contains(resp.Results[0].ChunkText, "hello world")
 }
 
 func (s *ServerSuite) TestContextWorkspaceSyncEndpoint() {
@@ -152,8 +163,12 @@ func (s *ServerSuite) TestContextWorkspaceSyncEndpoint() {
 	s.router.ServeHTTP(w, req)
 
 	s.Equal(http.StatusOK, w.Code)
-	s.Contains(w.Body.String(), "indexed_resources")
-	s.Contains(w.Body.String(), "workspace")
+
+	var resp contextsvc.WorkspaceSyncResponse
+	err = json.Unmarshal(w.Body.Bytes(), &resp)
+	s.Require().NoError(err)
+	s.Equal("workspace", resp.Root)
+	s.Equal(int32(3), resp.IndexedResources)
 }
 
 func (s *ServerSuite) TestContextFileReadEndpoint() {
@@ -169,8 +184,13 @@ func (s *ServerSuite) TestContextFileReadEndpoint() {
 	s.router.ServeHTTP(w, req)
 
 	s.Equal(http.StatusOK, w.Code)
-	s.Contains(w.Body.String(), "docs/readme.md")
-	s.Contains(w.Body.String(), "hello world")
+
+	var resp contextsvc.FileReadResponse
+	err = json.Unmarshal(w.Body.Bytes(), &resp)
+	s.Require().NoError(err)
+	s.Equal("docs/readme.md", resp.Path)
+	s.Equal("hello world", resp.Content)
+	s.Equal(int64(7), resp.Version)
 }
 
 func (s *ServerSuite) TestContextSessionEndpoint() {
@@ -190,15 +210,26 @@ func (s *ServerSuite) TestContextSessionEndpoint() {
 	s.router.ServeHTTP(appendResp, appendReq)
 
 	s.Equal(http.StatusOK, appendResp.Code)
-	s.Contains(appendResp.Body.String(), "created_at")
+
+	var appendResponse contextsvc.SessionResponse
+	err = json.Unmarshal(appendResp.Body.Bytes(), &appendResponse)
+	s.Require().NoError(err)
+	s.Require().Len(appendResponse.Entries, 1)
+	s.Equal("sess-1", appendResponse.SessionID)
+	s.Greater(appendResponse.Entries[0].CreatedAt, int64(0))
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/context/sessions/sess-1", nil)
 	getResp := httptest.NewRecorder()
 	s.router.ServeHTTP(getResp, getReq)
 
 	s.Equal(http.StatusOK, getResp.Code)
-	s.Contains(getResp.Body.String(), "sess-1")
-	s.Contains(getResp.Body.String(), "hello")
+
+	var getResponse contextsvc.SessionResponse
+	err = json.Unmarshal(getResp.Body.Bytes(), &getResponse)
+	s.Require().NoError(err)
+	s.Equal("sess-1", getResponse.SessionID)
+	s.Require().Len(getResponse.Entries, 1)
+	s.Equal("hello", getResponse.Entries[0].Content)
 }
 
 func TestServerSuite(t *testing.T) {

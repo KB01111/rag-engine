@@ -8,6 +8,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use chrono::Utc;
+use dashmap::DashMap;
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{connect, Table};
@@ -17,7 +18,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::OnceCell;
+use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
 use crate::bridge::{BridgeError, OpenVikingBridgeClient, OpenVikingBridgeConfig};
@@ -159,6 +160,7 @@ struct ContextInner {
     pool: SqlitePool,
     vector_table: Arc<Table>,
     bridge: OnceCell<Option<OpenVikingBridgeClient>>,
+    file_locks: DashMap<String, Arc<Mutex<()>>>,
 }
 
 impl ContextEngine {
@@ -190,6 +192,7 @@ impl ContextEngine {
                 pool,
                 vector_table,
                 bridge: OnceCell::new(),
+                file_locks: DashMap::new(),
             }),
         })
     }
@@ -199,10 +202,14 @@ impl ContextEngine {
         std::fs::create_dir_all(&base).expect("temp dir");
         let root = ManagedRoot::new("workspace", base.join("workspace")).expect("root");
         let config = ContextConfig::default_in(base.join("data"), vec![root]);
-        tokio::runtime::Runtime::new()
-            .expect("runtime")
-            .block_on(Self::open(config))
-            .expect("engine")
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle.block_on(Self::open(config)).expect("engine"),
+            Err(_) => tokio::runtime::Runtime::new()
+                .expect("runtime")
+                .block_on(Self::open(config))
+                .expect("engine"),
+        }
     }
 
     async fn init_sqlite(pool: &SqlitePool) -> Result<(), ContextError> {
@@ -374,6 +381,15 @@ impl ContextEngine {
         VikingUri::resource(root, relative_path).to_string()
     }
 
+    fn acquire_file_lock(&self, root: &str, path: &Path) -> Arc<Mutex<()>> {
+        let lock_key = format!("{}:{}", root, path.display());
+        self.inner
+            .file_locks
+            .entry(lock_key)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
     async fn index_managed_file(
         &self,
         root: &str,
@@ -420,6 +436,9 @@ impl ContextEngine {
         version: Option<i64>,
     ) -> Result<i64, ContextError> {
         let normalized = Self::normalize_relative_path(path)?;
+        let lock = self.acquire_file_lock(root, &normalized);
+        let _guard = lock.lock().await;
+
         let resolved = self.resolve_managed_path(root, &normalized)?;
         if let Some(parent) = resolved.parent() {
             fs::create_dir_all(parent).await?;
@@ -507,6 +526,9 @@ impl ContextEngine {
         version: Option<i64>,
     ) -> Result<bool, ContextError> {
         let normalized = Self::normalize_relative_path(path)?;
+        let lock = self.acquire_file_lock(root, &normalized);
+        let _guard = lock.lock().await;
+
         let resolved = self.resolve_managed_path(root, &normalized)?;
         let metadata = match fs::metadata(&resolved).await {
             Ok(metadata) => metadata,
@@ -548,6 +570,12 @@ impl ContextEngine {
     ) -> Result<i64, ContextError> {
         let from_normalized = Self::normalize_relative_path(from_path)?;
         let to_normalized = Self::normalize_relative_path(to_path)?;
+
+        let from_lock = self.acquire_file_lock(root, &from_normalized);
+        let to_lock = self.acquire_file_lock(root, &to_normalized);
+        let _from_guard = from_lock.lock().await;
+        let _to_guard = to_lock.lock().await;
+
         let from_resolved = self.resolve_managed_path(root, &from_normalized)?;
         let to_resolved = self.resolve_managed_path(root, &to_normalized)?;
 
@@ -580,9 +608,10 @@ impl ContextEngine {
                 .load_resources_for_scope(root, Some(&from_relative))
                 .await?;
             for resource in moved_resources {
-                let suffix = resource
-                    .path
-                    .strip_prefix(&from_relative)
+                let suffix = Path::new(&resource.path)
+                    .strip_prefix(Path::new(&from_relative))
+                    .ok()
+                    .and_then(|p| p.to_str())
                     .unwrap_or("")
                     .trim_start_matches('/')
                     .to_string();
@@ -614,6 +643,8 @@ impl ContextEngine {
         root: &str,
         path: Option<PathBuf>,
     ) -> Result<WorkspaceSyncOutcome, ContextError> {
+        const MAX_FILE_SIZE: u64 = 1_048_576; // 1MB
+
         let prefix_path = match path {
             Some(path) => Some(Self::normalize_relative_path(path)?),
             None => None,
@@ -632,35 +663,95 @@ impl ContextEngine {
         let mut reindexed_resources = 0;
         let mut skipped_files = 0;
         let mut seen_uris = HashSet::new();
-        let mut stack = vec![start.clone()];
 
-        while let Some(current) = stack.pop() {
-            let metadata = fs::metadata(&current).await?;
+        // Use the ignore crate to walk files while respecting .gitignore
+        let walker = ignore::WalkBuilder::new(&start)
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(false)
+            .git_exclude(false)
+            .filter_entry(|entry| {
+                let file_name = entry.file_name().to_string_lossy();
+                // Exclude common build/dependency directories
+                !matches!(
+                    file_name.as_ref(),
+                    ".git" | "target" | "node_modules" | "dist" | "build" | ".venv"
+                )
+            })
+            .build();
+
+        for result in walker {
+            let entry = match result {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+
+            let current = entry.path();
+            let metadata = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
             if metadata.is_dir() {
-                let mut dir = fs::read_dir(&current).await?;
-                while let Some(entry) = dir.next_entry().await? {
-                    stack.push(entry.path());
-                }
                 continue;
             }
 
-            let relative_path = self.relative_managed_path(root, &current)?;
-            match fs::read_to_string(&current).await {
-                Ok(_) => {
-                    let outcome = self
-                        .index_managed_file(root, PathBuf::from(&relative_path), None)
-                        .await?;
-                    indexed_resources += 1;
-                    if outcome.reindexed_chunks > 0 {
-                        reindexed_resources += 1;
-                    }
-                    seen_uris.insert(self.resource_uri_for_path(root, &relative_path));
-                }
+            // Skip files that are too large
+            if metadata.len() > MAX_FILE_SIZE {
+                skipped_files += 1;
+                continue;
+            }
+
+            let relative_path = match self.relative_managed_path(root, current) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            // Read the content once
+            let content = match fs::read_to_string(current).await {
+                Ok(content) => content,
                 Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
                     skipped_files += 1;
+                    continue;
                 }
-                Err(err) => return Err(ContextError::Io(err)),
+                Err(_) => {
+                    skipped_files += 1;
+                    continue;
+                }
+            };
+
+            // Index using the already-read content
+            let normalized = match Self::normalize_relative_path(&relative_path) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let relative_path_str = normalized.to_string_lossy().replace('\\', "/");
+            let title = Path::new(&relative_path_str)
+                .file_name()
+                .and_then(|part| part.to_str())
+                .unwrap_or("resource")
+                .to_string();
+            let mut metadata_map = BTreeMap::new();
+            metadata_map.insert("root".to_string(), root.to_string());
+            metadata_map.insert("path".to_string(), relative_path_str.clone());
+            metadata_map.insert("kind".to_string(), "file".to_string());
+
+            let outcome = self
+                .upsert_resource(ResourceUpsertRequest {
+                    uri: self.resource_uri_for_path(root, &relative_path_str),
+                    title: Some(title),
+                    content,
+                    layer: ResourceLayer::L2,
+                    metadata: metadata_map,
+                    previous_uri: None,
+                })
+                .await?;
+
+            indexed_resources += 1;
+            if outcome.reindexed_chunks > 0 {
+                reindexed_resources += 1;
             }
+            seen_uris.insert(self.resource_uri_for_path(root, &relative_path_str));
         }
 
         let existing = self
@@ -744,6 +835,36 @@ impl ContextEngine {
             .collect();
 
         let mut tx = self.inner.pool.begin().await?;
+
+        // Check if there's a conflicting resource at the target URI with a different resource_id
+        // If so, delete it to avoid UNIQUE constraint violation
+        let conflicting_resource: Option<(String,)> = sqlx::query_as(
+            r#"
+            SELECT resource_id FROM resources
+            WHERE uri = ?1 AND resource_id != ?2
+            "#,
+        )
+        .bind(&resource_row.uri)
+        .bind(&resource_row.resource_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some((conflicting_id,)) = conflicting_resource {
+            // Delete the conflicting resource and its dependent rows
+            sqlx::query("DELETE FROM resource_chunks WHERE resource_id = ?1")
+                .bind(&conflicting_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM resource_chunks_fts WHERE resource_id = ?1")
+                .bind(&conflicting_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM resources WHERE resource_id = ?1")
+                .bind(&conflicting_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
         sqlx::query(
             r#"
             INSERT INTO resources (resource_id, uri, title, root, path, source_layer, metadata_json, content_hash, updated_at)
@@ -1239,13 +1360,13 @@ impl ContextEngine {
         Ok(rows
             .into_iter()
             .map(|row| {
-                let score = row.get::<f64, _>("score") as f32;
+                let bm25_score = row.get::<f64, _>("score") as f32;
                 ScoredChunk {
                     chunk_id: row.get("chunk_id"),
                     resource_id: row.get("resource_id"),
                     layer: row.get("layer"),
                     content: row.get("content"),
-                    score: lexical_score(score),
+                    score: lexical_score(-bm25_score),
                     metadata_json: "{}".to_string(),
                 }
             })

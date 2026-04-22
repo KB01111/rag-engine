@@ -59,18 +59,33 @@ impl VikingUri {
                     segments: segments[1..].to_vec(),
                 })
             }
-            "user" if segments.get(1).map(|s| s.as_str()) == Some("memories") => Ok(Self {
-                namespace: VikingNamespace::UserMemories,
-                segments: segments[2..].to_vec(),
-            }),
-            "agent" if segments.get(1).map(|s| s.as_str()) == Some("memories") => Ok(Self {
-                namespace: VikingNamespace::AgentMemories,
-                segments: segments[2..].to_vec(),
-            }),
-            "agent" if segments.get(1).map(|s| s.as_str()) == Some("skills") => Ok(Self {
-                namespace: VikingNamespace::AgentSkills,
-                segments: segments[2..].to_vec(),
-            }),
+            "user" if segments.get(1).map(|s| s.as_str()) == Some("memories") => {
+                if segments.len() < 3 {
+                    return Err(UriError::Invalid);
+                }
+                Ok(Self {
+                    namespace: VikingNamespace::UserMemories,
+                    segments: segments[2..].to_vec(),
+                })
+            }
+            "agent" if segments.get(1).map(|s| s.as_str()) == Some("memories") => {
+                if segments.len() < 3 {
+                    return Err(UriError::Invalid);
+                }
+                Ok(Self {
+                    namespace: VikingNamespace::AgentMemories,
+                    segments: segments[2..].to_vec(),
+                })
+            }
+            "agent" if segments.get(1).map(|s| s.as_str()) == Some("skills") => {
+                if segments.len() < 3 {
+                    return Err(UriError::Invalid);
+                }
+                Ok(Self {
+                    namespace: VikingNamespace::AgentSkills,
+                    segments: segments[2..].to_vec(),
+                })
+            }
             "session" => {
                 if segments.len() < 2 {
                     return Err(UriError::Invalid);
@@ -85,8 +100,9 @@ impl VikingUri {
     }
 
     pub fn resource(root: impl Into<String>, path: impl Into<String>) -> Self {
+        let root_str = root.into();
         let path = path.into();
-        let mut segments = vec![root.into()];
+        let mut segments = vec![root_str];
         segments.extend(
             path.split('/')
                 .filter(|segment| !segment.is_empty())
@@ -98,32 +114,48 @@ impl VikingUri {
         }
     }
 
-    pub fn user_memory(id: impl Into<String>) -> Self {
-        Self {
+    pub fn user_memory(id: impl Into<String>) -> Result<Self, UriError> {
+        let id_str = id.into();
+        if id_str.is_empty() {
+            return Err(UriError::Invalid);
+        }
+        Ok(Self {
             namespace: VikingNamespace::UserMemories,
-            segments: vec![id.into()],
-        }
+            segments: vec![id_str],
+        })
     }
 
-    pub fn agent_memory(id: impl Into<String>) -> Self {
-        Self {
+    pub fn agent_memory(id: impl Into<String>) -> Result<Self, UriError> {
+        let id_str = id.into();
+        if id_str.is_empty() {
+            return Err(UriError::Invalid);
+        }
+        Ok(Self {
             namespace: VikingNamespace::AgentMemories,
-            segments: vec![id.into()],
-        }
+            segments: vec![id_str],
+        })
     }
 
-    pub fn agent_skill(id: impl Into<String>) -> Self {
-        Self {
+    pub fn agent_skill(id: impl Into<String>) -> Result<Self, UriError> {
+        let id_str = id.into();
+        if id_str.is_empty() {
+            return Err(UriError::Invalid);
+        }
+        Ok(Self {
             namespace: VikingNamespace::AgentSkills,
-            segments: vec![id.into()],
-        }
+            segments: vec![id_str],
+        })
     }
 
-    pub fn session(id: impl Into<String>) -> Self {
-        Self {
-            namespace: VikingNamespace::Session,
-            segments: vec![id.into()],
+    pub fn session(id: impl Into<String>) -> Result<Self, UriError> {
+        let id_str = id.into();
+        if id_str.is_empty() {
+            return Err(UriError::Invalid);
         }
+        Ok(Self {
+            namespace: VikingNamespace::Session,
+            segments: vec![id_str],
+        })
     }
 
     pub fn namespace(&self) -> &VikingNamespace {

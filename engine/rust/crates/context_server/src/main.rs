@@ -1,11 +1,14 @@
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     apply_cli_overrides()?;
     let addr = std::env::var("CONTEXT_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8090".to_string())
         .parse()?;
-    let engine = context_server::engine_from_env().await?;
-    context_server::serve(addr, engine).await
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        let engine = context_server::engine_from_env().await?;
+        context_server::serve(addr, engine).await
+    })
 }
 
 fn apply_cli_overrides() -> anyhow::Result<()> {
@@ -31,7 +34,9 @@ fn apply_cli_overrides() -> anyhow::Result<()> {
             "--openviking-api-key" => {
                 openviking_api_key = Some(expect_value(&mut args, "--openviking-api-key")?)
             }
-            _ => {}
+            _ => {
+                return Err(anyhow::anyhow!("unknown flag: {}", arg));
+            }
         }
     }
 

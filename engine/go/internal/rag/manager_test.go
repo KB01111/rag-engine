@@ -7,7 +7,7 @@ import (
 	"github.com/ai-engine/go/internal/config"
 	"github.com/ai-engine/go/internal/contextsvc"
 	pb "github.com/ai-engine/proto/go"
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -78,12 +78,21 @@ func (s *stubBackend) ListResources(context.Context) (*contextsvc.ListResourcesR
 	}, nil
 }
 
-func TestManagerUpsertDocumentDelegatesToContextBackend(t *testing.T) {
-	cfg := config.DefaultConfig()
-	backend := &stubBackend{}
-	manager := NewManager(cfg, backend)
+type ManagerTestSuite struct {
+	suite.Suite
+	cfg     *config.Config
+	backend *stubBackend
+	manager *Manager
+}
 
-	resp, err := manager.UpsertDocument(context.Background(), &pb.UpsertRequest{
+func (s *ManagerTestSuite) SetupTest() {
+	s.cfg = config.DefaultConfig()
+	s.backend = &stubBackend{}
+	s.manager = NewManager(s.cfg, s.backend)
+}
+
+func (s *ManagerTestSuite) TestManagerUpsertDocumentDelegatesToContextBackend() {
+	resp, err := s.manager.UpsertDocument(context.Background(), &pb.UpsertRequest{
 		DocumentId: "doc-1",
 		Content:    "hello world",
 		Metadata: map[string]string{
@@ -91,19 +100,15 @@ func TestManagerUpsertDocumentDelegatesToContextBackend(t *testing.T) {
 		},
 	})
 
-	require.NoError(t, err)
-	require.Equal(t, int32(4), resp.ChunksIndexed)
-	require.Equal(t, "viking://resources/doc-1", backend.upsertReq.URI)
-	require.Equal(t, "hello world", backend.upsertReq.Content)
-	require.Equal(t, "Doc 1", backend.upsertReq.Title)
+	s.Require().NoError(err)
+	s.Equal(int32(4), resp.ChunksIndexed)
+	s.Equal("viking://resources/doc-1", s.backend.upsertReq.URI)
+	s.Equal("hello world", s.backend.upsertReq.Content)
+	s.Equal("Doc 1", s.backend.upsertReq.Title)
 }
 
-func TestManagerSearchDelegatesToContextBackend(t *testing.T) {
-	cfg := config.DefaultConfig()
-	backend := &stubBackend{}
-	manager := NewManager(cfg, backend)
-
-	resp, err := manager.Search(context.Background(), &pb.SearchRequest{
+func (s *ManagerTestSuite) TestManagerSearchDelegatesToContextBackend() {
+	resp, err := s.manager.Search(context.Background(), &pb.SearchRequest{
 		Query: "hello world",
 		TopK:  3,
 		Filters: map[string]string{
@@ -111,26 +116,26 @@ func TestManagerSearchDelegatesToContextBackend(t *testing.T) {
 		},
 	})
 
-	require.NoError(t, err)
-	require.Len(t, resp.Results, 1)
-	require.Equal(t, "doc-1", resp.Results[0].DocumentId)
-	require.Equal(t, "hello world", backend.searchReq.Query)
-	require.Equal(t, 3, backend.searchReq.TopK)
-	require.Equal(t, "viking://resources/", backend.searchReq.ScopeURI)
-	require.InDelta(t, 1.25, resp.QueryTimeMs, 0.001)
+	s.Require().NoError(err)
+	s.Require().Len(resp.Results, 1)
+	s.Equal("doc-1", resp.Results[0].DocumentId)
+	s.Equal("hello world", s.backend.searchReq.Query)
+	s.Equal(3, s.backend.searchReq.TopK)
+	s.Equal("viking://resources/", s.backend.searchReq.ScopeURI)
+	s.InDelta(1.25, resp.QueryTimeMs, 0.001)
 }
 
-func TestManagerDeleteAndStatusUseContextBackend(t *testing.T) {
-	cfg := config.DefaultConfig()
-	backend := &stubBackend{}
-	manager := NewManager(cfg, backend)
+func (s *ManagerTestSuite) TestManagerDeleteAndStatusUseContextBackend() {
+	_, err := s.manager.DeleteDocument(context.Background(), &pb.DeleteRequest{DocumentId: "doc-1"})
+	s.Require().NoError(err)
+	s.Equal("viking://resources/doc-1", s.backend.deleteURI)
 
-	_, err := manager.DeleteDocument(context.Background(), &pb.DeleteRequest{DocumentId: "doc-1"})
-	require.NoError(t, err)
-	require.Equal(t, "viking://resources/doc-1", backend.deleteURI)
+	status, err := s.manager.GetRagStatus(context.Background(), &emptypb.Empty{})
+	s.Require().NoError(err)
+	s.Equal(int64(1), status.DocumentCount)
+	s.Equal(int64(2), status.ChunkCount)
+}
 
-	status, err := manager.GetRagStatus(context.Background(), &emptypb.Empty{})
-	require.NoError(t, err)
-	require.Equal(t, int64(1), status.DocumentCount)
-	require.Equal(t, int64(2), status.ChunkCount)
+func TestManagerTestSuite(t *testing.T) {
+	suite.Run(t, &ManagerTestSuite{})
 }

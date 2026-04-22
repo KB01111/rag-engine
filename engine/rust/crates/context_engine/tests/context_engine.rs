@@ -97,8 +97,8 @@ async fn incremental_upsert_reuses_unchanged_chunks() {
         .await
         .unwrap();
 
-    assert!(updated.reused_chunks > 0);
-    assert!(updated.reindexed_chunks > 0);
+    assert_eq!(updated.reused_chunks, 2);
+    assert_eq!(updated.reindexed_chunks, 1);
 }
 
 #[tokio::test]

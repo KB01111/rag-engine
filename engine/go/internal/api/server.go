@@ -165,7 +165,8 @@ func (s *Server) SearchContext(ctx context.Context, req *pb.ContextSearchRequest
 		Layer:    layerFromProto(req.GetLayer()),
 	}
 	if req.Rerank != nil {
-		searchReq.Rerank = req.GetRerank()
+		rerank := req.GetRerank()
+		searchReq.Rerank = &rerank
 	}
 
 	resp, err := s.supervisor.Context.Search(ctx, searchReq)
@@ -409,7 +410,12 @@ func (s *Server) handleHealth(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": status, "ready": ready})
+	statusCode := http.StatusOK
+	if !ready || status == "degraded" {
+		statusCode = http.StatusServiceUnavailable
+	}
+
+	c.JSON(statusCode, gin.H{"status": status, "ready": ready})
 }
 
 func (s *Server) handleStatus(c *gin.Context) {

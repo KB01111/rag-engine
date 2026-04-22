@@ -56,6 +56,7 @@ if exist "%PROTO_DIR%\engine.proto" (
                       engine.proto
     if errorlevel 1 (
         echo Warning: failed to generate root proto package.
+        exit /b 1
     ) else (
         call "%PROTOCEXE%" -I . ^
                           --plugin=protoc-gen-go="%PROTOC_GEN_GO%" ^

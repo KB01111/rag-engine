@@ -34,7 +34,7 @@ runtime:
 context:
   enabled: true
   service_url: "http://127.0.0.1:9191"
-  binary_path: "../rust/target/release/context_server.exe"
+  binary_path: "../rust/target/release/context_server"
   data_dir: "~/ai-engine/context"
   auto_start: true
   startup_timeout: 20s

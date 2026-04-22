@@ -78,14 +78,22 @@ pub struct OpenVikingBridgeClient {
 
 impl OpenVikingBridgeClient {
     pub fn new(config: OpenVikingBridgeConfig) -> Self {
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
-            client: Client::new(),
+            client,
             config,
         }
     }
 
     fn base_url(&self) -> Result<Url, BridgeError> {
-        Ok(Url::parse(&self.config.base_url)?)
+        let mut url = Url::parse(&self.config.base_url)?;
+        if !url.path().ends_with('/') {
+            url.set_path(&format!("{}/", url.path()));
+        }
+        Ok(url)
     }
 
     fn request(&self, path: &str) -> Result<reqwest::RequestBuilder, BridgeError> {
@@ -159,12 +167,19 @@ impl OpenVikingBridgeClient {
         &self,
         uri: impl Into<String>,
     ) -> Result<RemoteResourcePayload, BridgeError> {
-        let response = self
-            .get_request(&format!(
-                "{}/{}",
-                self.config.read_path.trim_end_matches('/'),
-                uri.into()
-            ))?
+        let uri_string = uri.into();
+        let mut url = Url::parse(&self.config.base_url)?;
+        url.set_path(&self.config.read_path.trim_end_matches('/'));
+        url.path_segments_mut()
+            .map_err(|_| BridgeError::Url(url::ParseError::RelativeUrlWithoutBase))?
+            .push(&uri_string);
+
+        let mut request = self.client.get(url);
+        if let Some(token) = &self.config.token {
+            request = request.bearer_auth(token);
+        }
+
+        let response = request
             .send()
             .await?
             .error_for_status()?;
