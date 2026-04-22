@@ -663,13 +663,16 @@ func toProtoContextResource(resource contextsvc.Resource) *pb.ContextResource {
 func toProtoContextSessionHistory(resp *contextsvc.SessionResponse) *pb.ContextSessionHistory {
 	entries := make([]*pb.ContextSessionEntry, 0, len(resp.Entries))
 	for _, entry := range resp.Entries {
-		entries = append(entries, &pb.ContextSessionEntry{
+		protoEntry := &pb.ContextSessionEntry{
 			SessionId: entry.SessionID,
 			Role:      entry.Role,
 			Content:   entry.Content,
 			Metadata:  entry.Metadata,
-			CreatedAt: timestamppb.New(time.UnixMilli(entry.CreatedAt)),
-		})
+		}
+		if entry.CreatedAt > 0 {
+			protoEntry.CreatedAt = timestamppb.New(time.UnixMilli(entry.CreatedAt))
+		}
+		entries = append(entries, protoEntry)
 	}
 
 	return &pb.ContextSessionHistory{

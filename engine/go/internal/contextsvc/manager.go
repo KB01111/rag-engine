@@ -232,10 +232,8 @@ func NewManager(cfg Config) *Manager {
 	cfg.StartupTimeout = timeout
 
 	return &Manager{
-		cfg: cfg,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		cfg:    cfg,
+		client: &http.Client{},
 	}
 }
 

@@ -57,6 +57,7 @@ type openAICompatibleProvider struct {
 	baseURL      string
 	apiKey       string
 	http         *http.Client
+	streamHttp   *http.Client
 }
 
 type openAIModelListResponse struct {
@@ -90,9 +91,10 @@ type openAIStreamChunk struct {
 
 func NewManager(cfg *config.Config) *Manager {
 	httpClient := &http.Client{Timeout: 45 * time.Second}
+	streamHttpClient := &http.Client{}
 	providers := make(map[string]*openAICompatibleProvider)
 	for _, providerCfg := range cfg.Runtime.Providers {
-		provider, err := newOpenAICompatibleProvider(providerCfg, httpClient)
+		provider, err := newOpenAICompatibleProvider(providerCfg, httpClient, streamHttpClient)
 		if err != nil {
 			continue
 		}
@@ -427,7 +429,7 @@ func (m *Model) toProto() *pb.ModelInfo {
 	}
 }
 
-func newOpenAICompatibleProvider(cfg config.ProviderConfig, httpClient *http.Client) (*openAICompatibleProvider, error) {
+func newOpenAICompatibleProvider(cfg config.ProviderConfig, httpClient *http.Client, streamHttpClient *http.Client) (*openAICompatibleProvider, error) {
 	name := strings.TrimSpace(cfg.Name)
 	if name == "" {
 		return nil, fmt.Errorf("provider name is required")
@@ -437,8 +439,15 @@ func newOpenAICompatibleProvider(cfg config.ProviderConfig, httpClient *http.Cli
 		return nil, fmt.Errorf("provider url is required for %s", name)
 	}
 
-	if _, err := url.Parse(baseURL); err != nil {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
 		return nil, fmt.Errorf("invalid provider url for %s: %w", name, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("invalid provider url for %s: must be absolute http(s) URL", name)
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("invalid provider url for %s: must be absolute http(s) URL", name)
 	}
 
 	providerType := strings.ToLower(strings.TrimSpace(cfg.Type))
@@ -452,6 +461,7 @@ func newOpenAICompatibleProvider(cfg config.ProviderConfig, httpClient *http.Cli
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		apiKey:       cfg.APIKey,
 		http:         httpClient,
+		streamHttp:   streamHttpClient,
 	}, nil
 }
 
@@ -474,7 +484,7 @@ func (p *openAICompatibleProvider) ListModels(ctx context.Context) ([]*pb.ModelI
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		return nil, fmt.Errorf("provider %s returned %s: %s", p.name, resp.Status, strings.TrimSpace(string(body)))
 	}
 
@@ -540,14 +550,14 @@ func (p *openAICompatibleProvider) StreamInference(
 	httpReq.Header.Set("Content-Type", "application/json")
 	p.decorate(httpReq)
 
-	resp, err := p.http.Do(httpReq)
+	resp, err := p.streamHttp.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("stream inference with provider %s: %w", p.name, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(resp.Body)
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		return fmt.Errorf("provider %s returned %s: %s", p.name, resp.Status, strings.TrimSpace(string(raw)))
 	}
 
