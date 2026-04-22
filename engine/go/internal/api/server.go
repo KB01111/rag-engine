@@ -147,7 +147,8 @@ func (s *Server) handleListModels(c *gin.Context) {
 
 	models, err := s.supervisor.Runtime.ListModels(ctx, &emptypb.Empty{})
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		s.log.Error().Err(err).Msg("Failed to list models")
+		c.JSON(500, gin.H{"error": "internal server error"})
 		return
 	}
 	c.JSON(200, gin.H{"models": len(models.Models)})
