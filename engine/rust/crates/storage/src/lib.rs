@@ -113,6 +113,9 @@ pub struct MCPConnectionRecord {
     pub server_url: String,
     pub server_name: String,
     pub connected: bool,
+    /// WARNING: This field stores authentication credentials.
+    /// TODO: Replace with encrypted storage or secret reference (e.g., auth_ref or encrypted_auth)
+    /// to avoid persisting plaintext secrets.
     pub auth_json: String,
     pub tools_json: String,
     pub updated_at: i64,
@@ -140,21 +143,29 @@ impl EngineStore {
         let _guard = self.gate.write().await;
         let db = self.connect().await?;
         let documents = self.ensure_documents_table(&db).await?;
-        let chunks_table = self
-            .ensure_chunks_table(&db, chunks.first().map(|chunk| chunk.vector.len()).unwrap_or(384))
-            .await?;
 
         delete_where(&documents, &format!("id = '{}'", escape_literal(&document.id))).await?;
-        delete_where(
-            &chunks_table,
-            &format!("document_id = '{}'", escape_literal(&document.id)),
-        )
-        .await?;
-
         add_record_batch(&documents, document_batch(&[document])?).await?;
+
+        // Only create chunks table and perform chunk operations when we have actual chunks
         if !chunks.is_empty() {
+            let vector_dim = chunks[0].vector.len();
+            let chunks_table = self.ensure_chunks_table(&db, vector_dim).await?;
+
+            delete_where(
+                &chunks_table,
+                &format!("document_id = '{}'", escape_literal(&document.id)),
+            )
+            .await?;
             add_record_batch(&chunks_table, chunk_batch(&chunks)?).await?;
             // self.ensure_chunk_indexes(&chunks_table).await?;
+        } else if let Some(chunks_table) = self.open_table(&db, "chunks").await? {
+            // If chunks table exists but we have no chunks, still delete old chunks for this document
+            delete_where(
+                &chunks_table,
+                &format!("document_id = '{}'", escape_literal(&document.id)),
+            )
+            .await?;
         }
         Ok(())
     }
@@ -254,6 +265,8 @@ impl EngineStore {
         let _guard = self.gate.write().await;
         let db = self.connect().await?;
         let table = self.ensure_models_table(&db).await?;
+        // TODO: Replace delete+add with atomic merge_insert:
+        // table.merge_insert(&["id"]).when_matched_update_all().when_not_matched_insert_all().execute(batch)
         delete_where(&table, &format!("id = '{}'", escape_literal(&model.id))).await?;
         add_record_batch(&table, model_batch(&[model])?).await
     }
@@ -272,6 +285,8 @@ impl EngineStore {
         let _guard = self.gate.write().await;
         let db = self.connect().await?;
         let table = self.ensure_training_runs_table(&db).await?;
+        // TODO: Replace delete+add with atomic merge_insert:
+        // table.merge_insert(&["id"]).when_matched_update_all().when_not_matched_insert_all().execute(batch)
         delete_where(&table, &format!("id = '{}'", escape_literal(&run.id))).await?;
         add_record_batch(&table, training_run_batch(&[run])?).await
     }
@@ -322,6 +337,8 @@ impl EngineStore {
         let _guard = self.gate.write().await;
         let db = self.connect().await?;
         let table = self.ensure_mcp_connections_table(&db).await?;
+        // TODO: Replace delete+add with atomic merge_insert:
+        // table.merge_insert(&["connection_id"]).when_matched_update_all().when_not_matched_insert_all().execute(batch)
         delete_where(
             &table,
             &format!(
@@ -853,6 +870,19 @@ fn chunk_batch(records: &[VectorRecord]) -> Result<RecordBatch, StorageError> {
     }
 
     let vector_dimension = records[0].vector.len();
+
+    // Validate all records have the same vector dimension
+    for (index, record) in records.iter().enumerate() {
+        if record.vector.len() != vector_dimension {
+            return Err(StorageError::InvalidData(format!(
+                "vector dimension mismatch at index {}: expected {}, got {}",
+                index,
+                vector_dimension,
+                record.vector.len()
+            )));
+        }
+    }
+
     let vector_values = records
         .iter()
         .flat_map(|record| record.vector.iter().copied().map(Some))

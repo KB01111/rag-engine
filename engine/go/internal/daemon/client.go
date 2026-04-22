@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -29,6 +31,11 @@ func NewClient(ctx context.Context, addr string) (*Client, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	// Validate address and ensure insecure credentials are only used for loopback
+	if err := validateDaemonAddress(addr); err != nil {
+		return nil, fmt.Errorf("daemon address validation failed: %w", err)
+	}
+
 	conn, err := grpc.DialContext(
 		ctx,
 		addr,
@@ -47,6 +54,27 @@ func NewClient(ctx context.Context, addr string) (*Client, error) {
 		mcp:            pb.NewMCPClient(conn),
 		mcpConnections: make(map[string]struct{}),
 	}, nil
+}
+
+func validateDaemonAddress(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid address format: %w", err)
+	}
+
+	// Allow empty host (defaults to localhost) or explicit loopback
+	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return nil
+	}
+
+	// Parse the IP to check if it's loopback
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return nil
+	}
+
+	// Non-loopback addresses require TLS (not yet implemented)
+	return fmt.Errorf("non-loopback daemon address %q requires TLS credentials (not yet supported)", host)
 }
 
 func (c *Client) Close() error {
@@ -70,14 +98,22 @@ func (c *Client) UnloadModel(ctx context.Context, req *pb.UnloadModelRequest) (*
 }
 
 func (c *Client) StreamInference(ctx context.Context, stream pb.Runtime_StreamInferenceServer) error {
-	clientStream, err := c.runtime.StreamInference(ctx)
+	group, groupCtx := errgroup.WithContext(ctx)
+
+	clientStream, err := c.runtime.StreamInference(groupCtx)
 	if err != nil {
 		return err
 	}
+	defer clientStream.CloseSend()
 
-	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		for {
+			select {
+			case <-groupCtx.Done():
+				return groupCtx.Err()
+			default:
+			}
+
 			req, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
 				return clientStream.CloseSend()
@@ -115,7 +151,10 @@ func (c *Client) StreamInference(ctx context.Context, stream pb.Runtime_StreamIn
 }
 
 func (c *Client) LoadedModelCount() int {
-	status, err := c.runtime.GetStatus(context.Background(), &emptypb.Empty{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	status, err := c.runtime.GetStatus(ctx, &emptypb.Empty{})
 	if err != nil {
 		return 0
 	}
@@ -143,7 +182,10 @@ func (c *Client) ListDocuments(ctx context.Context, req *emptypb.Empty) (*pb.Doc
 }
 
 func (c *Client) DocumentCount() int64 {
-	status, err := c.rag.GetRagStatus(context.Background(), &emptypb.Empty{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	status, err := c.rag.GetRagStatus(ctx, &emptypb.Empty{})
 	if err != nil {
 		return 0
 	}
@@ -187,7 +229,10 @@ func (c *Client) StreamLogs(req *pb.LogsRequest, stream pb.Training_StreamLogsSe
 }
 
 func (c *Client) ActiveRunCount() int {
-	runs, err := c.training.ListRuns(context.Background(), &emptypb.Empty{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	runs, err := c.training.ListRuns(ctx, &emptypb.Empty{})
 	if err != nil {
 		return 0
 	}

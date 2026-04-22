@@ -229,7 +229,7 @@ func (m *Manager) computeSimilarity(query, text string) float32 {
 	return float32(matches) / float32(len(words)+1)
 }
 
-func (m *Manager) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatus, error) {
+func (m *Manager) GetRagStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatus, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -245,10 +245,6 @@ func (m *Manager) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatu
 		IndexSizeBytes: chunkCount * 512, // estimated
 		EmbeddingModel: m.config.RAG.EmbeddingModel,
 	}, nil
-}
-
-func (m *Manager) GetRagStatus(ctx context.Context, req *emptypb.Empty) (*pb.RagStatus, error) {
-	return m.GetStatus(ctx, req)
 }
 
 func (m *Manager) ListDocuments(ctx context.Context, _ *emptypb.Empty) (*pb.DocumentList, error) {

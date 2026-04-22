@@ -159,12 +159,19 @@ func (s *Supervisor) launchDaemonLocked() error {
 		return err
 	}
 
-	client, err := s.waitForDaemonClientLocked()
+	// Snapshot daemon address and release lock before waiting
+	daemonAddr := s.config.Daemon.Addr()
+	s.mu.Unlock()
+
+	client, err := s.waitForDaemonClient(daemonAddr)
 	if err != nil {
 		_ = cmd.Process.Kill()
+		s.mu.Lock()
 		return err
 	}
 
+	// Re-acquire lock to update supervisor state
+	s.mu.Lock()
 	if s.daemonClient != nil {
 		_ = s.daemonClient.Close()
 	}
@@ -180,12 +187,18 @@ func (s *Supervisor) launchDaemonLocked() error {
 	return nil
 }
 
-func (s *Supervisor) waitForDaemonClientLocked() (*daemon.Client, error) {
+func (s *Supervisor) waitForDaemonClient(addr string) (*daemon.Client, error) {
 	deadline := time.Now().Add(s.config.Daemon.StartupTimeout)
 	var lastErr error
 
 	for time.Now().Before(deadline) {
-		client, err := daemon.NewClient(context.Background(), s.config.Daemon.Addr())
+		select {
+		case <-s.ctx.Done():
+			return nil, s.ctx.Err()
+		default:
+		}
+
+		client, err := daemon.NewClient(s.ctx, addr)
 		if err == nil {
 			return client, nil
 		}
@@ -221,11 +234,15 @@ func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {
 		return
 	}
 
+	const maxRestarts = 5
+	restartCount := 0
+	backoff := s.config.Daemon.RestartBackoff
+
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
-		case <-time.After(s.config.Daemon.RestartBackoff):
+		case <-time.After(backoff):
 		}
 
 		s.mu.Lock()
@@ -234,9 +251,20 @@ func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {
 			return
 		}
 
-		log.Printf("Restarting AI Engine daemon...")
+		restartCount++
+		if restartCount > maxRestarts {
+			log.Printf("AI Engine daemon exceeded max restart attempts (%d)", maxRestarts)
+			s.mu.Unlock()
+			return
+		}
+
+		log.Printf("Restarting AI Engine daemon (attempt %d/%d)...", restartCount, maxRestarts)
 		if err := s.launchDaemonLocked(); err != nil {
 			log.Printf("AI Engine daemon restart failed: %v", err)
+			backoff = backoff * 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 			s.mu.Unlock()
 			continue
 		}

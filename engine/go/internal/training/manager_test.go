@@ -57,11 +57,21 @@ func TestCancelledRunStaysCancelled(t *testing.T) {
 		t.Fatalf("cancel run: %v", err)
 	}
 
-	time.Sleep(22 * time.Second)
+	// Poll with timeout to verify cancelled status persists
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		manager.mu.RLock()
+		status := manager.runs[run.Id].Status
+		manager.mu.RUnlock()
+
+		if status != "cancelled" {
+			t.Fatalf("expected cancelled status to remain terminal, got %q after %v", status, time.Since(deadline.Add(-3*time.Second)))
+		}
+	}
 
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-
 	if status := manager.runs[run.Id].Status; status != "cancelled" {
 		t.Fatalf("expected cancelled status to remain terminal, got %q", status)
 	}

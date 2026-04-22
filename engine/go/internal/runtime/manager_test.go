@@ -4,10 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"github.com/ai-engine/go/internal/config"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -21,15 +21,14 @@ func TestListModelsConcurrentAccess(t *testing.T) {
 
 	manager := NewManager(cfg)
 
-	var wg sync.WaitGroup
+	var g errgroup.Group
 	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if _, err := manager.ListModels(context.Background(), &emptypb.Empty{}); err != nil {
-				t.Errorf("list models: %v", err)
-			}
-		}()
+		g.Go(func() error {
+			_, err := manager.ListModels(context.Background(), &emptypb.Empty{})
+			return err
+		})
 	}
-	wg.Wait()
+	if err := g.Wait(); err != nil {
+		t.Fatalf("list models: %v", err)
+	}
 }

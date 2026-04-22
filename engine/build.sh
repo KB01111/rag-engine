@@ -8,7 +8,8 @@ GO_DIR="$ROOT_DIR/go"
 RUST_DIR="$ROOT_DIR/rust"
 
 if [ -z "${PROTOC:-}" ] && command -v protoc >/dev/null 2>&1; then
-    export PROTOC="$(command -v protoc)"
+    PROTOC_PATH="$(command -v protoc)"
+    export PROTOC="$PROTOC_PATH"
 fi
 PROTOC_BIN="${PROTOC:-protoc}"
 

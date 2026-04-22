@@ -127,18 +127,19 @@ func (s *Server) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.Cal
 }
 
 func (s *Server) RegisterHTTP(router *gin.Engine) {
+	router.Use(gin.Recovery())
 	router.GET("/health", s.handleHealth)
 	router.GET("/api/v1/status", s.handleStatus)
 	router.GET("/api/v1/runtime/models", s.handleListModels)
 }
 
 func (s *Server) handleHealth(c *gin.Context) {
-	c.JSON(200, gin.H{"status": "ok"})
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 func (s *Server) handleStatus(c *gin.Context) {
 	health := s.supervisor.Health()
-	c.JSON(200, gin.H{"running": health["running"]})
+	c.JSON(http.StatusOK, gin.H{"running": health["running"]})
 }
 
 func (s *Server) handleListModels(c *gin.Context) {
@@ -148,10 +149,10 @@ func (s *Server) handleListModels(c *gin.Context) {
 	models, err := s.supervisor.Runtime.ListModels(ctx, &emptypb.Empty{})
 	if err != nil {
 		s.log.Error().Err(err).Msg("Failed to list models")
-		c.JSON(500, gin.H{"error": "internal server error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
-	c.JSON(200, gin.H{"models": len(models.Models)})
+	c.JSON(http.StatusOK, gin.H{"models": len(models.Models)})
 }
 
 func (s *Server) StartHTTP(addr string, router *gin.Engine) error {

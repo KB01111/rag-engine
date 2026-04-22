@@ -1,3 +1,10 @@
+// TODO: This training_engine crate is not included in the documented Rust architecture.
+// Either:
+// 1. Move functionality into existing canonical crates (rag_engine, embedding, chunking, storage), OR
+// 2. Update project architecture docs to formally add training_engine (and runtime_engine, ai_engine_daemon)
+//    with precise responsibilities, boundaries, and API definitions.
+// Currently TrainingEngine, EngineStore, and cancellations live here but their role is unclear.
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
@@ -126,6 +133,11 @@ impl TrainingEngine {
         let Some(run) = runs.iter_mut().find(|run| run.id == run_id) else {
             return Err(anyhow!("run not found: {run_id}"));
         };
+
+        // Do not overwrite terminal states
+        if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+            return Ok(());
+        }
 
         run.status = "cancelled".to_string();
         run.completed_at = now();

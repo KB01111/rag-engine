@@ -24,9 +24,8 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, *grpcAddr,
+	conn, err := grpc.NewClient(*grpcAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)

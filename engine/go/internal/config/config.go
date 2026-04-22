@@ -188,6 +188,13 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
+
+	// Expand ~ in local paths
+	cfg.Storage.LanceDBURI = expandPath(cfg.Storage.LanceDBURI)
+	cfg.Runtime.ModelsPath = expandPath(cfg.Runtime.ModelsPath)
+	cfg.Training.WorkingDir = expandPath(cfg.Training.WorkingDir)
+	cfg.RAG.StoragePath = expandPath(cfg.RAG.StoragePath)
+
 	if cfg.Daemon.Command == "" {
 		cfg.Daemon.Command = defaultDaemonCommand()
 	}
@@ -270,4 +277,21 @@ func daemonBinaryName() string {
 		return "ai_engine_daemon.exe"
 	}
 	return "ai_engine_daemon"
+}
+
+func expandPath(path string) string {
+	if path == "" || !containsScheme(path) {
+		if len(path) > 0 && path[0] == '~' {
+			homeDir, err := os.UserHomeDir()
+			if err == nil {
+				if len(path) == 1 {
+					return homeDir
+				}
+				if path[1] == '/' || path[1] == '\\' {
+					return filepath.Join(homeDir, path[2:])
+				}
+			}
+		}
+	}
+	return path
 }

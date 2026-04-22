@@ -6,11 +6,7 @@ set "ROOT=%~dp0"
 set "GO_DIR=%ROOT%go"
 set "RUST_DIR=%ROOT%rust"
 
-if not defined PROTOC (
-    if exist "%ProgramFiles%\Roberts Space Industries\RSI Launcher\resources\app.asar.unpacked\node_modules\grpc-tools\bin\protoc.exe" (
-        set "PROTOC=%ProgramFiles%\Roberts Space Industries\RSI Launcher\resources\app.asar.unpacked\node_modules\grpc-tools\bin\protoc.exe"
-    )
-)
+REM PROTOC can be set via environment variable or must be in PATH
 
 REM Setup Go modules
 cd /d "%GO_DIR%"

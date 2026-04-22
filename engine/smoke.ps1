@@ -1,5 +1,6 @@
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,13 +17,28 @@ function Get-FreePort {
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $goDir = Join-Path $root "go"
-$rustDaemonBin = Join-Path $root "rust\\target\\release\\ai_engine_daemon.exe"
+$rustDaemonBin = Join-Path $root "rust" | Join-Path -ChildPath "target" | Join-Path -ChildPath "release" | Join-Path -ChildPath "ai_engine_daemon.exe"
 $buildScript = Join-Path $root "build.bat"
-$serverBin = Join-Path $goDir "bin\\server.exe"
-$clientBin = Join-Path $goDir "bin\\client.exe"
-$daemonBin = Join-Path $goDir "bin\\ai_engine_daemon.exe"
+$serverBin = Join-Path $goDir "bin" | Join-Path -ChildPath "server.exe"
+$clientBin = Join-Path $goDir "bin" | Join-Path -ChildPath "client.exe"
+$daemonBin = Join-Path $goDir "bin" | Join-Path -ChildPath "ai_engine_daemon.exe"
 
-Get-Process ai_engine_daemon -ErrorAction SilentlyContinue | Stop-Process -Force
+# Only stop ai_engine_daemon processes if -Force is specified
+$runningDaemons = Get-Process ai_engine_daemon -ErrorAction SilentlyContinue
+if ($runningDaemons) {
+    if ($Force) {
+        $runningDaemons | Where-Object {
+            try {
+                $_.MainModule.FileName -like "*ai_engine_daemon*"
+            } catch {
+                $false
+            }
+        } | Stop-Process -Force
+    } else {
+        Write-Warning "Found running ai_engine_daemon process(es). Use -Force to stop them automatically."
+        exit 1
+    }
+}
 
 if (-not $SkipBuild) {
     Write-Host "Building engine binaries..."
@@ -123,6 +139,7 @@ try {
                 break
             }
         } catch {
+            Write-Verbose "Health check attempt $i failed: $($_.Exception.Message)"
         }
         if ($proc.HasExited) {
             throw "server exited early; see $serverStdout and $serverStderr"

@@ -47,6 +47,7 @@ struct AppState {
     runtime: RuntimeEngine,
     training: TrainingEngine,
     embedding: Arc<EmbeddingEngine>,
+    embedding_provider_name: String,
     chunking: ChunkingConfig,
 }
 
@@ -67,12 +68,15 @@ async fn main() -> Result<()> {
     let backend = "llama.cpp".to_string();
 
     let store = EngineStore::new(lancedb_uri);
+    let embedding_engine = Arc::new(create_default_engine());
+    let embedding_provider_name = embedding_engine.name().to_string();
     let service = EngineService {
         state: AppState {
             store: store.clone(),
             runtime: RuntimeEngine::new(store.clone(), models_path, backend.clone()),
             training: TrainingEngine::new(store.clone(), training_dir, backend),
-            embedding: Arc::new(create_default_engine()),
+            embedding: embedding_engine,
+            embedding_provider_name,
             chunking: ChunkingConfig::default(),
         },
     };
@@ -237,6 +241,16 @@ impl Rag for EngineService {
             .embed(&chunk_texts)
             .map_err(internal_status)?;
 
+        // Verify embeddings and chunks have matching lengths
+        if embeddings.len() != chunks.len() {
+            return Err(Status::internal(format!(
+                "embedding count mismatch for document {}: got {} embeddings for {} chunks",
+                document_id,
+                embeddings.len(),
+                chunks.len()
+            )));
+        }
+
         let vector_records = chunks
             .iter()
             .enumerate()
@@ -339,7 +353,7 @@ impl Rag for EngineService {
             document_count: documents.len() as i64,
             chunk_count: chunks.len() as i64,
             index_size_bytes,
-            embedding_model: "mock".to_string(),
+            embedding_model: self.state.embedding_provider_name.clone(),
         }))
     }
 
@@ -428,18 +442,31 @@ impl Training for EngineService {
             .await
             .map_err(not_found_status)?;
 
-        let items = artifacts
-            .into_iter()
-            .filter_map(|path| {
-                let metadata = std::fs::metadata(&path).ok()?;
-                Some(Artifact {
-                    name: path.file_name()?.to_string_lossy().to_string(),
-                    path: path.to_string_lossy().to_string(),
-                    size_bytes: metadata.len() as i64,
-                    created_at: Some(timestamp(now())),
-                })
-            })
-            .collect();
+        let mut items = Vec::new();
+        for path in artifacts {
+            let metadata = tokio::fs::metadata(&path).await.ok();
+            if let Some(meta) = metadata {
+                let created_timestamp = meta
+                    .created()
+                    .or_else(|_| meta.modified())
+                    .ok()
+                    .and_then(|time| {
+                        time.duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|d| d.as_secs() as i64)
+                    })
+                    .unwrap_or_else(now);
+
+                if let Some(name) = path.file_name() {
+                    items.push(Artifact {
+                        name: name.to_string_lossy().to_string(),
+                        path: path.to_string_lossy().to_string(),
+                        size_bytes: meta.len() as i64,
+                        created_at: Some(timestamp(created_timestamp)),
+                    });
+                }
+            }
+        }
         Ok(Response::new(ArtifactList { artifacts: items }))
     }
 
@@ -551,7 +578,13 @@ impl Mcp for EngineService {
         let tools = if connection.tools_json == "default" || connection.tools_json.is_empty() {
             default_tools()
         } else {
-            default_tools()
+            match serde_json::from_str::<Vec<Tool>>(&connection.tools_json) {
+                Ok(parsed_tools) => parsed_tools,
+                Err(err) => {
+                    eprintln!("Failed to parse tools_json: {}, falling back to default", err);
+                    default_tools()
+                }
+            }
         };
         Ok(Response::new(ToolList { tools }))
     }
