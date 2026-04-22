@@ -57,6 +57,11 @@ cp "target/release/ai_engine_daemon" "$GO_DIR/bin/ai_engine_daemon"
 
 echo "Building Rust context service..."
 "$CARGOEXE" build --release -p context_server
+cp "target/release/context_server" "$GO_DIR/bin/context_server" || {
+    echo "Failed to install context_server binary"
+    exit 1
+}
+chmod +x "$GO_DIR/bin/context_server"
 
 cd "$GO_DIR"
 

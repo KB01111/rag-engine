@@ -37,6 +37,8 @@ use engine::{
     UpsertRequest, UpsertResponse,
 };
 
+const MAX_TOP_K: i64 = 1000;
+
 type InferenceStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<InferenceResponse, Status>> + Send>>;
 type TrainingLogStream =
@@ -329,7 +331,7 @@ impl Rag for EngineService {
         let top_k = if request.top_k <= 0 {
             10
         } else {
-            request.top_k as usize
+            std::cmp::min(request.top_k, MAX_TOP_K) as usize
         };
 
         let results = self

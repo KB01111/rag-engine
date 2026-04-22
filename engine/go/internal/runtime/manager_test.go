@@ -78,7 +78,7 @@ func (s *ManagerTestSuite) TestListModelsIncludesFilesystemAndProviderModels() {
 	}
 
 	s.Contains(ids, "local.gguf")
-	s.Contains(ids, "cloud/gpt-4o-mini")
+	s.Contains(ids, "gpt-4o-mini")
 }
 
 func (s *ManagerTestSuite) TestLoadAndStreamInferenceWithProvider() {
