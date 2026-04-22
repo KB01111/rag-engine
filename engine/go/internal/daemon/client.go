@@ -21,8 +21,8 @@ type Client struct {
 	training pb.TrainingClient
 	mcp      pb.MCPClient
 
-	mcpMu           sync.RWMutex
-	mcpConnections  map[string]struct{}
+	mcpMu          sync.RWMutex
+	mcpConnections map[string]struct{}
 }
 
 func NewClient(ctx context.Context, addr string) (*Client, error) {

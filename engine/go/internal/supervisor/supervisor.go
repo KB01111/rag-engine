@@ -40,9 +40,9 @@ type Supervisor struct {
 func NewSupervisor(cfg *config.Config) *Supervisor {
 	ctx, cancel := context.WithCancel(context.Background())
 	sup := &Supervisor{
-		ctx:      ctx,
-		cancel:   cancel,
-		config:   cfg,
+		ctx:    ctx,
+		cancel: cancel,
+		config: cfg,
 	}
 	sup.initLocalServicesLocked()
 	return sup
