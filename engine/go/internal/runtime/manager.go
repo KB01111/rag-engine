@@ -31,6 +31,15 @@ type Manager struct {
 	providers map[string]*openAICompatibleProvider
 }
 
+type Service interface {
+	GetStatus(context.Context, *emptypb.Empty) (*pb.RuntimeStatus, error)
+	ListModels(context.Context, *emptypb.Empty) (*pb.ModelList, error)
+	LoadModel(context.Context, *pb.LoadModelRequest) (*pb.ModelInfo, error)
+	UnloadModel(context.Context, *pb.UnloadModelRequest) (*emptypb.Empty, error)
+	StreamInference(context.Context, pb.Runtime_StreamInferenceServer) error
+	LoadedModelCount() int
+}
+
 type Model struct {
 	ID              string
 	Name            string
@@ -157,7 +166,7 @@ func (m *Manager) ListModels(ctx context.Context, _ *emptypb.Empty) (*pb.ModelLi
 		if metadata == nil {
 			metadata = map[string]string{}
 		}
-		if loaded {
+		if loaded && existing.Metadata != nil {
 			metadata["loaded_at"] = existing.Metadata["loaded_at"]
 		}
 
@@ -764,4 +773,17 @@ func cloneStringMap(input map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func (m *Manager) LoadedModelCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	count := 0
+	for _, model := range m.models {
+		if model.Loaded {
+			count++
+		}
+	}
+	return count
 }

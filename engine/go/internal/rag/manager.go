@@ -12,15 +12,22 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+type Service interface {
+	UpsertDocument(context.Context, *pb.UpsertRequest) (*pb.UpsertResponse, error)
+	DeleteDocument(context.Context, *pb.DeleteRequest) (*emptypb.Empty, error)
+	Search(context.Context, *pb.SearchRequest) (*pb.SearchResponse, error)
+	GetRagStatus(context.Context, *emptypb.Empty) (*pb.RagStatus, error)
+	ListDocuments(context.Context, *emptypb.Empty) (*pb.DocumentList, error)
+	DocumentCount() int64
+}
+
 type Manager struct {
-	config  *config.Config
 	backend contextsvc.Backend
 	topK    int
 }
 
 func NewManager(cfg *config.Config, backend contextsvc.Backend) *Manager {
 	return &Manager{
-		config:  cfg,
 		backend: backend,
 		topK:    cfg.RAG.TopK,
 	}
@@ -102,7 +109,7 @@ func (m *Manager) Search(ctx context.Context, req *pb.SearchRequest) (*pb.Search
 	}, nil
 }
 
-func (m *Manager) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatus, error) {
+func (m *Manager) GetRagStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatus, error) {
 	if m.backend == nil || !m.backend.Enabled() {
 		return &pb.RagStatus{}, nil
 	}

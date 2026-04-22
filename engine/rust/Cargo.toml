@@ -4,6 +4,9 @@ members = [
     "crates/embedding",
     "crates/storage",
     "crates/rag_engine",
+    "crates/runtime_engine",
+    "crates/training_engine",
+    "crates/ai_engine_daemon",
     "crates/context_engine",
     "crates/context_server",
 ]

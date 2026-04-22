@@ -1,4 +1,4 @@
-package api_test
+package mocks
 
 import (
 	"context"
@@ -129,17 +129,18 @@ func TestMockRagServer_Search_Error(t *testing.T) {
 	m.AssertExpectations(t)
 }
 
-func TestMockRagServer_GetStatus(t *testing.T) {
+func TestMockRagServer_GetRagStatus(t *testing.T) {
 	m := &MockRagServer{}
 	ctx := context.Background()
+	req := &emptypb.Empty{}
 	expected := &pb.RagStatus{
 		DocumentCount: 42,
 		ChunkCount:    200,
 	}
 
-	m.On("GetStatus", ctx).Return(expected, nil)
+	m.On("GetRagStatus", ctx, req).Return(expected, nil)
 
-	resp, err := m.GetStatus(ctx, &emptypb.Empty{})
+	resp, err := m.GetRagStatus(ctx, req)
 
 	assert.NoError(t, err)
 	assert.Equal(t, int64(42), resp.DocumentCount)
@@ -147,14 +148,15 @@ func TestMockRagServer_GetStatus(t *testing.T) {
 	m.AssertExpectations(t)
 }
 
-func TestMockRagServer_GetStatus_Error(t *testing.T) {
+func TestMockRagServer_GetRagStatus_Error(t *testing.T) {
 	m := &MockRagServer{}
 	ctx := context.Background()
+	req := &emptypb.Empty{}
 	wantErr := errors.New("service unavailable")
 
-	m.On("GetStatus", ctx).Return(&pb.RagStatus{}, wantErr)
+	m.On("GetRagStatus", ctx, req).Return(&pb.RagStatus{}, wantErr)
 
-	_, err := m.GetStatus(ctx, &emptypb.Empty{})
+	_, err := m.GetRagStatus(ctx, req)
 
 	assert.ErrorIs(t, err, wantErr)
 	m.AssertExpectations(t)
@@ -163,6 +165,7 @@ func TestMockRagServer_GetStatus_Error(t *testing.T) {
 func TestMockRagServer_ListDocuments(t *testing.T) {
 	m := &MockRagServer{}
 	ctx := context.Background()
+	req := &emptypb.Empty{}
 	expected := &pb.DocumentList{
 		Documents: []*pb.DocumentInfo{
 			{Id: "doc-1", ChunkCount: 3},
@@ -170,9 +173,9 @@ func TestMockRagServer_ListDocuments(t *testing.T) {
 		},
 	}
 
-	m.On("ListDocuments", ctx).Return(expected, nil)
+	m.On("ListDocuments", ctx, req).Return(expected, nil)
 
-	resp, err := m.ListDocuments(ctx, &emptypb.Empty{})
+	resp, err := m.ListDocuments(ctx, req)
 
 	assert.NoError(t, err)
 	assert.Len(t, resp.Documents, 2)
@@ -184,11 +187,12 @@ func TestMockRagServer_ListDocuments(t *testing.T) {
 func TestMockRagServer_ListDocuments_Empty(t *testing.T) {
 	m := &MockRagServer{}
 	ctx := context.Background()
+	req := &emptypb.Empty{}
 	expected := &pb.DocumentList{Documents: []*pb.DocumentInfo{}}
 
-	m.On("ListDocuments", ctx).Return(expected, nil)
+	m.On("ListDocuments", ctx, req).Return(expected, nil)
 
-	resp, err := m.ListDocuments(ctx, &emptypb.Empty{})
+	resp, err := m.ListDocuments(ctx, req)
 
 	assert.NoError(t, err)
 	assert.Empty(t, resp.Documents)
@@ -200,10 +204,10 @@ func TestMockRagServer_SatisfiesMockInterface(t *testing.T) {
 	m := &MockRagServer{}
 	ctx := context.Background()
 
-	m.On("GetStatus", mock.Anything).Return(&pb.RagStatus{DocumentCount: 1}, nil)
+	m.On("GetRagStatus", mock.Anything, mock.Anything).Return(&pb.RagStatus{DocumentCount: 1}, nil)
 
 	for i := 0; i < 3; i++ {
-		resp, err := m.GetStatus(ctx, &emptypb.Empty{})
+		resp, err := m.GetRagStatus(ctx, &emptypb.Empty{})
 		assert.NoError(t, err)
 		assert.Equal(t, int64(1), resp.DocumentCount)
 	}

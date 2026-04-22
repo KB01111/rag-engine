@@ -13,13 +13,12 @@ import (
 	"github.com/ai-engine/go/internal/config"
 	pb "github.com/ai-engine/proto/go"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 func TestListModelsIncludesFilesystemAndProviderModels(t *testing.T) {
-	t.Helper()
-
 	modelDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(modelDir, "local.gguf"), []byte("model"), 0o644))
 
@@ -54,8 +53,6 @@ func TestListModelsIncludesFilesystemAndProviderModels(t *testing.T) {
 }
 
 func TestLoadAndStreamInferenceWithProvider(t *testing.T) {
-	t.Helper()
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
@@ -117,6 +114,25 @@ func TestLoadAndStreamInferenceWithProvider(t *testing.T) {
 	require.Equal(t, "Hello world", combined.String())
 	require.True(t, stream.sent[len(stream.sent)-1].Complete)
 	require.Equal(t, "cloud", stream.sent[len(stream.sent)-1].Metrics["provider"])
+}
+
+func TestListModelsConcurrentAccess(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Runtime.ModelsPath = t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(cfg.Runtime.ModelsPath, "model.gguf"), []byte("weights"), 0o644))
+
+	manager := NewManager(cfg)
+
+	var g errgroup.Group
+	for i := 0; i < 8; i++ {
+		g.Go(func() error {
+			_, err := manager.ListModels(context.Background(), &emptypb.Empty{})
+			return err
+		})
+	}
+
+	require.NoError(t, g.Wait())
 }
 
 type inferenceStreamStub struct {

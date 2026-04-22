@@ -5,6 +5,23 @@ server:
     host: "127.0.0.1"
     port: 50051
 
+daemon:
+  host: "127.0.0.1"
+  port: 50061
+  # If blank, the server auto-detects a locally built daemon in ./go/bin or ./rust/target/*.
+  command: ""
+  args: []
+  startup_timeout: 15s
+  restart_backoff: 3s
+  ready_timeout: 10s
+  llama_cli: "llama-cli"
+  training_cli: "llama-train"
+
+storage:
+  lancedb_uri: "~/ai-engine/lancedb"
+  enable_fts: true
+  enable_hybrid_search: true
+
 runtime:
   models_path: "~/ai-engine/models"
   max_memory_mb: 8192
@@ -28,7 +45,7 @@ context:
     api_key: ""
 
 rag:
-  storage_path: "~/ai-engine/rag"
+  storage_path: "~/ai-engine/lancedb"
   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
   chunk_size: 512
   chunk_overlap: 50

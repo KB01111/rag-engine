@@ -1,0 +1,9 @@
+[package]
+name = "runtime_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+storage = { path = "../storage" }
+tokio = { version = "1.0", features = ["full"] }

@@ -87,7 +87,7 @@ func (s *Server) Search(ctx context.Context, req *pb.SearchRequest) (*pb.SearchR
 }
 
 func (s *Server) GetRagStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatus, error) {
-	return s.supervisor.RAG.GetStatus(ctx, &emptypb.Empty{})
+	return s.supervisor.RAG.GetRagStatus(ctx, &emptypb.Empty{})
 }
 
 func (s *Server) ListDocuments(ctx context.Context, _ *emptypb.Empty) (*pb.DocumentList, error) {
@@ -373,6 +373,7 @@ func (s *Server) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.Cal
 }
 
 func (s *Server) RegisterHTTP(router *gin.Engine) {
+	router.Use(gin.Recovery())
 	router.GET("/health", s.handleHealth)
 	router.GET("/api/v1/status", s.handleStatus)
 	router.GET("/api/v1/runtime/models", s.handleListModels)
@@ -408,12 +409,12 @@ func (s *Server) handleHealth(c *gin.Context) {
 		}
 	}
 
-	c.JSON(200, gin.H{"status": status, "ready": ready})
+	c.JSON(http.StatusOK, gin.H{"status": status, "ready": ready})
 }
 
 func (s *Server) handleStatus(c *gin.Context) {
 	health := s.supervisor.Health()
-	c.JSON(200, health)
+	c.JSON(http.StatusOK, health)
 }
 
 func (s *Server) handleListModels(c *gin.Context) {
@@ -422,10 +423,11 @@ func (s *Server) handleListModels(c *gin.Context) {
 
 	models, err := s.supervisor.Runtime.ListModels(ctx, &emptypb.Empty{})
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		s.log.Error().Err(err).Msg("Failed to list models")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
-	c.JSON(200, gin.H{"models": len(models.Models)})
+	c.JSON(http.StatusOK, gin.H{"models": len(models.Models)})
 }
 
 func (s *Server) handleContextStatus(c *gin.Context) {

@@ -18,17 +18,22 @@ type stubBackend struct {
 }
 
 func (s *stubBackend) Start(context.Context) error { return nil }
-func (s *stubBackend) Stop(context.Context) error  { return nil }
-func (s *stubBackend) Enabled() bool               { return true }
+
+func (s *stubBackend) Stop(context.Context) error { return nil }
+
+func (s *stubBackend) Enabled() bool { return true }
+
 func (s *stubBackend) Readiness(context.Context) (*contextsvc.HealthStatus, error) {
 	return &contextsvc.HealthStatus{Status: "ok", Ready: true}, nil
 }
+
 func (s *stubBackend) Status(context.Context) (*contextsvc.StatusResponse, error) {
 	return &contextsvc.StatusResponse{
 		DocumentCount: 1,
 		ChunkCount:    2,
 	}, nil
 }
+
 func (s *stubBackend) UpsertResource(_ context.Context, req contextsvc.UpsertResourceRequest) (*contextsvc.UpsertResourceResponse, error) {
 	s.upsertReq = req
 	return &contextsvc.UpsertResourceResponse{
@@ -38,10 +43,12 @@ func (s *stubBackend) UpsertResource(_ context.Context, req contextsvc.UpsertRes
 		ChunksIndexed: 4,
 	}, nil
 }
+
 func (s *stubBackend) DeleteResource(_ context.Context, uri string) error {
 	s.deleteURI = uri
 	return nil
 }
+
 func (s *stubBackend) Search(_ context.Context, req contextsvc.SearchRequest) (*contextsvc.SearchResponse, error) {
 	s.searchReq = req
 	return &contextsvc.SearchResponse{
@@ -56,8 +63,10 @@ func (s *stubBackend) Search(_ context.Context, req contextsvc.SearchRequest) (*
 				},
 			},
 		},
+		QueryTimeMs: 1.25,
 	}, nil
 }
+
 func (s *stubBackend) ListResources(context.Context) (*contextsvc.ListResourcesResponse, error) {
 	return &contextsvc.ListResourcesResponse{
 		Resources: []contextsvc.Resource{
@@ -106,8 +115,9 @@ func TestManagerSearchDelegatesToContextBackend(t *testing.T) {
 	require.Len(t, resp.Results, 1)
 	require.Equal(t, "doc-1", resp.Results[0].DocumentId)
 	require.Equal(t, "hello world", backend.searchReq.Query)
-	require.Equal(t, int32(3), int32(backend.searchReq.TopK))
+	require.Equal(t, 3, backend.searchReq.TopK)
 	require.Equal(t, "viking://resources/", backend.searchReq.ScopeURI)
+	require.InDelta(t, 1.25, resp.QueryTimeMs, 0.001)
 }
 
 func TestManagerDeleteAndStatusUseContextBackend(t *testing.T) {
@@ -119,7 +129,7 @@ func TestManagerDeleteAndStatusUseContextBackend(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "viking://resources/doc-1", backend.deleteURI)
 
-	status, err := manager.GetStatus(context.Background(), &emptypb.Empty{})
+	status, err := manager.GetRagStatus(context.Background(), &emptypb.Empty{})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), status.DocumentCount)
 	require.Equal(t, int64(2), status.ChunkCount)
