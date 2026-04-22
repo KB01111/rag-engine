@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -97,6 +95,10 @@ impl EmbeddingEngine {
 
     pub fn dimension(&self) -> usize {
         self.dimension
+    }
+
+    pub fn name(&self) -> &str {
+        self.provider.name()
     }
 }
 

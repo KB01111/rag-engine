@@ -17,6 +17,14 @@ type Manager struct {
 	config      *config.Config
 }
 
+type Service interface {
+	Connect(context.Context, *pb.MCPConnectionRequest) (*pb.MCPConnection, error)
+	Disconnect(context.Context, *pb.DisconnectRequest) (*emptypb.Empty, error)
+	ListTools(context.Context, *pb.MCPConnectionRequest) (*pb.ToolList, error)
+	CallTool(context.Context, *pb.CallToolRequest) (*pb.CallToolResponse, error)
+	ConnectionCount() int
+}
+
 type Connection struct {
 	ID         string
 	ServerURL  string

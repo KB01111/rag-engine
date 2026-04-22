@@ -3,11 +3,13 @@ package rag
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/ai-engine/go/internal/config"
 	pb "github.com/ai-engine/proto/go"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -19,6 +21,15 @@ type Manager struct {
 	chunkSize    int
 	chunkOverlap int
 	topK         int
+}
+
+type Service interface {
+	UpsertDocument(context.Context, *pb.UpsertRequest) (*pb.UpsertResponse, error)
+	DeleteDocument(context.Context, *pb.DeleteRequest) (*emptypb.Empty, error)
+	Search(context.Context, *pb.SearchRequest) (*pb.SearchResponse, error)
+	GetRagStatus(context.Context, *emptypb.Empty) (*pb.RagStatus, error)
+	ListDocuments(context.Context, *emptypb.Empty) (*pb.DocumentList, error)
+	DocumentCount() int64
 }
 
 type Document struct {
@@ -137,11 +148,12 @@ func (m *Manager) Search(ctx context.Context, req *pb.SearchRequest) (*pb.Search
 		topK = m.topK
 	}
 
-	// Simple text search (in production, use Rust embedding/search)
 	var results []*pb.SearchResult
+	var resultsMu sync.Mutex
+	g, ctx := errgroup.WithContext(ctx)
 
 	for _, doc := range m.documents {
-		// Check filters
+		doc := doc
 		if len(req.Filters) > 0 {
 			match := true
 			for k, v := range req.Filters {
@@ -155,21 +167,38 @@ func (m *Manager) Search(ctx context.Context, req *pb.SearchRequest) (*pb.Search
 			}
 		}
 
-		// Simple substring match for demo
 		for _, chunk := range doc.Chunks {
-			score := m.computeSimilarity(req.Query, chunk.Text)
-			if score > 0.1 {
-				results = append(results, &pb.SearchResult{
-					DocumentId: doc.ID,
-					ChunkText:  chunk.Text,
-					Score:      score,
-					Metadata:   doc.Metadata,
-				})
-			}
+			chunk := chunk
+			g.Go(func() error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+					score := m.computeSimilarity(req.Query, chunk.Text)
+					if score > 0.1 {
+						resultsMu.Lock()
+						results = append(results, &pb.SearchResult{
+							DocumentId: doc.ID,
+							ChunkText:  chunk.Text,
+							Score:      score,
+							Metadata:   doc.Metadata,
+						})
+						resultsMu.Unlock()
+					}
+					return nil
+				}
+			})
 		}
 	}
 
-	// Sort by score and limit to topK
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
 	if len(results) > topK {
 		results = results[:topK]
 	}
@@ -200,7 +229,7 @@ func (m *Manager) computeSimilarity(query, text string) float32 {
 	return float32(matches) / float32(len(words)+1)
 }
 
-func (m *Manager) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatus, error) {
+func (m *Manager) GetRagStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatus, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 

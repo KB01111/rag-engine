@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
+	"time"
 
 	pb "github.com/ai-engine/proto/go"
 	"google.golang.org/grpc"
@@ -11,12 +13,19 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-func main() {
-	ctx := context.Background()
+var (
+	grpcAddr = flag.String("addr", "127.0.0.1:50051", "gRPC server address")
+	timeout  = flag.Duration("timeout", 20*time.Second, "dial timeout")
+)
 
-	conn, err := grpc.DialContext(ctx, "127.0.0.1:50051",
+func main() {
+	flag.Parse()
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	conn, err := grpc.NewClient(*grpcAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
