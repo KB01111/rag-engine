@@ -154,7 +154,7 @@ impl EngineStore {
         add_record_batch(&documents, document_batch(&[document])?).await?;
         if !chunks.is_empty() {
             add_record_batch(&chunks_table, chunk_batch(&chunks)?).await?;
-            self.ensure_chunk_indexes(&chunks_table).await?;
+            // self.ensure_chunk_indexes(&chunks_table).await?;
         }
         Ok(())
     }
