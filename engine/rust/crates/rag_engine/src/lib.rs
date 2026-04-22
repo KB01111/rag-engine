@@ -174,7 +174,7 @@ impl RagEngine {
 
         let embeddings = self
             .embedding_engine
-            .embed(&chunk_texts, None)
+            .embed(&chunk_texts)
             .map_err(|e| RagError::EmbeddingError(e.to_string()))?;
 
         let mut vector_records = Vec::with_capacity(chunks.len());
@@ -248,7 +248,7 @@ impl RagEngine {
 
         let query_embedding = self
             .embedding_engine
-            .embed_single(&request.query, None)
+            .embed_single(&request.query)
             .map_err(|e| RagError::EmbeddingError(e.to_string()))?;
 
         let top_k = if request.top_k > 0 {

@@ -83,7 +83,7 @@ func (s *Server) Search(ctx context.Context, req *pb.SearchRequest) (*pb.SearchR
 }
 
 func (s *Server) GetRagStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatus, error) {
-	return s.supervisor.RAG.GetStatus(ctx, &emptypb.Empty{})
+	return s.supervisor.RAG.GetRagStatus(ctx, &emptypb.Empty{})
 }
 
 func (s *Server) ListDocuments(ctx context.Context, _ *emptypb.Empty) (*pb.DocumentList, error) {

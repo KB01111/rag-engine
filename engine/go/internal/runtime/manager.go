@@ -22,6 +22,15 @@ type Manager struct {
 	logs      map[string][]string
 }
 
+type Service interface {
+	GetStatus(context.Context, *emptypb.Empty) (*pb.RuntimeStatus, error)
+	ListModels(context.Context, *emptypb.Empty) (*pb.ModelList, error)
+	LoadModel(context.Context, *pb.LoadModelRequest) (*pb.ModelInfo, error)
+	UnloadModel(context.Context, *pb.UnloadModelRequest) (*emptypb.Empty, error)
+	StreamInference(context.Context, pb.Runtime_StreamInferenceServer) error
+	LoadedModelCount() int
+}
+
 type Model struct {
 	ID        string
 	Name      string
@@ -72,8 +81,8 @@ func (m *Manager) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RuntimeS
 }
 
 func (m *Manager) ListModels(ctx context.Context, _ *emptypb.Empty) (*pb.ModelList, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	modelsPath := m.config.Runtime.ModelsPath
 	models := make([]*pb.ModelInfo, 0)
@@ -214,4 +223,17 @@ func (m *Manager) ListModelsCached() []*Model {
 		result = append(result, v)
 	}
 	return result
+}
+
+func (m *Manager) LoadedModelCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	count := 0
+	for _, model := range m.models {
+		if model.Loaded {
+			count++
+		}
+	}
+	return count
 }

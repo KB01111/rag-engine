@@ -1,0 +1,9 @@
+.git
+.gitignore
+go/bin
+go/.cache
+go/pkg
+rust/target
+**/*.test
+**/*.tmp
+**/.DS_Store

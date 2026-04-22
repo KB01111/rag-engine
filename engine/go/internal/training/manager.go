@@ -22,6 +22,15 @@ type Manager struct {
 	workDir string
 }
 
+type Service interface {
+	StartRun(context.Context, *pb.TrainingRunRequest) (*pb.TrainingRun, error)
+	CancelRun(context.Context, *pb.CancelRequest) (*emptypb.Empty, error)
+	ListRuns(context.Context, *emptypb.Empty) (*pb.TrainingRunList, error)
+	ListArtifacts(context.Context, *pb.ArtifactsRequest) (*pb.ArtifactList, error)
+	StreamLogs(*pb.LogsRequest, pb.Training_StreamLogsServer) error
+	ActiveRunCount() int
+}
+
 type Run struct {
 	ID          string
 	Name        string
@@ -48,7 +57,7 @@ func (m *Manager) StartRun(ctx context.Context, req *pb.TrainingRunRequest) (*pb
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if len(m.runs) >= m.config.Training.MaxJobs {
+	if m.activeRunCountLocked() >= m.config.Training.MaxJobs {
 		return nil, fmt.Errorf("max concurrent jobs reached")
 	}
 
@@ -72,9 +81,8 @@ func (m *Manager) StartRun(ctx context.Context, req *pb.TrainingRunRequest) (*pb
 
 	// In production, this would launch actual training (llama.cpp, etc.)
 	// For now, simulate training progress
-	go m.simulateTraining(run)
-
 	m.runs[runID] = run
+	go m.simulateTraining(run)
 
 	return &pb.TrainingRun{
 		Id:          run.ID,
@@ -89,6 +97,10 @@ func (m *Manager) StartRun(ctx context.Context, req *pb.TrainingRunRequest) (*pb
 
 func (m *Manager) simulateTraining(run *Run) {
 	m.mu.Lock()
+	if isTerminalRunStatus(run.Status) {
+		m.mu.Unlock()
+		return
+	}
 	run.Status = "running"
 	m.mu.Unlock()
 
@@ -98,11 +110,19 @@ func (m *Manager) simulateTraining(run *Run) {
 	for i := 0; i < 10; i++ {
 		<-ticker.C
 		m.mu.Lock()
+		if isTerminalRunStatus(run.Status) {
+			m.mu.Unlock()
+			return
+		}
 		run.Progress = float32(i+1) / 10.0
 		m.mu.Unlock()
 	}
 
 	m.mu.Lock()
+	if isTerminalRunStatus(run.Status) {
+		m.mu.Unlock()
+		return
+	}
 	run.Status = "completed"
 	run.CompletedAt = time.Now()
 	run.Progress = 1.0
@@ -227,6 +247,10 @@ func (m *Manager) StreamLogs(req *pb.LogsRequest, stream pb.Training_StreamLogsS
 func (m *Manager) ActiveRunCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.activeRunCountLocked()
+}
+
+func (m *Manager) activeRunCountLocked() int {
 	count := 0
 	for _, run := range m.runs {
 		if run.Status == "running" || run.Status == "starting" {
@@ -234,4 +258,13 @@ func (m *Manager) ActiveRunCount() int {
 		}
 	}
 	return count
+}
+
+func isTerminalRunStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }

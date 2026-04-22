@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -20,6 +21,15 @@ type Manager struct {
 	chunkSize    int
 	chunkOverlap int
 	topK         int
+}
+
+type Service interface {
+	UpsertDocument(context.Context, *pb.UpsertRequest) (*pb.UpsertResponse, error)
+	DeleteDocument(context.Context, *pb.DeleteRequest) (*emptypb.Empty, error)
+	Search(context.Context, *pb.SearchRequest) (*pb.SearchResponse, error)
+	GetRagStatus(context.Context, *emptypb.Empty) (*pb.RagStatus, error)
+	ListDocuments(context.Context, *emptypb.Empty) (*pb.DocumentList, error)
+	DocumentCount() int64
 }
 
 type Document struct {
@@ -139,9 +149,11 @@ func (m *Manager) Search(ctx context.Context, req *pb.SearchRequest) (*pb.Search
 	}
 
 	var results []*pb.SearchResult
+	var resultsMu sync.Mutex
 	g, ctx := errgroup.WithContext(ctx)
 
 	for _, doc := range m.documents {
+		doc := doc
 		if len(req.Filters) > 0 {
 			match := true
 			for k, v := range req.Filters {
@@ -164,12 +176,14 @@ func (m *Manager) Search(ctx context.Context, req *pb.SearchRequest) (*pb.Search
 				default:
 					score := m.computeSimilarity(req.Query, chunk.Text)
 					if score > 0.1 {
+						resultsMu.Lock()
 						results = append(results, &pb.SearchResult{
 							DocumentId: doc.ID,
 							ChunkText:  chunk.Text,
 							Score:      score,
 							Metadata:   doc.Metadata,
 						})
+						resultsMu.Unlock()
 					}
 					return nil
 				}
@@ -180,6 +194,10 @@ func (m *Manager) Search(ctx context.Context, req *pb.SearchRequest) (*pb.Search
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
 
 	if len(results) > topK {
 		results = results[:topK]
@@ -227,6 +245,10 @@ func (m *Manager) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.RagStatu
 		IndexSizeBytes: chunkCount * 512, // estimated
 		EmbeddingModel: m.config.RAG.EmbeddingModel,
 	}, nil
+}
+
+func (m *Manager) GetRagStatus(ctx context.Context, req *emptypb.Empty) (*pb.RagStatus, error) {
+	return m.GetStatus(ctx, req)
 }
 
 func (m *Manager) ListDocuments(ctx context.Context, _ *emptypb.Empty) (*pb.DocumentList, error) {
