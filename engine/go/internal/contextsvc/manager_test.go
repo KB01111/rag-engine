@@ -16,12 +16,12 @@ type ManagerTestSuite struct {
 	server  *httptest.Server
 	manager *Manager
 	// Captured request buffers for validation
-	capturedUpsert      UpsertResourceRequest
-	capturedSearchBody  bytes.Buffer
-	capturedFileRead    FileReadRequest
-	capturedFileWrite   FileWriteRequest
-	capturedFileDelete  FileDeleteRequest
-	capturedFileMove    FileMoveRequest
+	capturedUpsert     UpsertResourceRequest
+	capturedSearchBody bytes.Buffer
+	capturedFileRead   FileReadRequest
+	capturedFileWrite  FileWriteRequest
+	capturedFileDelete FileDeleteRequest
+	capturedFileMove   FileMoveRequest
 }
 
 func (s *ManagerTestSuite) SetupTest() {
