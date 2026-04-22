@@ -34,6 +34,7 @@ runtime:
 context:
   enabled: true
   service_url: "http://127.0.0.1:9191"
+  # Context remains a separate Rust service; the Go server proxies its contracts.
   binary_path: "rust/target/release/context_server"
   data_dir: "~/ai-engine/context"
   auto_start: true

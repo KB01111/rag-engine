@@ -1,6 +1,6 @@
 # AI Engine
 
-A high-performance local AI engine with a Go control plane and Rust execution layer.
+A high-performance local AI engine with a Go control plane, a Rust execution daemon, and a dedicated Rust context service.
 
 ## Architecture
 
@@ -12,19 +12,18 @@ A high-performance local AI engine with a Go control plane and Rust execution la
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
 │              Go Control Plane (gRPC/HTTP API)                │
-│  ┌─────────────┐ ┌──────────┐ ┌───────────┐ ┌───────────┐  │
-│  │   Runtime   │ │   RAG    │ │ Training  │ │    MCP    │  │
-│  │  Manager    │ │ Manager  │ │  Manager  │ │  Manager  │  │
-│  └─────────────┘ └──────────┘ └───────────┘ └───────────┘  │
+│  daemon-backed Runtime/RAG/Training/MCP + Context gateway    │
 └─────────────────────────────────────────────────────────────┘
-                              │
-                              ↓
+                             │ │
+                             │ └──────────────┐
+                             ↓                ↓
 ┌─────────────────────────────────────────────────────────────┐
-│                   Rust Execution Layer                       │
-│  ┌─────────────┐ ┌────────────┐ ┌──────────┐ ┌──────────┐  │
-│  │   RAG       │ │ Embedding  │ │ Chunking │ │ Storage  │  │
-│  │   Engine    │ │   Pipeline │ │   Text   │ │ VectorDB │  │
-│  └─────────────┘ └────────────┘ └──────────┘ └──────────┘  │
+│                  Rust Execution Daemon                       │
+│  runtime_engine + rag/storage + training_engine + MCP       │
+└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                   Rust Context Service                       │
+│  context_server + context_engine (resources/files/sessions) │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -44,20 +43,20 @@ protoc --go_out=../go --go_opt=paths=source_relative \
        engine.proto
 ```
 
-### 2. Build Go Server
+### 2. Build The Whole Stack
 
 ```bash
-cd engine/go
-go mod tidy
-go build -o bin/server ./cmd/server
+cd engine
+./build.sh   # Linux/macOS
+build.bat    # Windows
 ```
 
 ### 3. Run Server
 
 ```bash
-./bin/server
+./go/bin/server
 # Or with custom config
-./bin/server --config ../config.example.yaml
+./go/bin/server --config ./config.example.yaml
 ```
 
 ### 4. Build Rust Crates
@@ -81,7 +80,7 @@ go run ./cmd/client/main.go
 - `ListModels` - List available models
 - `LoadModel` - Load a model into memory
 - `UnloadModel` - Unload a model
-- `StreamInference` - Stream inference responses
+- `StreamInference` - Stream inference responses through the daemon-backed runtime path
 
 ### RAG Service
 - `UpsertDocument` - Add/update documents
@@ -89,6 +88,13 @@ go run ./cmd/client/main.go
 - `Search` - Semantic search
 - `GetStatus` - Get RAG index status
 - `ListDocuments` - List all documents
+
+### Context Service
+- `GetContextStatus` - Context readiness and managed-root status
+- `ListResources` / `SearchContext` - Resource inventory and layered search
+- `SyncWorkspace` - Managed workspace indexing
+- `ListFiles` / `ReadFile` / `WriteFile` / `DeleteFile` / `MoveFile` - Managed file operations
+- `AppendSession` / `GetSession` - Session persistence
 
 ### Training Service
 - `StartRun` - Start a training job
@@ -101,14 +107,16 @@ go run ./cmd/client/main.go
 - `Connect` - Connect to MCP server
 - `Disconnect` - Disconnect from server
 - `ListTools` - List available tools
-- `CallTool` - Execute a tool
+- `CallTool` - Execute built-in plumbing tools (`mcp.describe_connection`, `mcp.echo`) or return an explicit staged error for unimplemented transports
 
 ## Configuration
 
 See `config.example.yaml` for configuration options:
 
 - Server host/port (HTTP and gRPC)
+- Daemon host/port plus binary auto-detection
 - Runtime model path and memory limits
+- Context service URL, binary path, data dir, and managed roots
 - RAG settings (chunk size, overlap, embedding model)
 - Training working directory and job limits
 - MCP timeout and retry settings
@@ -127,17 +135,22 @@ engine/
 │   └── internal/
 │       ├── api/        # gRPC/HTTP handlers
 │       ├── config/     # Configuration
-│       ├── mcp/        # MCP tool system
+│       ├── mcp/        # Local fallback MCP stubs for dev/test only
 │       ├── rag/        # RAG orchestration
-│       ├── runtime/    # Model runtime management
+│       ├── runtime/    # Local fallback runtime manager for dev/test only
 │       ├── supervisor/ # Lifecycle management
-│       └── training/   # Training orchestration
+│       └── training/   # Local fallback training manager for dev/test only
 └── rust/               # Rust execution layer
     └── crates/
-        ├── chunking/   # Text chunking
-        ├── embedding/  # Embedding pipeline
-        ├── rag_engine/ # RAG orchestration
-        └── storage/    # Vector storage
+        ├── ai_engine_daemon/ # Canonical Runtime/RAG/Training/MCP backend
+        ├── context_engine/   # Context indexing, search, files, sessions
+        ├── context_server/   # HTTP context service wrapper
+        ├── runtime_engine/   # Pluggable local runtime backend + model state
+        ├── training_engine/  # Training lifecycle and artifacts
+        ├── chunking/         # Text chunking
+        ├── embedding/        # Embedding pipeline
+        ├── rag_engine/       # Shared RAG logic
+        └── storage/          # LanceDB-backed persistence
 ```
 
 ## gRPC API Reference
@@ -148,6 +161,7 @@ Full API definitions are in `proto/engine.proto`. Key services:
 
 **Runtime**: Model loading, unloading, inference streaming
 **RAG**: Document indexing, semantic search
+**Context**: Managed roots, resource search, file/session operations
 **Training**: Job orchestration, log streaming
 **MCP**: Tool execution, connection management
 
@@ -155,3 +169,9 @@ Full API definitions are in `proto/engine.proto`. Key services:
 
 - `AI_ENGINE_CONFIG` - Path to config file
 - `AI_ENGINE_LOG_LEVEL` - Log level (debug, info, warn, error)
+
+## Verification Notes
+
+- `build.bat` / `build.sh` set workspace-local `GOCACHE` and `CARGO_HOME` under `engine/.cache` so local builds do not depend on machine-global cache configuration.
+- If Cargo cannot resolve `crates.io`, that indicates a machine/network problem rather than an engine contract failure.
+- The Go tests use IPv4-only local servers to avoid Windows environments where IPv6 loopback is unavailable.

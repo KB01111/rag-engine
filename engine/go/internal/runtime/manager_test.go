@@ -29,7 +29,7 @@ type ManagerTestSuite struct {
 func (s *ManagerTestSuite) SetupTest() {
 	s.modelDir = s.T().TempDir()
 
-	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.server = newIPv4Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
 			w.Header().Set("Content-Type", "application/json")

@@ -1,0 +1,22 @@
+# test log
+getenv USERPROFILE
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\bin\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\go\bin\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\rust\target\debug\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\rust\target\release\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rust\target\debug\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rust\target\release\ai_engine_daemon.exe
+getenv USERPROFILE
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\bin\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\go\bin\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\rust\target\debug\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\rust\target\release\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rust\target\debug\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rust\target\release\ai_engine_daemon.exe
+getenv USERPROFILE
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\bin\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\go\bin\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\rust\target\debug\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rag\rust\target\release\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rust\target\debug\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rust\target\release\ai_engine_daemon.exe

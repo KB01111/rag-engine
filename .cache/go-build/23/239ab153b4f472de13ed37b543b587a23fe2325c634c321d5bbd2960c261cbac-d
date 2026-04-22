@@ -1,0 +1,6 @@
+=== RUN   TestStartRunIgnoresCompletedRunsInAdmission
+--- PASS: TestStartRunIgnoresCompletedRunsInAdmission (0.01s)
+=== RUN   TestCancelledRunStaysCancelled
+--- PASS: TestCancelledRunStaysCancelled (3.03s)
+PASS
+ok  	github.com/ai-engine/go/internal/training	3.340s

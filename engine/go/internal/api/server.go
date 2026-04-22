@@ -410,12 +410,25 @@ func (s *Server) handleHealth(c *gin.Context) {
 		}
 	}
 
+	supervisorHealth := s.supervisor.Health()
+	if supervisorStatus, ok := supervisorHealth["status"].(string); ok && supervisorStatus != "" && supervisorStatus != "ok" {
+		status = supervisorStatus
+	}
+	if degraded, ok := supervisorHealth["degraded"].(bool); ok && degraded {
+		status = "degraded"
+	}
+
 	statusCode := http.StatusOK
 	if !ready || status == "degraded" {
 		statusCode = http.StatusServiceUnavailable
 	}
 
-	c.JSON(statusCode, gin.H{"status": status, "ready": ready})
+	c.JSON(statusCode, gin.H{
+		"status":         status,
+		"ready":          ready,
+		"execution_mode": s.supervisor.ExecutionMode(),
+		"supervisor":     supervisorHealth,
+	})
 }
 
 func (s *Server) handleStatus(c *gin.Context) {
@@ -433,7 +446,12 @@ func (s *Server) handleListModels(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"models": len(models.Models)})
+	c.JSON(http.StatusOK, gin.H{
+		"models":         models.Models,
+		"execution_mode": s.supervisor.ExecutionMode(),
+		"loaded_models":  len(models.Models),
+		"provider_count": countModelProviders(models.Models),
+	})
 }
 
 func (s *Server) handleContextStatus(c *gin.Context) {
@@ -742,4 +760,21 @@ func (s *Server) logUnaryInterceptor(ctx context.Context, req interface{}, info 
 	resp, err := handler(ctx, req)
 	s.log.Debug().Str("method", info.FullMethod).Dur("duration", time.Since(start)).Err(err).Msg("unary")
 	return resp, err
+}
+
+func countModelProviders(models []*pb.ModelInfo) int {
+	providers := make(map[string]struct{})
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if provider := model.GetMetadata()["provider"]; provider != "" {
+			providers[provider] = struct{}{}
+			continue
+		}
+		if source := model.GetMetadata()["source"]; source != "" {
+			providers[source] = struct{}{}
+		}
+	}
+	return len(providers)
 }
