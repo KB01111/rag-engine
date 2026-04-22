@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Runtime  RuntimeConfig  `yaml:"runtime"`
+	Context  ContextConfig  `yaml:"context"`
 	RAG      RAGConfig      `yaml:"rag"`
 	Training TrainingConfig `yaml:"training"`
 	MCP      MCPConfig      `yaml:"mcp"`
@@ -36,6 +37,22 @@ type RuntimeConfig struct {
 type ProviderConfig struct {
 	Name   string `yaml:"name"`
 	Type   string `yaml:"type"`
+	URL    string `yaml:"url"`
+	APIKey string `yaml:"api_key"`
+}
+
+type ContextConfig struct {
+	Enabled        bool             `yaml:"enabled"`
+	ServiceURL     string           `yaml:"service_url"`
+	BinaryPath     string           `yaml:"binary_path"`
+	DataDir        string           `yaml:"data_dir"`
+	AutoStart      bool             `yaml:"auto_start"`
+	StartupTimeout time.Duration    `yaml:"startup_timeout"`
+	ManagedRoots   []string         `yaml:"managed_roots"`
+	OpenViking     OpenVikingConfig `yaml:"openviking"`
+}
+
+type OpenVikingConfig struct {
 	URL    string `yaml:"url"`
 	APIKey string `yaml:"api_key"`
 }
@@ -83,6 +100,16 @@ func DefaultConfig() *Config {
 			ModelsPath: filepath.Join(engineDir, "models"),
 			MaxMemory:  8192,
 			Providers:  []ProviderConfig{},
+		},
+		Context: ContextConfig{
+			Enabled:        false,
+			ServiceURL:     "http://127.0.0.1:9191",
+			BinaryPath:     "",
+			DataDir:        filepath.Join(engineDir, "context"),
+			AutoStart:      false,
+			StartupTimeout: 20 * time.Second,
+			ManagedRoots:   []string{},
+			OpenViking:     OpenVikingConfig{},
 		},
 		RAG: RAGConfig{
 			StoragePath:    filepath.Join(engineDir, "rag"),
@@ -135,6 +162,7 @@ func Load(path string) (*Config, error) {
 func (c *Config) EnsureDirs() error {
 	dirs := []string{
 		c.Runtime.ModelsPath,
+		c.Context.DataDir,
 		c.RAG.StoragePath,
 		c.Training.WorkingDir,
 	}

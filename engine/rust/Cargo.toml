@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/chunking", "crates/embedding", "crates/storage", "crates/rag_engine"]
+members = [
+    "crates/chunking",
+    "crates/embedding",
+    "crates/storage",
+    "crates/rag_engine",
+    "crates/context_engine",
+    "crates/context_server",
+]
 resolver = "2"
 
 [workspace.package]

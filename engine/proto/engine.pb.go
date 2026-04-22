@@ -24,6 +24,58 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ContextLayer int32
+
+const (
+	ContextLayer_CONTEXT_LAYER_UNSPECIFIED ContextLayer = 0
+	ContextLayer_CONTEXT_LAYER_L0          ContextLayer = 1
+	ContextLayer_CONTEXT_LAYER_L1          ContextLayer = 2
+	ContextLayer_CONTEXT_LAYER_L2          ContextLayer = 3
+)
+
+// Enum value maps for ContextLayer.
+var (
+	ContextLayer_name = map[int32]string{
+		0: "CONTEXT_LAYER_UNSPECIFIED",
+		1: "CONTEXT_LAYER_L0",
+		2: "CONTEXT_LAYER_L1",
+		3: "CONTEXT_LAYER_L2",
+	}
+	ContextLayer_value = map[string]int32{
+		"CONTEXT_LAYER_UNSPECIFIED": 0,
+		"CONTEXT_LAYER_L0":          1,
+		"CONTEXT_LAYER_L1":          2,
+		"CONTEXT_LAYER_L2":          3,
+	}
+)
+
+func (x ContextLayer) Enum() *ContextLayer {
+	p := new(ContextLayer)
+	*p = x
+	return p
+}
+
+func (x ContextLayer) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ContextLayer) Descriptor() protoreflect.EnumDescriptor {
+	return file_engine_proto_enumTypes[0].Descriptor()
+}
+
+func (ContextLayer) Type() protoreflect.EnumType {
+	return &file_engine_proto_enumTypes[0]
+}
+
+func (x ContextLayer) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ContextLayer.Descriptor instead.
+func (ContextLayer) EnumDescriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{0}
+}
+
 type RuntimeStatus struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       string                 `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
@@ -381,6 +433,8 @@ type InferenceRequest struct {
 	ModelId       string                 `protobuf:"bytes,1,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
 	Prompt        string                 `protobuf:"bytes,2,opt,name=prompt,proto3" json:"prompt,omitempty"`
 	Parameters    map[string]string      `protobuf:"bytes,3,rep,name=parameters,proto3" json:"parameters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Provider      string                 `protobuf:"bytes,4,opt,name=provider,proto3" json:"provider,omitempty"`
+	ContextRefs   []string               `protobuf:"bytes,5,rep,name=context_refs,json=contextRefs,proto3" json:"context_refs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -432,6 +486,20 @@ func (x *InferenceRequest) GetPrompt() string {
 func (x *InferenceRequest) GetParameters() map[string]string {
 	if x != nil {
 		return x.Parameters
+	}
+	return nil
+}
+
+func (x *InferenceRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *InferenceRequest) GetContextRefs() []string {
+	if x != nil {
+		return x.ContextRefs
 	}
 	return nil
 }
@@ -832,6 +900,1622 @@ func (x *SearchResponse) GetQueryTimeMs() float64 {
 	return 0
 }
 
+type ContextStatus struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	DocumentCount  int64                  `protobuf:"varint,1,opt,name=document_count,json=documentCount,proto3" json:"document_count,omitempty"`
+	ChunkCount     int64                  `protobuf:"varint,2,opt,name=chunk_count,json=chunkCount,proto3" json:"chunk_count,omitempty"`
+	IndexSizeBytes int64                  `protobuf:"varint,3,opt,name=index_size_bytes,json=indexSizeBytes,proto3" json:"index_size_bytes,omitempty"`
+	EmbeddingModel string                 `protobuf:"bytes,4,opt,name=embedding_model,json=embeddingModel,proto3" json:"embedding_model,omitempty"`
+	Ready          bool                   `protobuf:"varint,5,opt,name=ready,proto3" json:"ready,omitempty"`
+	ManagedRoots   []string               `protobuf:"bytes,6,rep,name=managed_roots,json=managedRoots,proto3" json:"managed_roots,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ContextStatus) Reset() {
+	*x = ContextStatus{}
+	mi := &file_engine_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextStatus) ProtoMessage() {}
+
+func (x *ContextStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextStatus.ProtoReflect.Descriptor instead.
+func (*ContextStatus) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ContextStatus) GetDocumentCount() int64 {
+	if x != nil {
+		return x.DocumentCount
+	}
+	return 0
+}
+
+func (x *ContextStatus) GetChunkCount() int64 {
+	if x != nil {
+		return x.ChunkCount
+	}
+	return 0
+}
+
+func (x *ContextStatus) GetIndexSizeBytes() int64 {
+	if x != nil {
+		return x.IndexSizeBytes
+	}
+	return 0
+}
+
+func (x *ContextStatus) GetEmbeddingModel() string {
+	if x != nil {
+		return x.EmbeddingModel
+	}
+	return ""
+}
+
+func (x *ContextStatus) GetReady() bool {
+	if x != nil {
+		return x.Ready
+	}
+	return false
+}
+
+func (x *ContextStatus) GetManagedRoots() []string {
+	if x != nil {
+		return x.ManagedRoots
+	}
+	return nil
+}
+
+type ContextResource struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uri           string                 `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
+	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Layer         string                 `protobuf:"bytes,3,opt,name=layer,proto3" json:"layer,omitempty"`
+	Metadata      map[string]string      `protobuf:"bytes,4,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextResource) Reset() {
+	*x = ContextResource{}
+	mi := &file_engine_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextResource) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextResource) ProtoMessage() {}
+
+func (x *ContextResource) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextResource.ProtoReflect.Descriptor instead.
+func (*ContextResource) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ContextResource) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+func (x *ContextResource) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *ContextResource) GetLayer() string {
+	if x != nil {
+		return x.Layer
+	}
+	return ""
+}
+
+func (x *ContextResource) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+type ContextResourceList struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Resources     []*ContextResource     `protobuf:"bytes,1,rep,name=resources,proto3" json:"resources,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextResourceList) Reset() {
+	*x = ContextResourceList{}
+	mi := &file_engine_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextResourceList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextResourceList) ProtoMessage() {}
+
+func (x *ContextResourceList) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextResourceList.ProtoReflect.Descriptor instead.
+func (*ContextResourceList) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ContextResourceList) GetResources() []*ContextResource {
+	if x != nil {
+		return x.Resources
+	}
+	return nil
+}
+
+type ContextUpsertResourceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uri           string                 `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
+	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Content       string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
+	Layer         ContextLayer           `protobuf:"varint,4,opt,name=layer,proto3,enum=engine.ContextLayer" json:"layer,omitempty"`
+	Metadata      map[string]string      `protobuf:"bytes,5,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	PreviousUri   string                 `protobuf:"bytes,6,opt,name=previous_uri,json=previousUri,proto3" json:"previous_uri,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextUpsertResourceRequest) Reset() {
+	*x = ContextUpsertResourceRequest{}
+	mi := &file_engine_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextUpsertResourceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextUpsertResourceRequest) ProtoMessage() {}
+
+func (x *ContextUpsertResourceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextUpsertResourceRequest.ProtoReflect.Descriptor instead.
+func (*ContextUpsertResourceRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ContextUpsertResourceRequest) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+func (x *ContextUpsertResourceRequest) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *ContextUpsertResourceRequest) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *ContextUpsertResourceRequest) GetLayer() ContextLayer {
+	if x != nil {
+		return x.Layer
+	}
+	return ContextLayer_CONTEXT_LAYER_UNSPECIFIED
+}
+
+func (x *ContextUpsertResourceRequest) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *ContextUpsertResourceRequest) GetPreviousUri() string {
+	if x != nil {
+		return x.PreviousUri
+	}
+	return ""
+}
+
+type ContextUpsertResourceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Resource      *ContextResource       `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	ChunksIndexed int32                  `protobuf:"varint,2,opt,name=chunks_indexed,json=chunksIndexed,proto3" json:"chunks_indexed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextUpsertResourceResponse) Reset() {
+	*x = ContextUpsertResourceResponse{}
+	mi := &file_engine_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextUpsertResourceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextUpsertResourceResponse) ProtoMessage() {}
+
+func (x *ContextUpsertResourceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextUpsertResourceResponse.ProtoReflect.Descriptor instead.
+func (*ContextUpsertResourceResponse) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ContextUpsertResourceResponse) GetResource() *ContextResource {
+	if x != nil {
+		return x.Resource
+	}
+	return nil
+}
+
+func (x *ContextUpsertResourceResponse) GetChunksIndexed() int32 {
+	if x != nil {
+		return x.ChunksIndexed
+	}
+	return 0
+}
+
+type ContextDeleteResourceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uri           string                 `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextDeleteResourceRequest) Reset() {
+	*x = ContextDeleteResourceRequest{}
+	mi := &file_engine_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextDeleteResourceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextDeleteResourceRequest) ProtoMessage() {}
+
+func (x *ContextDeleteResourceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextDeleteResourceRequest.ProtoReflect.Descriptor instead.
+func (*ContextDeleteResourceRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ContextDeleteResourceRequest) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+type ContextSearchRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Query         string                 `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
+	ScopeUri      string                 `protobuf:"bytes,2,opt,name=scope_uri,json=scopeUri,proto3" json:"scope_uri,omitempty"`
+	TopK          int32                  `protobuf:"varint,3,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
+	Filters       map[string]string      `protobuf:"bytes,4,rep,name=filters,proto3" json:"filters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Layer         ContextLayer           `protobuf:"varint,5,opt,name=layer,proto3,enum=engine.ContextLayer" json:"layer,omitempty"`
+	Rerank        *bool                  `protobuf:"varint,6,opt,name=rerank,proto3,oneof" json:"rerank,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextSearchRequest) Reset() {
+	*x = ContextSearchRequest{}
+	mi := &file_engine_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextSearchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextSearchRequest) ProtoMessage() {}
+
+func (x *ContextSearchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextSearchRequest.ProtoReflect.Descriptor instead.
+func (*ContextSearchRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ContextSearchRequest) GetQuery() string {
+	if x != nil {
+		return x.Query
+	}
+	return ""
+}
+
+func (x *ContextSearchRequest) GetScopeUri() string {
+	if x != nil {
+		return x.ScopeUri
+	}
+	return ""
+}
+
+func (x *ContextSearchRequest) GetTopK() int32 {
+	if x != nil {
+		return x.TopK
+	}
+	return 0
+}
+
+func (x *ContextSearchRequest) GetFilters() map[string]string {
+	if x != nil {
+		return x.Filters
+	}
+	return nil
+}
+
+func (x *ContextSearchRequest) GetLayer() ContextLayer {
+	if x != nil {
+		return x.Layer
+	}
+	return ContextLayer_CONTEXT_LAYER_UNSPECIFIED
+}
+
+func (x *ContextSearchRequest) GetRerank() bool {
+	if x != nil && x.Rerank != nil {
+		return *x.Rerank
+	}
+	return false
+}
+
+type ContextSearchResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uri           string                 `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
+	DocumentId    string                 `protobuf:"bytes,2,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	ChunkText     string                 `protobuf:"bytes,3,opt,name=chunk_text,json=chunkText,proto3" json:"chunk_text,omitempty"`
+	Score         float32                `protobuf:"fixed32,4,opt,name=score,proto3" json:"score,omitempty"`
+	Metadata      map[string]string      `protobuf:"bytes,5,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Layer         string                 `protobuf:"bytes,6,opt,name=layer,proto3" json:"layer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextSearchResult) Reset() {
+	*x = ContextSearchResult{}
+	mi := &file_engine_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextSearchResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextSearchResult) ProtoMessage() {}
+
+func (x *ContextSearchResult) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextSearchResult.ProtoReflect.Descriptor instead.
+func (*ContextSearchResult) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ContextSearchResult) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+func (x *ContextSearchResult) GetDocumentId() string {
+	if x != nil {
+		return x.DocumentId
+	}
+	return ""
+}
+
+func (x *ContextSearchResult) GetChunkText() string {
+	if x != nil {
+		return x.ChunkText
+	}
+	return ""
+}
+
+func (x *ContextSearchResult) GetScore() float32 {
+	if x != nil {
+		return x.Score
+	}
+	return 0
+}
+
+func (x *ContextSearchResult) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *ContextSearchResult) GetLayer() string {
+	if x != nil {
+		return x.Layer
+	}
+	return ""
+}
+
+type ContextSearchResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Results       []*ContextSearchResult `protobuf:"bytes,1,rep,name=results,proto3" json:"results,omitempty"`
+	QueryTimeMs   float64                `protobuf:"fixed64,2,opt,name=query_time_ms,json=queryTimeMs,proto3" json:"query_time_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextSearchResponse) Reset() {
+	*x = ContextSearchResponse{}
+	mi := &file_engine_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextSearchResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextSearchResponse) ProtoMessage() {}
+
+func (x *ContextSearchResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextSearchResponse.ProtoReflect.Descriptor instead.
+func (*ContextSearchResponse) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ContextSearchResponse) GetResults() []*ContextSearchResult {
+	if x != nil {
+		return x.Results
+	}
+	return nil
+}
+
+func (x *ContextSearchResponse) GetQueryTimeMs() float64 {
+	if x != nil {
+		return x.QueryTimeMs
+	}
+	return 0
+}
+
+type ContextWorkspaceSyncRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Root          string                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextWorkspaceSyncRequest) Reset() {
+	*x = ContextWorkspaceSyncRequest{}
+	mi := &file_engine_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextWorkspaceSyncRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextWorkspaceSyncRequest) ProtoMessage() {}
+
+func (x *ContextWorkspaceSyncRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextWorkspaceSyncRequest.ProtoReflect.Descriptor instead.
+func (*ContextWorkspaceSyncRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ContextWorkspaceSyncRequest) GetRoot() string {
+	if x != nil {
+		return x.Root
+	}
+	return ""
+}
+
+func (x *ContextWorkspaceSyncRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+type ContextWorkspaceSyncResponse struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Root               string                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	Prefix             *string                `protobuf:"bytes,2,opt,name=prefix,proto3,oneof" json:"prefix,omitempty"`
+	IndexedResources   int32                  `protobuf:"varint,3,opt,name=indexed_resources,json=indexedResources,proto3" json:"indexed_resources,omitempty"`
+	ReindexedResources int32                  `protobuf:"varint,4,opt,name=reindexed_resources,json=reindexedResources,proto3" json:"reindexed_resources,omitempty"`
+	DeletedResources   int32                  `protobuf:"varint,5,opt,name=deleted_resources,json=deletedResources,proto3" json:"deleted_resources,omitempty"`
+	SkippedFiles       int32                  `protobuf:"varint,6,opt,name=skipped_files,json=skippedFiles,proto3" json:"skipped_files,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *ContextWorkspaceSyncResponse) Reset() {
+	*x = ContextWorkspaceSyncResponse{}
+	mi := &file_engine_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextWorkspaceSyncResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextWorkspaceSyncResponse) ProtoMessage() {}
+
+func (x *ContextWorkspaceSyncResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextWorkspaceSyncResponse.ProtoReflect.Descriptor instead.
+func (*ContextWorkspaceSyncResponse) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *ContextWorkspaceSyncResponse) GetRoot() string {
+	if x != nil {
+		return x.Root
+	}
+	return ""
+}
+
+func (x *ContextWorkspaceSyncResponse) GetPrefix() string {
+	if x != nil && x.Prefix != nil {
+		return *x.Prefix
+	}
+	return ""
+}
+
+func (x *ContextWorkspaceSyncResponse) GetIndexedResources() int32 {
+	if x != nil {
+		return x.IndexedResources
+	}
+	return 0
+}
+
+func (x *ContextWorkspaceSyncResponse) GetReindexedResources() int32 {
+	if x != nil {
+		return x.ReindexedResources
+	}
+	return 0
+}
+
+func (x *ContextWorkspaceSyncResponse) GetDeletedResources() int32 {
+	if x != nil {
+		return x.DeletedResources
+	}
+	return 0
+}
+
+func (x *ContextWorkspaceSyncResponse) GetSkippedFiles() int32 {
+	if x != nil {
+		return x.SkippedFiles
+	}
+	return 0
+}
+
+type ContextFileListRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Root          string                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileListRequest) Reset() {
+	*x = ContextFileListRequest{}
+	mi := &file_engine_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileListRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileListRequest) ProtoMessage() {}
+
+func (x *ContextFileListRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileListRequest.ProtoReflect.Descriptor instead.
+func (*ContextFileListRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ContextFileListRequest) GetRoot() string {
+	if x != nil {
+		return x.Root
+	}
+	return ""
+}
+
+func (x *ContextFileListRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+type ContextFileEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	IsDir         bool                   `protobuf:"varint,3,opt,name=is_dir,json=isDir,proto3" json:"is_dir,omitempty"`
+	SizeBytes     int64                  `protobuf:"varint,4,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	Version       *int64                 `protobuf:"varint,5,opt,name=version,proto3,oneof" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileEntry) Reset() {
+	*x = ContextFileEntry{}
+	mi := &file_engine_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileEntry) ProtoMessage() {}
+
+func (x *ContextFileEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileEntry.ProtoReflect.Descriptor instead.
+func (*ContextFileEntry) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ContextFileEntry) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ContextFileEntry) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *ContextFileEntry) GetIsDir() bool {
+	if x != nil {
+		return x.IsDir
+	}
+	return false
+}
+
+func (x *ContextFileEntry) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *ContextFileEntry) GetVersion() int64 {
+	if x != nil && x.Version != nil {
+		return *x.Version
+	}
+	return 0
+}
+
+type ContextFileListResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entries       []*ContextFileEntry    `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileListResponse) Reset() {
+	*x = ContextFileListResponse{}
+	mi := &file_engine_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileListResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileListResponse) ProtoMessage() {}
+
+func (x *ContextFileListResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileListResponse.ProtoReflect.Descriptor instead.
+func (*ContextFileListResponse) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *ContextFileListResponse) GetEntries() []*ContextFileEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+type ContextFileReadRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Root          string                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileReadRequest) Reset() {
+	*x = ContextFileReadRequest{}
+	mi := &file_engine_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileReadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileReadRequest) ProtoMessage() {}
+
+func (x *ContextFileReadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileReadRequest.ProtoReflect.Descriptor instead.
+func (*ContextFileReadRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ContextFileReadRequest) GetRoot() string {
+	if x != nil {
+		return x.Root
+	}
+	return ""
+}
+
+func (x *ContextFileReadRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+type ContextFileReadResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Content       string                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	Version       int64                  `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileReadResponse) Reset() {
+	*x = ContextFileReadResponse{}
+	mi := &file_engine_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileReadResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileReadResponse) ProtoMessage() {}
+
+func (x *ContextFileReadResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileReadResponse.ProtoReflect.Descriptor instead.
+func (*ContextFileReadResponse) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *ContextFileReadResponse) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *ContextFileReadResponse) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *ContextFileReadResponse) GetVersion() int64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+type ContextFileWriteRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Root          string                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	Content       string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
+	Version       *int64                 `protobuf:"varint,4,opt,name=version,proto3,oneof" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileWriteRequest) Reset() {
+	*x = ContextFileWriteRequest{}
+	mi := &file_engine_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileWriteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileWriteRequest) ProtoMessage() {}
+
+func (x *ContextFileWriteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileWriteRequest.ProtoReflect.Descriptor instead.
+func (*ContextFileWriteRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ContextFileWriteRequest) GetRoot() string {
+	if x != nil {
+		return x.Root
+	}
+	return ""
+}
+
+func (x *ContextFileWriteRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *ContextFileWriteRequest) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *ContextFileWriteRequest) GetVersion() int64 {
+	if x != nil && x.Version != nil {
+		return *x.Version
+	}
+	return 0
+}
+
+type ContextFileWriteResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Version       int64                  `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileWriteResponse) Reset() {
+	*x = ContextFileWriteResponse{}
+	mi := &file_engine_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileWriteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileWriteResponse) ProtoMessage() {}
+
+func (x *ContextFileWriteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileWriteResponse.ProtoReflect.Descriptor instead.
+func (*ContextFileWriteResponse) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ContextFileWriteResponse) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *ContextFileWriteResponse) GetVersion() int64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+type ContextFileDeleteRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Root          string                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	Version       *int64                 `protobuf:"varint,3,opt,name=version,proto3,oneof" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileDeleteRequest) Reset() {
+	*x = ContextFileDeleteRequest{}
+	mi := &file_engine_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileDeleteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileDeleteRequest) ProtoMessage() {}
+
+func (x *ContextFileDeleteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileDeleteRequest.ProtoReflect.Descriptor instead.
+func (*ContextFileDeleteRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *ContextFileDeleteRequest) GetRoot() string {
+	if x != nil {
+		return x.Root
+	}
+	return ""
+}
+
+func (x *ContextFileDeleteRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *ContextFileDeleteRequest) GetVersion() int64 {
+	if x != nil && x.Version != nil {
+		return *x.Version
+	}
+	return 0
+}
+
+type ContextFileDeleteResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Deleted       bool                   `protobuf:"varint,2,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileDeleteResponse) Reset() {
+	*x = ContextFileDeleteResponse{}
+	mi := &file_engine_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileDeleteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileDeleteResponse) ProtoMessage() {}
+
+func (x *ContextFileDeleteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileDeleteResponse.ProtoReflect.Descriptor instead.
+func (*ContextFileDeleteResponse) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *ContextFileDeleteResponse) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *ContextFileDeleteResponse) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
+type ContextFileMoveRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Root          string                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	FromPath      string                 `protobuf:"bytes,2,opt,name=from_path,json=fromPath,proto3" json:"from_path,omitempty"`
+	ToPath        string                 `protobuf:"bytes,3,opt,name=to_path,json=toPath,proto3" json:"to_path,omitempty"`
+	Version       *int64                 `protobuf:"varint,4,opt,name=version,proto3,oneof" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileMoveRequest) Reset() {
+	*x = ContextFileMoveRequest{}
+	mi := &file_engine_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileMoveRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileMoveRequest) ProtoMessage() {}
+
+func (x *ContextFileMoveRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileMoveRequest.ProtoReflect.Descriptor instead.
+func (*ContextFileMoveRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *ContextFileMoveRequest) GetRoot() string {
+	if x != nil {
+		return x.Root
+	}
+	return ""
+}
+
+func (x *ContextFileMoveRequest) GetFromPath() string {
+	if x != nil {
+		return x.FromPath
+	}
+	return ""
+}
+
+func (x *ContextFileMoveRequest) GetToPath() string {
+	if x != nil {
+		return x.ToPath
+	}
+	return ""
+}
+
+func (x *ContextFileMoveRequest) GetVersion() int64 {
+	if x != nil && x.Version != nil {
+		return *x.Version
+	}
+	return 0
+}
+
+type ContextFileMoveResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	FromPath      string                 `protobuf:"bytes,1,opt,name=from_path,json=fromPath,proto3" json:"from_path,omitempty"`
+	ToPath        string                 `protobuf:"bytes,2,opt,name=to_path,json=toPath,proto3" json:"to_path,omitempty"`
+	Version       int64                  `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextFileMoveResponse) Reset() {
+	*x = ContextFileMoveResponse{}
+	mi := &file_engine_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextFileMoveResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextFileMoveResponse) ProtoMessage() {}
+
+func (x *ContextFileMoveResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextFileMoveResponse.ProtoReflect.Descriptor instead.
+func (*ContextFileMoveResponse) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *ContextFileMoveResponse) GetFromPath() string {
+	if x != nil {
+		return x.FromPath
+	}
+	return ""
+}
+
+func (x *ContextFileMoveResponse) GetToPath() string {
+	if x != nil {
+		return x.ToPath
+	}
+	return ""
+}
+
+func (x *ContextFileMoveResponse) GetVersion() int64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+type ContextSessionAppendRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Role          string                 `protobuf:"bytes,2,opt,name=role,proto3" json:"role,omitempty"`
+	Content       string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
+	Metadata      map[string]string      `protobuf:"bytes,4,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextSessionAppendRequest) Reset() {
+	*x = ContextSessionAppendRequest{}
+	mi := &file_engine_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextSessionAppendRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextSessionAppendRequest) ProtoMessage() {}
+
+func (x *ContextSessionAppendRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextSessionAppendRequest.ProtoReflect.Descriptor instead.
+func (*ContextSessionAppendRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *ContextSessionAppendRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ContextSessionAppendRequest) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *ContextSessionAppendRequest) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *ContextSessionAppendRequest) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+type ContextSessionGetRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextSessionGetRequest) Reset() {
+	*x = ContextSessionGetRequest{}
+	mi := &file_engine_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextSessionGetRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextSessionGetRequest) ProtoMessage() {}
+
+func (x *ContextSessionGetRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextSessionGetRequest.ProtoReflect.Descriptor instead.
+func (*ContextSessionGetRequest) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ContextSessionGetRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+type ContextSessionEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Role          string                 `protobuf:"bytes,2,opt,name=role,proto3" json:"role,omitempty"`
+	Content       string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
+	Metadata      map[string]string      `protobuf:"bytes,4,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextSessionEntry) Reset() {
+	*x = ContextSessionEntry{}
+	mi := &file_engine_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextSessionEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextSessionEntry) ProtoMessage() {}
+
+func (x *ContextSessionEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextSessionEntry.ProtoReflect.Descriptor instead.
+func (*ContextSessionEntry) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *ContextSessionEntry) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ContextSessionEntry) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *ContextSessionEntry) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *ContextSessionEntry) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *ContextSessionEntry) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+type ContextSessionHistory struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Entries       []*ContextSessionEntry `protobuf:"bytes,2,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextSessionHistory) Reset() {
+	*x = ContextSessionHistory{}
+	mi := &file_engine_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextSessionHistory) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextSessionHistory) ProtoMessage() {}
+
+func (x *ContextSessionHistory) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextSessionHistory.ProtoReflect.Descriptor instead.
+func (*ContextSessionHistory) Descriptor() ([]byte, []int) {
+	return file_engine_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *ContextSessionHistory) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ContextSessionHistory) GetEntries() []*ContextSessionEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
 type RagStatus struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	DocumentCount  int64                  `protobuf:"varint,1,opt,name=document_count,json=documentCount,proto3" json:"document_count,omitempty"`
@@ -844,7 +2528,7 @@ type RagStatus struct {
 
 func (x *RagStatus) Reset() {
 	*x = RagStatus{}
-	mi := &file_engine_proto_msgTypes[14]
+	mi := &file_engine_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -856,7 +2540,7 @@ func (x *RagStatus) String() string {
 func (*RagStatus) ProtoMessage() {}
 
 func (x *RagStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[14]
+	mi := &file_engine_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -869,7 +2553,7 @@ func (x *RagStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RagStatus.ProtoReflect.Descriptor instead.
 func (*RagStatus) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{14}
+	return file_engine_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *RagStatus) GetDocumentCount() int64 {
@@ -909,7 +2593,7 @@ type DocumentList struct {
 
 func (x *DocumentList) Reset() {
 	*x = DocumentList{}
-	mi := &file_engine_proto_msgTypes[15]
+	mi := &file_engine_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -921,7 +2605,7 @@ func (x *DocumentList) String() string {
 func (*DocumentList) ProtoMessage() {}
 
 func (x *DocumentList) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[15]
+	mi := &file_engine_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -934,7 +2618,7 @@ func (x *DocumentList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DocumentList.ProtoReflect.Descriptor instead.
 func (*DocumentList) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{15}
+	return file_engine_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *DocumentList) GetDocuments() []*DocumentInfo {
@@ -957,7 +2641,7 @@ type DocumentInfo struct {
 
 func (x *DocumentInfo) Reset() {
 	*x = DocumentInfo{}
-	mi := &file_engine_proto_msgTypes[16]
+	mi := &file_engine_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -969,7 +2653,7 @@ func (x *DocumentInfo) String() string {
 func (*DocumentInfo) ProtoMessage() {}
 
 func (x *DocumentInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[16]
+	mi := &file_engine_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -982,7 +2666,7 @@ func (x *DocumentInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DocumentInfo.ProtoReflect.Descriptor instead.
 func (*DocumentInfo) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{16}
+	return file_engine_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *DocumentInfo) GetId() string {
@@ -1032,7 +2716,7 @@ type TrainingRunRequest struct {
 
 func (x *TrainingRunRequest) Reset() {
 	*x = TrainingRunRequest{}
-	mi := &file_engine_proto_msgTypes[17]
+	mi := &file_engine_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1044,7 +2728,7 @@ func (x *TrainingRunRequest) String() string {
 func (*TrainingRunRequest) ProtoMessage() {}
 
 func (x *TrainingRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[17]
+	mi := &file_engine_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1057,7 +2741,7 @@ func (x *TrainingRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrainingRunRequest.ProtoReflect.Descriptor instead.
 func (*TrainingRunRequest) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{17}
+	return file_engine_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *TrainingRunRequest) GetName() string {
@@ -1103,7 +2787,7 @@ type TrainingRun struct {
 
 func (x *TrainingRun) Reset() {
 	*x = TrainingRun{}
-	mi := &file_engine_proto_msgTypes[18]
+	mi := &file_engine_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1115,7 +2799,7 @@ func (x *TrainingRun) String() string {
 func (*TrainingRun) ProtoMessage() {}
 
 func (x *TrainingRun) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[18]
+	mi := &file_engine_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1128,7 +2812,7 @@ func (x *TrainingRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrainingRun.ProtoReflect.Descriptor instead.
 func (*TrainingRun) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{18}
+	return file_engine_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *TrainingRun) GetId() string {
@@ -1189,7 +2873,7 @@ type CancelRequest struct {
 
 func (x *CancelRequest) Reset() {
 	*x = CancelRequest{}
-	mi := &file_engine_proto_msgTypes[19]
+	mi := &file_engine_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1201,7 +2885,7 @@ func (x *CancelRequest) String() string {
 func (*CancelRequest) ProtoMessage() {}
 
 func (x *CancelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[19]
+	mi := &file_engine_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1214,7 +2898,7 @@ func (x *CancelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelRequest.ProtoReflect.Descriptor instead.
 func (*CancelRequest) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{19}
+	return file_engine_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *CancelRequest) GetRunId() string {
@@ -1233,7 +2917,7 @@ type TrainingRunList struct {
 
 func (x *TrainingRunList) Reset() {
 	*x = TrainingRunList{}
-	mi := &file_engine_proto_msgTypes[20]
+	mi := &file_engine_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1245,7 +2929,7 @@ func (x *TrainingRunList) String() string {
 func (*TrainingRunList) ProtoMessage() {}
 
 func (x *TrainingRunList) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[20]
+	mi := &file_engine_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1258,7 +2942,7 @@ func (x *TrainingRunList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrainingRunList.ProtoReflect.Descriptor instead.
 func (*TrainingRunList) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{20}
+	return file_engine_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *TrainingRunList) GetRuns() []*TrainingRun {
@@ -1277,7 +2961,7 @@ type ArtifactsRequest struct {
 
 func (x *ArtifactsRequest) Reset() {
 	*x = ArtifactsRequest{}
-	mi := &file_engine_proto_msgTypes[21]
+	mi := &file_engine_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1289,7 +2973,7 @@ func (x *ArtifactsRequest) String() string {
 func (*ArtifactsRequest) ProtoMessage() {}
 
 func (x *ArtifactsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[21]
+	mi := &file_engine_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1302,7 +2986,7 @@ func (x *ArtifactsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactsRequest.ProtoReflect.Descriptor instead.
 func (*ArtifactsRequest) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{21}
+	return file_engine_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ArtifactsRequest) GetRunId() string {
@@ -1324,7 +3008,7 @@ type Artifact struct {
 
 func (x *Artifact) Reset() {
 	*x = Artifact{}
-	mi := &file_engine_proto_msgTypes[22]
+	mi := &file_engine_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1336,7 +3020,7 @@ func (x *Artifact) String() string {
 func (*Artifact) ProtoMessage() {}
 
 func (x *Artifact) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[22]
+	mi := &file_engine_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1349,7 +3033,7 @@ func (x *Artifact) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Artifact.ProtoReflect.Descriptor instead.
 func (*Artifact) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{22}
+	return file_engine_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *Artifact) GetName() string {
@@ -1389,7 +3073,7 @@ type ArtifactList struct {
 
 func (x *ArtifactList) Reset() {
 	*x = ArtifactList{}
-	mi := &file_engine_proto_msgTypes[23]
+	mi := &file_engine_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1401,7 +3085,7 @@ func (x *ArtifactList) String() string {
 func (*ArtifactList) ProtoMessage() {}
 
 func (x *ArtifactList) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[23]
+	mi := &file_engine_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1414,7 +3098,7 @@ func (x *ArtifactList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactList.ProtoReflect.Descriptor instead.
 func (*ArtifactList) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{23}
+	return file_engine_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ArtifactList) GetArtifacts() []*Artifact {
@@ -1434,7 +3118,7 @@ type LogsRequest struct {
 
 func (x *LogsRequest) Reset() {
 	*x = LogsRequest{}
-	mi := &file_engine_proto_msgTypes[24]
+	mi := &file_engine_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1446,7 +3130,7 @@ func (x *LogsRequest) String() string {
 func (*LogsRequest) ProtoMessage() {}
 
 func (x *LogsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[24]
+	mi := &file_engine_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1459,7 +3143,7 @@ func (x *LogsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogsRequest.ProtoReflect.Descriptor instead.
 func (*LogsRequest) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{24}
+	return file_engine_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *LogsRequest) GetRunId() string {
@@ -1489,7 +3173,7 @@ type TrainingLog struct {
 
 func (x *TrainingLog) Reset() {
 	*x = TrainingLog{}
-	mi := &file_engine_proto_msgTypes[25]
+	mi := &file_engine_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1501,7 +3185,7 @@ func (x *TrainingLog) String() string {
 func (*TrainingLog) ProtoMessage() {}
 
 func (x *TrainingLog) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[25]
+	mi := &file_engine_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1514,7 +3198,7 @@ func (x *TrainingLog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrainingLog.ProtoReflect.Descriptor instead.
 func (*TrainingLog) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{25}
+	return file_engine_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *TrainingLog) GetRunId() string {
@@ -1562,7 +3246,7 @@ type MCPConnectionRequest struct {
 
 func (x *MCPConnectionRequest) Reset() {
 	*x = MCPConnectionRequest{}
-	mi := &file_engine_proto_msgTypes[26]
+	mi := &file_engine_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1574,7 +3258,7 @@ func (x *MCPConnectionRequest) String() string {
 func (*MCPConnectionRequest) ProtoMessage() {}
 
 func (x *MCPConnectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[26]
+	mi := &file_engine_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1587,7 +3271,7 @@ func (x *MCPConnectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPConnectionRequest.ProtoReflect.Descriptor instead.
 func (*MCPConnectionRequest) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{26}
+	return file_engine_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *MCPConnectionRequest) GetServerUrl() string {
@@ -1615,7 +3299,7 @@ type MCPConnection struct {
 
 func (x *MCPConnection) Reset() {
 	*x = MCPConnection{}
-	mi := &file_engine_proto_msgTypes[27]
+	mi := &file_engine_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1627,7 +3311,7 @@ func (x *MCPConnection) String() string {
 func (*MCPConnection) ProtoMessage() {}
 
 func (x *MCPConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[27]
+	mi := &file_engine_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1640,7 +3324,7 @@ func (x *MCPConnection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPConnection.ProtoReflect.Descriptor instead.
 func (*MCPConnection) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{27}
+	return file_engine_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *MCPConnection) GetConnectionId() string {
@@ -1673,7 +3357,7 @@ type DisconnectRequest struct {
 
 func (x *DisconnectRequest) Reset() {
 	*x = DisconnectRequest{}
-	mi := &file_engine_proto_msgTypes[28]
+	mi := &file_engine_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1685,7 +3369,7 @@ func (x *DisconnectRequest) String() string {
 func (*DisconnectRequest) ProtoMessage() {}
 
 func (x *DisconnectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[28]
+	mi := &file_engine_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1698,7 +3382,7 @@ func (x *DisconnectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisconnectRequest.ProtoReflect.Descriptor instead.
 func (*DisconnectRequest) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{28}
+	return file_engine_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *DisconnectRequest) GetConnectionId() string {
@@ -1717,7 +3401,7 @@ type ToolList struct {
 
 func (x *ToolList) Reset() {
 	*x = ToolList{}
-	mi := &file_engine_proto_msgTypes[29]
+	mi := &file_engine_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1729,7 +3413,7 @@ func (x *ToolList) String() string {
 func (*ToolList) ProtoMessage() {}
 
 func (x *ToolList) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[29]
+	mi := &file_engine_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1742,7 +3426,7 @@ func (x *ToolList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolList.ProtoReflect.Descriptor instead.
 func (*ToolList) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{29}
+	return file_engine_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ToolList) GetTools() []*Tool {
@@ -1763,7 +3447,7 @@ type Tool struct {
 
 func (x *Tool) Reset() {
 	*x = Tool{}
-	mi := &file_engine_proto_msgTypes[30]
+	mi := &file_engine_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1775,7 +3459,7 @@ func (x *Tool) String() string {
 func (*Tool) ProtoMessage() {}
 
 func (x *Tool) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[30]
+	mi := &file_engine_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1788,7 +3472,7 @@ func (x *Tool) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Tool.ProtoReflect.Descriptor instead.
 func (*Tool) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{30}
+	return file_engine_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *Tool) GetName() string {
@@ -1824,7 +3508,7 @@ type ToolParameter struct {
 
 func (x *ToolParameter) Reset() {
 	*x = ToolParameter{}
-	mi := &file_engine_proto_msgTypes[31]
+	mi := &file_engine_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1836,7 +3520,7 @@ func (x *ToolParameter) String() string {
 func (*ToolParameter) ProtoMessage() {}
 
 func (x *ToolParameter) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[31]
+	mi := &file_engine_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1849,7 +3533,7 @@ func (x *ToolParameter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolParameter.ProtoReflect.Descriptor instead.
 func (*ToolParameter) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{31}
+	return file_engine_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ToolParameter) GetName() string {
@@ -1891,7 +3575,7 @@ type CallToolRequest struct {
 
 func (x *CallToolRequest) Reset() {
 	*x = CallToolRequest{}
-	mi := &file_engine_proto_msgTypes[32]
+	mi := &file_engine_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1903,7 +3587,7 @@ func (x *CallToolRequest) String() string {
 func (*CallToolRequest) ProtoMessage() {}
 
 func (x *CallToolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[32]
+	mi := &file_engine_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1916,7 +3600,7 @@ func (x *CallToolRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallToolRequest.ProtoReflect.Descriptor instead.
 func (*CallToolRequest) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{32}
+	return file_engine_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *CallToolRequest) GetConnectionId() string {
@@ -1951,7 +3635,7 @@ type CallToolResponse struct {
 
 func (x *CallToolResponse) Reset() {
 	*x = CallToolResponse{}
-	mi := &file_engine_proto_msgTypes[33]
+	mi := &file_engine_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1963,7 +3647,7 @@ func (x *CallToolResponse) String() string {
 func (*CallToolResponse) ProtoMessage() {}
 
 func (x *CallToolResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_engine_proto_msgTypes[33]
+	mi := &file_engine_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1976,7 +3660,7 @@ func (x *CallToolResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallToolResponse.ProtoReflect.Descriptor instead.
 func (*CallToolResponse) Descriptor() ([]byte, []int) {
-	return file_engine_proto_rawDescGZIP(), []int{33}
+	return file_engine_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *CallToolResponse) GetSuccess() bool {
@@ -2035,13 +3719,15 @@ const file_engine_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"/\n" +
 	"\x12UnloadModelRequest\x12\x19\n" +
-	"\bmodel_id\x18\x01 \x01(\tR\amodelId\"\xce\x01\n" +
+	"\bmodel_id\x18\x01 \x01(\tR\amodelId\"\x8d\x02\n" +
 	"\x10InferenceRequest\x12\x19\n" +
 	"\bmodel_id\x18\x01 \x01(\tR\amodelId\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12H\n" +
 	"\n" +
 	"parameters\x18\x03 \x03(\v2(.engine.InferenceRequest.ParametersEntryR\n" +
-	"parameters\x1a=\n" +
+	"parameters\x12\x1a\n" +
+	"\bprovider\x18\x04 \x01(\tR\bprovider\x12!\n" +
+	"\fcontext_refs\x18\x05 \x03(\tR\vcontextRefs\x1a=\n" +
 	"\x0fParametersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc3\x01\n" +
@@ -2086,7 +3772,155 @@ const file_engine_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"d\n" +
 	"\x0eSearchResponse\x12.\n" +
 	"\aresults\x18\x01 \x03(\v2\x14.engine.SearchResultR\aresults\x12\"\n" +
-	"\rquery_time_ms\x18\x02 \x01(\x01R\vqueryTimeMs\"\xa6\x01\n" +
+	"\rquery_time_ms\x18\x02 \x01(\x01R\vqueryTimeMs\"\xe5\x01\n" +
+	"\rContextStatus\x12%\n" +
+	"\x0edocument_count\x18\x01 \x01(\x03R\rdocumentCount\x12\x1f\n" +
+	"\vchunk_count\x18\x02 \x01(\x03R\n" +
+	"chunkCount\x12(\n" +
+	"\x10index_size_bytes\x18\x03 \x01(\x03R\x0eindexSizeBytes\x12'\n" +
+	"\x0fembedding_model\x18\x04 \x01(\tR\x0eembeddingModel\x12\x14\n" +
+	"\x05ready\x18\x05 \x01(\bR\x05ready\x12#\n" +
+	"\rmanaged_roots\x18\x06 \x03(\tR\fmanagedRoots\"\xcf\x01\n" +
+	"\x0fContextResource\x12\x10\n" +
+	"\x03uri\x18\x01 \x01(\tR\x03uri\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x14\n" +
+	"\x05layer\x18\x03 \x01(\tR\x05layer\x12A\n" +
+	"\bmetadata\x18\x04 \x03(\v2%.engine.ContextResource.MetadataEntryR\bmetadata\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"L\n" +
+	"\x13ContextResourceList\x125\n" +
+	"\tresources\x18\x01 \x03(\v2\x17.engine.ContextResourceR\tresources\"\xbc\x02\n" +
+	"\x1cContextUpsertResourceRequest\x12\x10\n" +
+	"\x03uri\x18\x01 \x01(\tR\x03uri\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x18\n" +
+	"\acontent\x18\x03 \x01(\tR\acontent\x12*\n" +
+	"\x05layer\x18\x04 \x01(\x0e2\x14.engine.ContextLayerR\x05layer\x12N\n" +
+	"\bmetadata\x18\x05 \x03(\v22.engine.ContextUpsertResourceRequest.MetadataEntryR\bmetadata\x12!\n" +
+	"\fprevious_uri\x18\x06 \x01(\tR\vpreviousUri\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"{\n" +
+	"\x1dContextUpsertResourceResponse\x123\n" +
+	"\bresource\x18\x01 \x01(\v2\x17.engine.ContextResourceR\bresource\x12%\n" +
+	"\x0echunks_indexed\x18\x02 \x01(\x05R\rchunksIndexed\"0\n" +
+	"\x1cContextDeleteResourceRequest\x12\x10\n" +
+	"\x03uri\x18\x01 \x01(\tR\x03uri\"\xb3\x02\n" +
+	"\x14ContextSearchRequest\x12\x14\n" +
+	"\x05query\x18\x01 \x01(\tR\x05query\x12\x1b\n" +
+	"\tscope_uri\x18\x02 \x01(\tR\bscopeUri\x12\x13\n" +
+	"\x05top_k\x18\x03 \x01(\x05R\x04topK\x12C\n" +
+	"\afilters\x18\x04 \x03(\v2).engine.ContextSearchRequest.FiltersEntryR\afilters\x12*\n" +
+	"\x05layer\x18\x05 \x01(\x0e2\x14.engine.ContextLayerR\x05layer\x12\x1b\n" +
+	"\x06rerank\x18\x06 \x01(\bH\x00R\x06rerank\x88\x01\x01\x1a:\n" +
+	"\fFiltersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\t\n" +
+	"\a_rerank\"\x97\x02\n" +
+	"\x13ContextSearchResult\x12\x10\n" +
+	"\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1f\n" +
+	"\vdocument_id\x18\x02 \x01(\tR\n" +
+	"documentId\x12\x1d\n" +
+	"\n" +
+	"chunk_text\x18\x03 \x01(\tR\tchunkText\x12\x14\n" +
+	"\x05score\x18\x04 \x01(\x02R\x05score\x12E\n" +
+	"\bmetadata\x18\x05 \x03(\v2).engine.ContextSearchResult.MetadataEntryR\bmetadata\x12\x14\n" +
+	"\x05layer\x18\x06 \x01(\tR\x05layer\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"r\n" +
+	"\x15ContextSearchResponse\x125\n" +
+	"\aresults\x18\x01 \x03(\v2\x1b.engine.ContextSearchResultR\aresults\x12\"\n" +
+	"\rquery_time_ms\x18\x02 \x01(\x01R\vqueryTimeMs\"E\n" +
+	"\x1bContextWorkspaceSyncRequest\x12\x12\n" +
+	"\x04root\x18\x01 \x01(\tR\x04root\x12\x12\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\"\x8a\x02\n" +
+	"\x1cContextWorkspaceSyncResponse\x12\x12\n" +
+	"\x04root\x18\x01 \x01(\tR\x04root\x12\x1b\n" +
+	"\x06prefix\x18\x02 \x01(\tH\x00R\x06prefix\x88\x01\x01\x12+\n" +
+	"\x11indexed_resources\x18\x03 \x01(\x05R\x10indexedResources\x12/\n" +
+	"\x13reindexed_resources\x18\x04 \x01(\x05R\x12reindexedResources\x12+\n" +
+	"\x11deleted_resources\x18\x05 \x01(\x05R\x10deletedResources\x12#\n" +
+	"\rskipped_files\x18\x06 \x01(\x05R\fskippedFilesB\t\n" +
+	"\a_prefix\"@\n" +
+	"\x16ContextFileListRequest\x12\x12\n" +
+	"\x04root\x18\x01 \x01(\tR\x04root\x12\x12\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\"\x9b\x01\n" +
+	"\x10ContextFileEntry\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\x12\x15\n" +
+	"\x06is_dir\x18\x03 \x01(\bR\x05isDir\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x04 \x01(\x03R\tsizeBytes\x12\x1d\n" +
+	"\aversion\x18\x05 \x01(\x03H\x00R\aversion\x88\x01\x01B\n" +
+	"\n" +
+	"\b_version\"M\n" +
+	"\x17ContextFileListResponse\x122\n" +
+	"\aentries\x18\x01 \x03(\v2\x18.engine.ContextFileEntryR\aentries\"@\n" +
+	"\x16ContextFileReadRequest\x12\x12\n" +
+	"\x04root\x18\x01 \x01(\tR\x04root\x12\x12\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\"a\n" +
+	"\x17ContextFileReadResponse\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\tR\acontent\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\x03R\aversion\"\x86\x01\n" +
+	"\x17ContextFileWriteRequest\x12\x12\n" +
+	"\x04root\x18\x01 \x01(\tR\x04root\x12\x12\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\x12\x18\n" +
+	"\acontent\x18\x03 \x01(\tR\acontent\x12\x1d\n" +
+	"\aversion\x18\x04 \x01(\x03H\x00R\aversion\x88\x01\x01B\n" +
+	"\n" +
+	"\b_version\"H\n" +
+	"\x18ContextFileWriteResponse\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\x03R\aversion\"m\n" +
+	"\x18ContextFileDeleteRequest\x12\x12\n" +
+	"\x04root\x18\x01 \x01(\tR\x04root\x12\x12\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1d\n" +
+	"\aversion\x18\x03 \x01(\x03H\x00R\aversion\x88\x01\x01B\n" +
+	"\n" +
+	"\b_version\"I\n" +
+	"\x19ContextFileDeleteResponse\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
+	"\adeleted\x18\x02 \x01(\bR\adeleted\"\x8d\x01\n" +
+	"\x16ContextFileMoveRequest\x12\x12\n" +
+	"\x04root\x18\x01 \x01(\tR\x04root\x12\x1b\n" +
+	"\tfrom_path\x18\x02 \x01(\tR\bfromPath\x12\x17\n" +
+	"\ato_path\x18\x03 \x01(\tR\x06toPath\x12\x1d\n" +
+	"\aversion\x18\x04 \x01(\x03H\x00R\aversion\x88\x01\x01B\n" +
+	"\n" +
+	"\b_version\"i\n" +
+	"\x17ContextFileMoveResponse\x12\x1b\n" +
+	"\tfrom_path\x18\x01 \x01(\tR\bfromPath\x12\x17\n" +
+	"\ato_path\x18\x02 \x01(\tR\x06toPath\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\x03R\aversion\"\xf6\x01\n" +
+	"\x1bContextSessionAppendRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x12\n" +
+	"\x04role\x18\x02 \x01(\tR\x04role\x12\x18\n" +
+	"\acontent\x18\x03 \x01(\tR\acontent\x12M\n" +
+	"\bmetadata\x18\x04 \x03(\v21.engine.ContextSessionAppendRequest.MetadataEntryR\bmetadata\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"9\n" +
+	"\x18ContextSessionGetRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xa1\x02\n" +
+	"\x13ContextSessionEntry\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x12\n" +
+	"\x04role\x18\x02 \x01(\tR\x04role\x12\x18\n" +
+	"\acontent\x18\x03 \x01(\tR\acontent\x12E\n" +
+	"\bmetadata\x18\x04 \x03(\v2).engine.ContextSessionEntry.MetadataEntryR\bmetadata\x129\n" +
+	"\n" +
+	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"m\n" +
+	"\x15ContextSessionHistory\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x125\n" +
+	"\aentries\x18\x02 \x03(\v2\x1b.engine.ContextSessionEntryR\aentries\"\xa6\x01\n" +
 	"\tRagStatus\x12%\n" +
 	"\x0edocument_count\x18\x01 \x01(\x03R\rdocumentCount\x12\x1f\n" +
 	"\vchunk_count\x18\x02 \x01(\x03R\n" +
@@ -2182,20 +4016,41 @@ const file_engine_proto_rawDesc = "" +
 	"\x10CallToolResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12/\n" +
 	"\x06result\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x06result\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error2\xc7\x02\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error*o\n" +
+	"\fContextLayer\x12\x1d\n" +
+	"\x19CONTEXT_LAYER_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10CONTEXT_LAYER_L0\x10\x01\x12\x14\n" +
+	"\x10CONTEXT_LAYER_L1\x10\x02\x12\x14\n" +
+	"\x10CONTEXT_LAYER_L2\x10\x032\xc7\x02\n" +
 	"\aRuntime\x12:\n" +
 	"\tGetStatus\x12\x16.google.protobuf.Empty\x1a\x15.engine.RuntimeStatus\x127\n" +
 	"\n" +
 	"ListModels\x12\x16.google.protobuf.Empty\x1a\x11.engine.ModelList\x128\n" +
 	"\tLoadModel\x12\x18.engine.LoadModelRequest\x1a\x11.engine.ModelInfo\x12A\n" +
 	"\vUnloadModel\x12\x1a.engine.UnloadModelRequest\x1a\x16.google.protobuf.Empty\x12J\n" +
-	"\x0fStreamInference\x12\x18.engine.InferenceRequest\x1a\x19.engine.InferenceResponse(\x010\x012\xb7\x02\n" +
+	"\x0fStreamInference\x12\x18.engine.InferenceRequest\x1a\x19.engine.InferenceResponse(\x010\x012\xba\x02\n" +
 	"\x03Rag\x12?\n" +
 	"\x0eUpsertDocument\x12\x15.engine.UpsertRequest\x1a\x16.engine.UpsertResponse\x12?\n" +
 	"\x0eDeleteDocument\x12\x15.engine.DeleteRequest\x1a\x16.google.protobuf.Empty\x127\n" +
-	"\x06Search\x12\x15.engine.SearchRequest\x1a\x16.engine.SearchResponse\x126\n" +
-	"\tGetStatus\x12\x16.google.protobuf.Empty\x1a\x11.engine.RagStatus\x12=\n" +
-	"\rListDocuments\x12\x16.google.protobuf.Empty\x1a\x14.engine.DocumentList2\xbb\x02\n" +
+	"\x06Search\x12\x15.engine.SearchRequest\x1a\x16.engine.SearchResponse\x129\n" +
+	"\fGetRagStatus\x12\x16.google.protobuf.Empty\x1a\x11.engine.RagStatus\x12=\n" +
+	"\rListDocuments\x12\x16.google.protobuf.Empty\x1a\x14.engine.DocumentList2\x9a\b\n" +
+	"\aContext\x12A\n" +
+	"\x10GetContextStatus\x12\x16.google.protobuf.Empty\x1a\x15.engine.ContextStatus\x12D\n" +
+	"\rListResources\x12\x16.google.protobuf.Empty\x1a\x1b.engine.ContextResourceList\x12]\n" +
+	"\x0eUpsertResource\x12$.engine.ContextUpsertResourceRequest\x1a%.engine.ContextUpsertResourceResponse\x12N\n" +
+	"\x0eDeleteResource\x12$.engine.ContextDeleteResourceRequest\x1a\x16.google.protobuf.Empty\x12L\n" +
+	"\rSearchContext\x12\x1c.engine.ContextSearchRequest\x1a\x1d.engine.ContextSearchResponse\x12Z\n" +
+	"\rSyncWorkspace\x12#.engine.ContextWorkspaceSyncRequest\x1a$.engine.ContextWorkspaceSyncResponse\x12L\n" +
+	"\tListFiles\x12\x1e.engine.ContextFileListRequest\x1a\x1f.engine.ContextFileListResponse\x12K\n" +
+	"\bReadFile\x12\x1e.engine.ContextFileReadRequest\x1a\x1f.engine.ContextFileReadResponse\x12N\n" +
+	"\tWriteFile\x12\x1f.engine.ContextFileWriteRequest\x1a .engine.ContextFileWriteResponse\x12Q\n" +
+	"\n" +
+	"DeleteFile\x12 .engine.ContextFileDeleteRequest\x1a!.engine.ContextFileDeleteResponse\x12K\n" +
+	"\bMoveFile\x12\x1e.engine.ContextFileMoveRequest\x1a\x1f.engine.ContextFileMoveResponse\x12S\n" +
+	"\rAppendSession\x12#.engine.ContextSessionAppendRequest\x1a\x1d.engine.ContextSessionHistory\x12M\n" +
+	"\n" +
+	"GetSession\x12 .engine.ContextSessionGetRequest\x1a\x1d.engine.ContextSessionHistory2\xbb\x02\n" +
 	"\bTraining\x12;\n" +
 	"\bStartRun\x12\x1a.engine.TrainingRunRequest\x1a\x13.engine.TrainingRun\x12:\n" +
 	"\tCancelRun\x12\x15.engine.CancelRequest\x1a\x16.google.protobuf.Empty\x12;\n" +
@@ -2222,127 +4077,201 @@ func file_engine_proto_rawDescGZIP() []byte {
 	return file_engine_proto_rawDescData
 }
 
-var file_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
+var file_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 76)
 var file_engine_proto_goTypes = []any{
-	(*RuntimeStatus)(nil),         // 0: engine.RuntimeStatus
-	(*SystemResources)(nil),       // 1: engine.SystemResources
-	(*ModelList)(nil),             // 2: engine.ModelList
-	(*ModelInfo)(nil),             // 3: engine.ModelInfo
-	(*LoadModelRequest)(nil),      // 4: engine.LoadModelRequest
-	(*UnloadModelRequest)(nil),    // 5: engine.UnloadModelRequest
-	(*InferenceRequest)(nil),      // 6: engine.InferenceRequest
-	(*InferenceResponse)(nil),     // 7: engine.InferenceResponse
-	(*UpsertRequest)(nil),         // 8: engine.UpsertRequest
-	(*UpsertResponse)(nil),        // 9: engine.UpsertResponse
-	(*DeleteRequest)(nil),         // 10: engine.DeleteRequest
-	(*SearchRequest)(nil),         // 11: engine.SearchRequest
-	(*SearchResult)(nil),          // 12: engine.SearchResult
-	(*SearchResponse)(nil),        // 13: engine.SearchResponse
-	(*RagStatus)(nil),             // 14: engine.RagStatus
-	(*DocumentList)(nil),          // 15: engine.DocumentList
-	(*DocumentInfo)(nil),          // 16: engine.DocumentInfo
-	(*TrainingRunRequest)(nil),    // 17: engine.TrainingRunRequest
-	(*TrainingRun)(nil),           // 18: engine.TrainingRun
-	(*CancelRequest)(nil),         // 19: engine.CancelRequest
-	(*TrainingRunList)(nil),       // 20: engine.TrainingRunList
-	(*ArtifactsRequest)(nil),      // 21: engine.ArtifactsRequest
-	(*Artifact)(nil),              // 22: engine.Artifact
-	(*ArtifactList)(nil),          // 23: engine.ArtifactList
-	(*LogsRequest)(nil),           // 24: engine.LogsRequest
-	(*TrainingLog)(nil),           // 25: engine.TrainingLog
-	(*MCPConnectionRequest)(nil),  // 26: engine.MCPConnectionRequest
-	(*MCPConnection)(nil),         // 27: engine.MCPConnection
-	(*DisconnectRequest)(nil),     // 28: engine.DisconnectRequest
-	(*ToolList)(nil),              // 29: engine.ToolList
-	(*Tool)(nil),                  // 30: engine.Tool
-	(*ToolParameter)(nil),         // 31: engine.ToolParameter
-	(*CallToolRequest)(nil),       // 32: engine.CallToolRequest
-	(*CallToolResponse)(nil),      // 33: engine.CallToolResponse
-	nil,                           // 34: engine.ModelInfo.MetadataEntry
-	nil,                           // 35: engine.LoadModelRequest.OptionsEntry
-	nil,                           // 36: engine.InferenceRequest.ParametersEntry
-	nil,                           // 37: engine.InferenceResponse.MetricsEntry
-	nil,                           // 38: engine.UpsertRequest.MetadataEntry
-	nil,                           // 39: engine.SearchRequest.FiltersEntry
-	nil,                           // 40: engine.SearchResult.MetadataEntry
-	nil,                           // 41: engine.TrainingRunRequest.ConfigEntry
-	nil,                           // 42: engine.TrainingLog.FieldsEntry
-	nil,                           // 43: engine.MCPConnectionRequest.AuthEntry
-	(*timestamppb.Timestamp)(nil), // 44: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),       // 45: google.protobuf.Struct
-	(*emptypb.Empty)(nil),         // 46: google.protobuf.Empty
+	(ContextLayer)(0),                     // 0: engine.ContextLayer
+	(*RuntimeStatus)(nil),                 // 1: engine.RuntimeStatus
+	(*SystemResources)(nil),               // 2: engine.SystemResources
+	(*ModelList)(nil),                     // 3: engine.ModelList
+	(*ModelInfo)(nil),                     // 4: engine.ModelInfo
+	(*LoadModelRequest)(nil),              // 5: engine.LoadModelRequest
+	(*UnloadModelRequest)(nil),            // 6: engine.UnloadModelRequest
+	(*InferenceRequest)(nil),              // 7: engine.InferenceRequest
+	(*InferenceResponse)(nil),             // 8: engine.InferenceResponse
+	(*UpsertRequest)(nil),                 // 9: engine.UpsertRequest
+	(*UpsertResponse)(nil),                // 10: engine.UpsertResponse
+	(*DeleteRequest)(nil),                 // 11: engine.DeleteRequest
+	(*SearchRequest)(nil),                 // 12: engine.SearchRequest
+	(*SearchResult)(nil),                  // 13: engine.SearchResult
+	(*SearchResponse)(nil),                // 14: engine.SearchResponse
+	(*ContextStatus)(nil),                 // 15: engine.ContextStatus
+	(*ContextResource)(nil),               // 16: engine.ContextResource
+	(*ContextResourceList)(nil),           // 17: engine.ContextResourceList
+	(*ContextUpsertResourceRequest)(nil),  // 18: engine.ContextUpsertResourceRequest
+	(*ContextUpsertResourceResponse)(nil), // 19: engine.ContextUpsertResourceResponse
+	(*ContextDeleteResourceRequest)(nil),  // 20: engine.ContextDeleteResourceRequest
+	(*ContextSearchRequest)(nil),          // 21: engine.ContextSearchRequest
+	(*ContextSearchResult)(nil),           // 22: engine.ContextSearchResult
+	(*ContextSearchResponse)(nil),         // 23: engine.ContextSearchResponse
+	(*ContextWorkspaceSyncRequest)(nil),   // 24: engine.ContextWorkspaceSyncRequest
+	(*ContextWorkspaceSyncResponse)(nil),  // 25: engine.ContextWorkspaceSyncResponse
+	(*ContextFileListRequest)(nil),        // 26: engine.ContextFileListRequest
+	(*ContextFileEntry)(nil),              // 27: engine.ContextFileEntry
+	(*ContextFileListResponse)(nil),       // 28: engine.ContextFileListResponse
+	(*ContextFileReadRequest)(nil),        // 29: engine.ContextFileReadRequest
+	(*ContextFileReadResponse)(nil),       // 30: engine.ContextFileReadResponse
+	(*ContextFileWriteRequest)(nil),       // 31: engine.ContextFileWriteRequest
+	(*ContextFileWriteResponse)(nil),      // 32: engine.ContextFileWriteResponse
+	(*ContextFileDeleteRequest)(nil),      // 33: engine.ContextFileDeleteRequest
+	(*ContextFileDeleteResponse)(nil),     // 34: engine.ContextFileDeleteResponse
+	(*ContextFileMoveRequest)(nil),        // 35: engine.ContextFileMoveRequest
+	(*ContextFileMoveResponse)(nil),       // 36: engine.ContextFileMoveResponse
+	(*ContextSessionAppendRequest)(nil),   // 37: engine.ContextSessionAppendRequest
+	(*ContextSessionGetRequest)(nil),      // 38: engine.ContextSessionGetRequest
+	(*ContextSessionEntry)(nil),           // 39: engine.ContextSessionEntry
+	(*ContextSessionHistory)(nil),         // 40: engine.ContextSessionHistory
+	(*RagStatus)(nil),                     // 41: engine.RagStatus
+	(*DocumentList)(nil),                  // 42: engine.DocumentList
+	(*DocumentInfo)(nil),                  // 43: engine.DocumentInfo
+	(*TrainingRunRequest)(nil),            // 44: engine.TrainingRunRequest
+	(*TrainingRun)(nil),                   // 45: engine.TrainingRun
+	(*CancelRequest)(nil),                 // 46: engine.CancelRequest
+	(*TrainingRunList)(nil),               // 47: engine.TrainingRunList
+	(*ArtifactsRequest)(nil),              // 48: engine.ArtifactsRequest
+	(*Artifact)(nil),                      // 49: engine.Artifact
+	(*ArtifactList)(nil),                  // 50: engine.ArtifactList
+	(*LogsRequest)(nil),                   // 51: engine.LogsRequest
+	(*TrainingLog)(nil),                   // 52: engine.TrainingLog
+	(*MCPConnectionRequest)(nil),          // 53: engine.MCPConnectionRequest
+	(*MCPConnection)(nil),                 // 54: engine.MCPConnection
+	(*DisconnectRequest)(nil),             // 55: engine.DisconnectRequest
+	(*ToolList)(nil),                      // 56: engine.ToolList
+	(*Tool)(nil),                          // 57: engine.Tool
+	(*ToolParameter)(nil),                 // 58: engine.ToolParameter
+	(*CallToolRequest)(nil),               // 59: engine.CallToolRequest
+	(*CallToolResponse)(nil),              // 60: engine.CallToolResponse
+	nil,                                   // 61: engine.ModelInfo.MetadataEntry
+	nil,                                   // 62: engine.LoadModelRequest.OptionsEntry
+	nil,                                   // 63: engine.InferenceRequest.ParametersEntry
+	nil,                                   // 64: engine.InferenceResponse.MetricsEntry
+	nil,                                   // 65: engine.UpsertRequest.MetadataEntry
+	nil,                                   // 66: engine.SearchRequest.FiltersEntry
+	nil,                                   // 67: engine.SearchResult.MetadataEntry
+	nil,                                   // 68: engine.ContextResource.MetadataEntry
+	nil,                                   // 69: engine.ContextUpsertResourceRequest.MetadataEntry
+	nil,                                   // 70: engine.ContextSearchRequest.FiltersEntry
+	nil,                                   // 71: engine.ContextSearchResult.MetadataEntry
+	nil,                                   // 72: engine.ContextSessionAppendRequest.MetadataEntry
+	nil,                                   // 73: engine.ContextSessionEntry.MetadataEntry
+	nil,                                   // 74: engine.TrainingRunRequest.ConfigEntry
+	nil,                                   // 75: engine.TrainingLog.FieldsEntry
+	nil,                                   // 76: engine.MCPConnectionRequest.AuthEntry
+	(*timestamppb.Timestamp)(nil),         // 77: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),               // 78: google.protobuf.Struct
+	(*emptypb.Empty)(nil),                 // 79: google.protobuf.Empty
 }
 var file_engine_proto_depIdxs = []int32{
-	3,  // 0: engine.RuntimeStatus.loaded_models:type_name -> engine.ModelInfo
-	1,  // 1: engine.RuntimeStatus.resources:type_name -> engine.SystemResources
-	3,  // 2: engine.ModelList.models:type_name -> engine.ModelInfo
-	34, // 3: engine.ModelInfo.metadata:type_name -> engine.ModelInfo.MetadataEntry
-	35, // 4: engine.LoadModelRequest.options:type_name -> engine.LoadModelRequest.OptionsEntry
-	36, // 5: engine.InferenceRequest.parameters:type_name -> engine.InferenceRequest.ParametersEntry
-	37, // 6: engine.InferenceResponse.metrics:type_name -> engine.InferenceResponse.MetricsEntry
-	38, // 7: engine.UpsertRequest.metadata:type_name -> engine.UpsertRequest.MetadataEntry
-	39, // 8: engine.SearchRequest.filters:type_name -> engine.SearchRequest.FiltersEntry
-	40, // 9: engine.SearchResult.metadata:type_name -> engine.SearchResult.MetadataEntry
-	12, // 10: engine.SearchResponse.results:type_name -> engine.SearchResult
-	16, // 11: engine.DocumentList.documents:type_name -> engine.DocumentInfo
-	44, // 12: engine.DocumentInfo.created_at:type_name -> google.protobuf.Timestamp
-	44, // 13: engine.DocumentInfo.updated_at:type_name -> google.protobuf.Timestamp
-	41, // 14: engine.TrainingRunRequest.config:type_name -> engine.TrainingRunRequest.ConfigEntry
-	44, // 15: engine.TrainingRun.started_at:type_name -> google.protobuf.Timestamp
-	44, // 16: engine.TrainingRun.completed_at:type_name -> google.protobuf.Timestamp
-	18, // 17: engine.TrainingRunList.runs:type_name -> engine.TrainingRun
-	44, // 18: engine.Artifact.created_at:type_name -> google.protobuf.Timestamp
-	22, // 19: engine.ArtifactList.artifacts:type_name -> engine.Artifact
-	44, // 20: engine.TrainingLog.timestamp:type_name -> google.protobuf.Timestamp
-	42, // 21: engine.TrainingLog.fields:type_name -> engine.TrainingLog.FieldsEntry
-	43, // 22: engine.MCPConnectionRequest.auth:type_name -> engine.MCPConnectionRequest.AuthEntry
-	30, // 23: engine.ToolList.tools:type_name -> engine.Tool
-	31, // 24: engine.Tool.parameters:type_name -> engine.ToolParameter
-	45, // 25: engine.CallToolRequest.arguments:type_name -> google.protobuf.Struct
-	45, // 26: engine.CallToolResponse.result:type_name -> google.protobuf.Struct
-	46, // 27: engine.Runtime.GetStatus:input_type -> google.protobuf.Empty
-	46, // 28: engine.Runtime.ListModels:input_type -> google.protobuf.Empty
-	4,  // 29: engine.Runtime.LoadModel:input_type -> engine.LoadModelRequest
-	5,  // 30: engine.Runtime.UnloadModel:input_type -> engine.UnloadModelRequest
-	6,  // 31: engine.Runtime.StreamInference:input_type -> engine.InferenceRequest
-	8,  // 32: engine.Rag.UpsertDocument:input_type -> engine.UpsertRequest
-	10, // 33: engine.Rag.DeleteDocument:input_type -> engine.DeleteRequest
-	11, // 34: engine.Rag.Search:input_type -> engine.SearchRequest
-	46, // 35: engine.Rag.GetStatus:input_type -> google.protobuf.Empty
-	46, // 36: engine.Rag.ListDocuments:input_type -> google.protobuf.Empty
-	17, // 37: engine.Training.StartRun:input_type -> engine.TrainingRunRequest
-	19, // 38: engine.Training.CancelRun:input_type -> engine.CancelRequest
-	46, // 39: engine.Training.ListRuns:input_type -> google.protobuf.Empty
-	21, // 40: engine.Training.ListArtifacts:input_type -> engine.ArtifactsRequest
-	24, // 41: engine.Training.StreamLogs:input_type -> engine.LogsRequest
-	26, // 42: engine.MCP.Connect:input_type -> engine.MCPConnectionRequest
-	28, // 43: engine.MCP.Disconnect:input_type -> engine.DisconnectRequest
-	26, // 44: engine.MCP.ListTools:input_type -> engine.MCPConnectionRequest
-	32, // 45: engine.MCP.CallTool:input_type -> engine.CallToolRequest
-	0,  // 46: engine.Runtime.GetStatus:output_type -> engine.RuntimeStatus
-	2,  // 47: engine.Runtime.ListModels:output_type -> engine.ModelList
-	3,  // 48: engine.Runtime.LoadModel:output_type -> engine.ModelInfo
-	46, // 49: engine.Runtime.UnloadModel:output_type -> google.protobuf.Empty
-	7,  // 50: engine.Runtime.StreamInference:output_type -> engine.InferenceResponse
-	9,  // 51: engine.Rag.UpsertDocument:output_type -> engine.UpsertResponse
-	46, // 52: engine.Rag.DeleteDocument:output_type -> google.protobuf.Empty
-	13, // 53: engine.Rag.Search:output_type -> engine.SearchResponse
-	14, // 54: engine.Rag.GetStatus:output_type -> engine.RagStatus
-	15, // 55: engine.Rag.ListDocuments:output_type -> engine.DocumentList
-	18, // 56: engine.Training.StartRun:output_type -> engine.TrainingRun
-	46, // 57: engine.Training.CancelRun:output_type -> google.protobuf.Empty
-	20, // 58: engine.Training.ListRuns:output_type -> engine.TrainingRunList
-	23, // 59: engine.Training.ListArtifacts:output_type -> engine.ArtifactList
-	25, // 60: engine.Training.StreamLogs:output_type -> engine.TrainingLog
-	27, // 61: engine.MCP.Connect:output_type -> engine.MCPConnection
-	46, // 62: engine.MCP.Disconnect:output_type -> google.protobuf.Empty
-	29, // 63: engine.MCP.ListTools:output_type -> engine.ToolList
-	33, // 64: engine.MCP.CallTool:output_type -> engine.CallToolResponse
-	46, // [46:65] is the sub-list for method output_type
-	27, // [27:46] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	4,  // 0: engine.RuntimeStatus.loaded_models:type_name -> engine.ModelInfo
+	2,  // 1: engine.RuntimeStatus.resources:type_name -> engine.SystemResources
+	4,  // 2: engine.ModelList.models:type_name -> engine.ModelInfo
+	61, // 3: engine.ModelInfo.metadata:type_name -> engine.ModelInfo.MetadataEntry
+	62, // 4: engine.LoadModelRequest.options:type_name -> engine.LoadModelRequest.OptionsEntry
+	63, // 5: engine.InferenceRequest.parameters:type_name -> engine.InferenceRequest.ParametersEntry
+	64, // 6: engine.InferenceResponse.metrics:type_name -> engine.InferenceResponse.MetricsEntry
+	65, // 7: engine.UpsertRequest.metadata:type_name -> engine.UpsertRequest.MetadataEntry
+	66, // 8: engine.SearchRequest.filters:type_name -> engine.SearchRequest.FiltersEntry
+	67, // 9: engine.SearchResult.metadata:type_name -> engine.SearchResult.MetadataEntry
+	13, // 10: engine.SearchResponse.results:type_name -> engine.SearchResult
+	68, // 11: engine.ContextResource.metadata:type_name -> engine.ContextResource.MetadataEntry
+	16, // 12: engine.ContextResourceList.resources:type_name -> engine.ContextResource
+	0,  // 13: engine.ContextUpsertResourceRequest.layer:type_name -> engine.ContextLayer
+	69, // 14: engine.ContextUpsertResourceRequest.metadata:type_name -> engine.ContextUpsertResourceRequest.MetadataEntry
+	16, // 15: engine.ContextUpsertResourceResponse.resource:type_name -> engine.ContextResource
+	70, // 16: engine.ContextSearchRequest.filters:type_name -> engine.ContextSearchRequest.FiltersEntry
+	0,  // 17: engine.ContextSearchRequest.layer:type_name -> engine.ContextLayer
+	71, // 18: engine.ContextSearchResult.metadata:type_name -> engine.ContextSearchResult.MetadataEntry
+	22, // 19: engine.ContextSearchResponse.results:type_name -> engine.ContextSearchResult
+	27, // 20: engine.ContextFileListResponse.entries:type_name -> engine.ContextFileEntry
+	72, // 21: engine.ContextSessionAppendRequest.metadata:type_name -> engine.ContextSessionAppendRequest.MetadataEntry
+	73, // 22: engine.ContextSessionEntry.metadata:type_name -> engine.ContextSessionEntry.MetadataEntry
+	77, // 23: engine.ContextSessionEntry.created_at:type_name -> google.protobuf.Timestamp
+	39, // 24: engine.ContextSessionHistory.entries:type_name -> engine.ContextSessionEntry
+	43, // 25: engine.DocumentList.documents:type_name -> engine.DocumentInfo
+	77, // 26: engine.DocumentInfo.created_at:type_name -> google.protobuf.Timestamp
+	77, // 27: engine.DocumentInfo.updated_at:type_name -> google.protobuf.Timestamp
+	74, // 28: engine.TrainingRunRequest.config:type_name -> engine.TrainingRunRequest.ConfigEntry
+	77, // 29: engine.TrainingRun.started_at:type_name -> google.protobuf.Timestamp
+	77, // 30: engine.TrainingRun.completed_at:type_name -> google.protobuf.Timestamp
+	45, // 31: engine.TrainingRunList.runs:type_name -> engine.TrainingRun
+	77, // 32: engine.Artifact.created_at:type_name -> google.protobuf.Timestamp
+	49, // 33: engine.ArtifactList.artifacts:type_name -> engine.Artifact
+	77, // 34: engine.TrainingLog.timestamp:type_name -> google.protobuf.Timestamp
+	75, // 35: engine.TrainingLog.fields:type_name -> engine.TrainingLog.FieldsEntry
+	76, // 36: engine.MCPConnectionRequest.auth:type_name -> engine.MCPConnectionRequest.AuthEntry
+	57, // 37: engine.ToolList.tools:type_name -> engine.Tool
+	58, // 38: engine.Tool.parameters:type_name -> engine.ToolParameter
+	78, // 39: engine.CallToolRequest.arguments:type_name -> google.protobuf.Struct
+	78, // 40: engine.CallToolResponse.result:type_name -> google.protobuf.Struct
+	79, // 41: engine.Runtime.GetStatus:input_type -> google.protobuf.Empty
+	79, // 42: engine.Runtime.ListModels:input_type -> google.protobuf.Empty
+	5,  // 43: engine.Runtime.LoadModel:input_type -> engine.LoadModelRequest
+	6,  // 44: engine.Runtime.UnloadModel:input_type -> engine.UnloadModelRequest
+	7,  // 45: engine.Runtime.StreamInference:input_type -> engine.InferenceRequest
+	9,  // 46: engine.Rag.UpsertDocument:input_type -> engine.UpsertRequest
+	11, // 47: engine.Rag.DeleteDocument:input_type -> engine.DeleteRequest
+	12, // 48: engine.Rag.Search:input_type -> engine.SearchRequest
+	79, // 49: engine.Rag.GetRagStatus:input_type -> google.protobuf.Empty
+	79, // 50: engine.Rag.ListDocuments:input_type -> google.protobuf.Empty
+	79, // 51: engine.Context.GetContextStatus:input_type -> google.protobuf.Empty
+	79, // 52: engine.Context.ListResources:input_type -> google.protobuf.Empty
+	18, // 53: engine.Context.UpsertResource:input_type -> engine.ContextUpsertResourceRequest
+	20, // 54: engine.Context.DeleteResource:input_type -> engine.ContextDeleteResourceRequest
+	21, // 55: engine.Context.SearchContext:input_type -> engine.ContextSearchRequest
+	24, // 56: engine.Context.SyncWorkspace:input_type -> engine.ContextWorkspaceSyncRequest
+	26, // 57: engine.Context.ListFiles:input_type -> engine.ContextFileListRequest
+	29, // 58: engine.Context.ReadFile:input_type -> engine.ContextFileReadRequest
+	31, // 59: engine.Context.WriteFile:input_type -> engine.ContextFileWriteRequest
+	33, // 60: engine.Context.DeleteFile:input_type -> engine.ContextFileDeleteRequest
+	35, // 61: engine.Context.MoveFile:input_type -> engine.ContextFileMoveRequest
+	37, // 62: engine.Context.AppendSession:input_type -> engine.ContextSessionAppendRequest
+	38, // 63: engine.Context.GetSession:input_type -> engine.ContextSessionGetRequest
+	44, // 64: engine.Training.StartRun:input_type -> engine.TrainingRunRequest
+	46, // 65: engine.Training.CancelRun:input_type -> engine.CancelRequest
+	79, // 66: engine.Training.ListRuns:input_type -> google.protobuf.Empty
+	48, // 67: engine.Training.ListArtifacts:input_type -> engine.ArtifactsRequest
+	51, // 68: engine.Training.StreamLogs:input_type -> engine.LogsRequest
+	53, // 69: engine.MCP.Connect:input_type -> engine.MCPConnectionRequest
+	55, // 70: engine.MCP.Disconnect:input_type -> engine.DisconnectRequest
+	53, // 71: engine.MCP.ListTools:input_type -> engine.MCPConnectionRequest
+	59, // 72: engine.MCP.CallTool:input_type -> engine.CallToolRequest
+	1,  // 73: engine.Runtime.GetStatus:output_type -> engine.RuntimeStatus
+	3,  // 74: engine.Runtime.ListModels:output_type -> engine.ModelList
+	4,  // 75: engine.Runtime.LoadModel:output_type -> engine.ModelInfo
+	79, // 76: engine.Runtime.UnloadModel:output_type -> google.protobuf.Empty
+	8,  // 77: engine.Runtime.StreamInference:output_type -> engine.InferenceResponse
+	10, // 78: engine.Rag.UpsertDocument:output_type -> engine.UpsertResponse
+	79, // 79: engine.Rag.DeleteDocument:output_type -> google.protobuf.Empty
+	14, // 80: engine.Rag.Search:output_type -> engine.SearchResponse
+	41, // 81: engine.Rag.GetRagStatus:output_type -> engine.RagStatus
+	42, // 82: engine.Rag.ListDocuments:output_type -> engine.DocumentList
+	15, // 83: engine.Context.GetContextStatus:output_type -> engine.ContextStatus
+	17, // 84: engine.Context.ListResources:output_type -> engine.ContextResourceList
+	19, // 85: engine.Context.UpsertResource:output_type -> engine.ContextUpsertResourceResponse
+	79, // 86: engine.Context.DeleteResource:output_type -> google.protobuf.Empty
+	23, // 87: engine.Context.SearchContext:output_type -> engine.ContextSearchResponse
+	25, // 88: engine.Context.SyncWorkspace:output_type -> engine.ContextWorkspaceSyncResponse
+	28, // 89: engine.Context.ListFiles:output_type -> engine.ContextFileListResponse
+	30, // 90: engine.Context.ReadFile:output_type -> engine.ContextFileReadResponse
+	32, // 91: engine.Context.WriteFile:output_type -> engine.ContextFileWriteResponse
+	34, // 92: engine.Context.DeleteFile:output_type -> engine.ContextFileDeleteResponse
+	36, // 93: engine.Context.MoveFile:output_type -> engine.ContextFileMoveResponse
+	40, // 94: engine.Context.AppendSession:output_type -> engine.ContextSessionHistory
+	40, // 95: engine.Context.GetSession:output_type -> engine.ContextSessionHistory
+	45, // 96: engine.Training.StartRun:output_type -> engine.TrainingRun
+	79, // 97: engine.Training.CancelRun:output_type -> google.protobuf.Empty
+	47, // 98: engine.Training.ListRuns:output_type -> engine.TrainingRunList
+	50, // 99: engine.Training.ListArtifacts:output_type -> engine.ArtifactList
+	52, // 100: engine.Training.StreamLogs:output_type -> engine.TrainingLog
+	54, // 101: engine.MCP.Connect:output_type -> engine.MCPConnection
+	79, // 102: engine.MCP.Disconnect:output_type -> google.protobuf.Empty
+	56, // 103: engine.MCP.ListTools:output_type -> engine.ToolList
+	60, // 104: engine.MCP.CallTool:output_type -> engine.CallToolResponse
+	73, // [73:105] is the sub-list for method output_type
+	41, // [41:73] is the sub-list for method input_type
+	41, // [41:41] is the sub-list for extension type_name
+	41, // [41:41] is the sub-list for extension extendee
+	0,  // [0:41] is the sub-list for field type_name
 }
 
 func init() { file_engine_proto_init() }
@@ -2350,18 +4279,25 @@ func file_engine_proto_init() {
 	if File_engine_proto != nil {
 		return
 	}
+	file_engine_proto_msgTypes[20].OneofWrappers = []any{}
+	file_engine_proto_msgTypes[24].OneofWrappers = []any{}
+	file_engine_proto_msgTypes[26].OneofWrappers = []any{}
+	file_engine_proto_msgTypes[30].OneofWrappers = []any{}
+	file_engine_proto_msgTypes[32].OneofWrappers = []any{}
+	file_engine_proto_msgTypes[34].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_engine_proto_rawDesc), len(file_engine_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   44,
+			NumEnums:      1,
+			NumMessages:   76,
 			NumExtensions: 0,
-			NumServices:   4,
+			NumServices:   5,
 		},
 		GoTypes:           file_engine_proto_goTypes,
 		DependencyIndexes: file_engine_proto_depIdxs,
+		EnumInfos:         file_engine_proto_enumTypes,
 		MessageInfos:      file_engine_proto_msgTypes,
 	}.Build()
 	File_engine_proto = out.File

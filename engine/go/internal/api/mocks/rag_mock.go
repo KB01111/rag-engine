@@ -14,8 +14,8 @@ type MockRagServer struct {
 
 func (m *MockRagServer) UpsertDocument(ctx context.Context, req *pb.UpsertRequest) (*pb.UpsertResponse, error) {
 	args := m.Called(ctx, req)
-    resp, _ := args.Get(0).(*pb.UpsertResponse)
-    return resp, args.Error(1)
+	resp, _ := args.Get(0).(*pb.UpsertResponse)
+	return resp, args.Error(1)
 }
 
 func (m *MockRagServer) DeleteDocument(ctx context.Context, req *pb.DeleteRequest) (*emptypb.Empty, error) {
@@ -29,7 +29,6 @@ func (m *MockRagServer) Search(ctx context.Context, req *pb.SearchRequest) (*pb.
 }
 
 func (m *MockRagServer) GetStatus(ctx context.Context, req *emptypb.Empty) (*pb.RagStatus, error) {
-    args := m.Called(ctx, req)
 	args := m.Called(ctx)
 	return args.Get(0).(*pb.RagStatus), args.Error(1)
 }
