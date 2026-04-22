@@ -28,7 +28,11 @@ pub struct TrainingEngine {
 }
 
 impl TrainingEngine {
-    pub fn new(store: EngineStore, working_dir: impl Into<PathBuf>, backend: impl Into<String>) -> Self {
+    pub fn new(
+        store: EngineStore,
+        working_dir: impl Into<PathBuf>,
+        backend: impl Into<String>,
+    ) -> Self {
         Self {
             store,
             working_dir: working_dir.into(),

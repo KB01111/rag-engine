@@ -7,6 +7,8 @@ members = [
     "crates/runtime_engine",
     "crates/training_engine",
     "crates/ai_engine_daemon",
+    "crates/context_engine",
+    "crates/context_server",
 ]
 resolver = "2"
 

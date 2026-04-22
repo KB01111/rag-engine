@@ -34,6 +34,7 @@ func main() {
 
 	runtimeClient := pb.NewRuntimeClient(conn)
 	ragClient := pb.NewRagClient(conn)
+	contextClient := pb.NewContextClient(conn)
 	trainingClient := pb.NewTrainingClient(conn)
 	mcpClient := pb.NewMCPClient(conn)
 
@@ -89,6 +90,28 @@ func main() {
 		fmt.Printf("RAG Status - Docs: %d, Chunks: %d\n", ragStatus.DocumentCount, ragStatus.ChunkCount)
 	}
 
+	// Context
+	fmt.Println("\n--- Context ---")
+	contextStatus, err := contextClient.GetContextStatus(ctx, &emptypb.Empty{})
+	if err != nil {
+		log.Printf("GetContextStatus error: %v", err)
+	} else {
+		fmt.Printf("Context ready: %v, docs: %d, chunks: %d\n", contextStatus.Ready, contextStatus.DocumentCount, contextStatus.ChunkCount)
+	}
+
+	contextSearch, err := contextClient.SearchContext(ctx, &pb.ContextSearchRequest{
+		Query:    "artificial intelligence",
+		ScopeUri: "viking://resources/",
+		TopK:     3,
+		Layer:    pb.ContextLayer_CONTEXT_LAYER_L2,
+		Rerank:   boolPtr(true),
+	})
+	if err != nil {
+		log.Printf("Context Search error: %v", err)
+	} else {
+		fmt.Printf("Context results: %d, time: %.2fms\n", len(contextSearch.Results), contextSearch.QueryTimeMs)
+	}
+
 	// Training
 	fmt.Println("\n--- Training ---")
 	run, err := trainingClient.StartRun(ctx, &pb.TrainingRunRequest{
@@ -142,4 +165,8 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }

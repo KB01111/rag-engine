@@ -13,7 +13,11 @@ pub struct RuntimeEngine {
 }
 
 impl RuntimeEngine {
-    pub fn new(store: EngineStore, models_path: impl Into<PathBuf>, backend: impl Into<String>) -> Self {
+    pub fn new(
+        store: EngineStore,
+        models_path: impl Into<PathBuf>,
+        backend: impl Into<String>,
+    ) -> Self {
         Self {
             store,
             models_path: models_path.into(),
@@ -56,7 +60,11 @@ impl RuntimeEngine {
     pub fn infer_tokens(&self, prompt: &str) -> Vec<String> {
         let trimmed = prompt.trim();
         if trimmed.is_empty() {
-            return vec!["No".to_string(), "prompt".to_string(), "provided.".to_string()];
+            return vec![
+                "No".to_string(),
+                "prompt".to_string(),
+                "provided.".to_string(),
+            ];
         }
 
         let tokens: Vec<String> = trimmed.split_whitespace().map(String::from).collect();

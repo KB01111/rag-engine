@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ai-engine/go/internal/config"
+	contextsvc "github.com/ai-engine/go/internal/contextsvc"
 	"github.com/ai-engine/go/internal/daemon"
 	"github.com/ai-engine/go/internal/mcp"
 	"github.com/ai-engine/go/internal/rag"
@@ -26,6 +27,7 @@ type Supervisor struct {
 	cancel  context.CancelFunc
 	config  *config.Config
 
+	Context  *contextsvc.Manager
 	Runtime  runtime.Service
 	RAG      rag.Service
 	Training training.Service
@@ -39,10 +41,22 @@ type Supervisor struct {
 
 func NewSupervisor(cfg *config.Config) *Supervisor {
 	ctx, cancel := context.WithCancel(context.Background())
+	contextManager := contextsvc.NewManager(contextsvc.Config{
+		Enabled:          cfg.Context.Enabled,
+		BaseURL:          cfg.Context.ServiceURL,
+		BinaryPath:       cfg.Context.BinaryPath,
+		DataDir:          cfg.Context.DataDir,
+		AutoStart:        cfg.Context.AutoStart,
+		StartupTimeout:   cfg.Context.StartupTimeout,
+		ManagedRoots:     cfg.Context.ManagedRoots,
+		OpenVikingURL:    cfg.Context.OpenViking.URL,
+		OpenVikingAPIKey: cfg.Context.OpenViking.APIKey,
+	})
 	sup := &Supervisor{
-		ctx:    ctx,
-		cancel: cancel,
-		config: cfg,
+		ctx:     ctx,
+		cancel:  cancel,
+		config:  cfg,
+		Context: contextManager,
 	}
 	sup.initLocalServicesLocked()
 	return sup
@@ -59,10 +73,19 @@ func (s *Supervisor) Start() error {
 	if err := s.config.EnsureDirs(); err != nil {
 		return fmt.Errorf("failed to ensure directories: %w", err)
 	}
+	if err := s.Context.Start(s.ctx); err != nil {
+		if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
+			log.Printf("failed to stop context backend after startup error: %v", stopErr)
+		}
+		return fmt.Errorf("failed to start context backend: %w", err)
+	}
 
 	if s.config.Daemon.Command != "" {
 		if err := s.launchDaemonLocked(); err != nil {
 			s.initLocalServicesLocked()
+			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
+				log.Printf("failed to stop context backend after daemon startup error: %v", stopErr)
+			}
 			return fmt.Errorf("failed to launch daemon: %w", err)
 		}
 	} else {
@@ -92,6 +115,9 @@ func (s *Supervisor) Stop() error {
 		s.daemonClient = nil
 	}
 	s.mu.Unlock()
+	if err := s.Context.Stop(context.Background()); err != nil {
+		log.Printf("failed to stop context backend: %v", err)
+	}
 	s.wg.Wait()
 
 	s.mu.Lock()
@@ -124,28 +150,53 @@ func (s *Supervisor) handleSignals() {
 
 func (s *Supervisor) Health() map[string]interface{} {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	running := s.running
+	contextManager := s.Context
+	runtimeSvc := s.Runtime
+	ragSvc := s.RAG
+	trainingSvc := s.Training
+	mcpSvc := s.MCP
+	s.mu.RUnlock()
+
+	contextHealth := map[string]interface{}{
+		"enabled": false,
+		"ready":   false,
+	}
+	if contextManager != nil {
+		contextHealth["enabled"] = contextManager.Enabled()
+	}
+	if contextManager != nil && contextManager.Enabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if health, err := contextManager.Readiness(ctx); err == nil {
+			contextHealth["ready"] = health.Ready
+			contextHealth["status"] = health.Status
+		} else {
+			contextHealth["error"] = err.Error()
+		}
+	}
 
 	return map[string]interface{}{
-		"running": s.running,
+		"running": running,
+		"context": contextHealth,
 		"runtime": map[string]interface{}{
-			"loaded_models": s.Runtime.LoadedModelCount(),
+			"loaded_models": loadedModelCount(runtimeSvc),
 		},
 		"rag": map[string]interface{}{
-			"documents": s.RAG.DocumentCount(),
+			"documents": documentCount(ragSvc),
 		},
 		"training": map[string]interface{}{
-			"active_runs": s.Training.ActiveRunCount(),
+			"active_runs": activeRunCount(trainingSvc),
 		},
 		"mcp": map[string]interface{}{
-			"connections": s.MCP.ConnectionCount(),
+			"connections": connectionCount(mcpSvc),
 		},
 	}
 }
 
 func (s *Supervisor) initLocalServicesLocked() {
 	s.Runtime = runtime.NewManager(s.config)
-	s.RAG = rag.NewManager(s.config)
+	s.RAG = rag.NewManager(s.config, s.Context)
 	s.Training = training.NewManager(s.config)
 	s.MCP = mcp.NewManager(s.config)
 }
@@ -178,7 +229,7 @@ func (s *Supervisor) launchDaemonLocked() error {
 	s.daemonClient = client
 	s.daemonCmd = cmd
 	s.Runtime = client
-	s.RAG = client
+	s.RAG = rag.NewManager(s.config, s.Context)
 	s.Training = client
 	s.MCP = client
 
@@ -271,4 +322,32 @@ func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {
 		s.mu.Unlock()
 		return
 	}
+}
+
+func loadedModelCount(svc runtime.Service) int {
+	if svc == nil {
+		return 0
+	}
+	return svc.LoadedModelCount()
+}
+
+func documentCount(svc rag.Service) int64 {
+	if svc == nil {
+		return 0
+	}
+	return svc.DocumentCount()
+}
+
+func activeRunCount(svc training.Service) int {
+	if svc == nil {
+		return 0
+	}
+	return svc.ActiveRunCount()
+}
+
+func connectionCount(svc mcp.Service) int {
+	if svc == nil {
+		return 0
+	}
+	return svc.ConnectionCount()
 }

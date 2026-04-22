@@ -8,6 +8,7 @@ use chunking::ChunkingConfig;
 use embedding::{create_default_engine, EmbeddingEngine};
 use prost_types::{value, Struct, Timestamp, Value};
 use runtime_engine::RuntimeEngine;
+use serde::Deserialize;
 use storage::{
     ChunkSearchQuery, DocumentRecord, EngineStore, MCPConnectionRecord, ModelRecord, SearchMode,
     VectorRecord,
@@ -30,11 +31,13 @@ use engine::training_server::{Training, TrainingServer};
 use engine::{
     Artifact, ArtifactList, CallToolRequest, CallToolResponse, CancelRequest, DeleteRequest,
     DisconnectRequest, DocumentInfo, DocumentList, InferenceRequest, InferenceResponse,
-    LoadModelRequest, LogsRequest, McpConnection, McpConnectionRequest, ModelInfo,
-    ModelList, RagStatus, RuntimeStatus, SearchRequest, SearchResponse, SearchResult,
-    SystemResources, Tool, ToolList, ToolParameter, TrainingLog, TrainingRun, TrainingRunList,
-    TrainingRunRequest, UpsertRequest, UpsertResponse,
+    LoadModelRequest, LogsRequest, McpConnection, McpConnectionRequest, ModelInfo, ModelList,
+    RagStatus, RuntimeStatus, SearchRequest, SearchResponse, SearchResult, SystemResources, Tool,
+    ToolList, ToolParameter, TrainingLog, TrainingRun, TrainingRunList, TrainingRunRequest,
+    UpsertRequest, UpsertResponse,
 };
+
+const MAX_TOP_K: i64 = 1000;
 
 type InferenceStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<InferenceResponse, Status>> + Send>>;
@@ -56,15 +59,33 @@ struct EngineService {
     state: AppState,
 }
 
+#[derive(Debug, Deserialize)]
+struct StoredTool {
+    name: String,
+    description: String,
+    #[serde(default)]
+    parameters: Vec<StoredToolParameter>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredToolParameter {
+    name: String,
+    #[serde(rename = "type")]
+    parameter_type: String,
+    required: bool,
+    description: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let addr = std::env::var("AI_ENGINE_DAEMON_ADDR").unwrap_or_else(|_| "127.0.0.1:50061".to_string());
+    let addr =
+        std::env::var("AI_ENGINE_DAEMON_ADDR").unwrap_or_else(|_| "127.0.0.1:50061".to_string());
     let lancedb_uri =
         std::env::var("AI_ENGINE_LANCEDB_URI").unwrap_or_else(|_| ".ai-engine/lancedb".to_string());
     let models_path =
         std::env::var("AI_ENGINE_MODELS_PATH").unwrap_or_else(|_| ".ai-engine/models".to_string());
-    let training_dir =
-        std::env::var("AI_ENGINE_TRAINING_DIR").unwrap_or_else(|_| ".ai-engine/training".to_string());
+    let training_dir = std::env::var("AI_ENGINE_TRAINING_DIR")
+        .unwrap_or_else(|_| ".ai-engine/training".to_string());
     let backend = "llama.cpp".to_string();
 
     let store = EngineStore::new(lancedb_uri);
@@ -85,11 +106,15 @@ async fn main() -> Result<()> {
     health_reporter
         .set_serving::<RuntimeServer<EngineService>>()
         .await;
-    health_reporter.set_serving::<RagServer<EngineService>>().await;
+    health_reporter
+        .set_serving::<RagServer<EngineService>>()
+        .await;
     health_reporter
         .set_serving::<TrainingServer<EngineService>>()
         .await;
-    health_reporter.set_serving::<McpServer<EngineService>>().await;
+    health_reporter
+        .set_serving::<McpServer<EngineService>>()
+        .await;
 
     Server::builder()
         .add_service(health_service)
@@ -108,10 +133,7 @@ async fn main() -> Result<()> {
 impl Runtime for EngineService {
     type StreamInferenceStream = InferenceStream;
 
-    async fn get_status(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<RuntimeStatus>, Status> {
+    async fn get_status(&self, _request: Request<()>) -> Result<Response<RuntimeStatus>, Status> {
         let models = self
             .state
             .runtime
@@ -136,10 +158,7 @@ impl Runtime for EngineService {
         }))
     }
 
-    async fn list_models(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<ModelList>, Status> {
+    async fn list_models(&self, _request: Request<()>) -> Result<Response<ModelList>, Status> {
         let models = self
             .state
             .runtime
@@ -309,7 +328,11 @@ impl Rag for EngineService {
             .embedding
             .embed_single(&request.query)
             .map_err(internal_status)?;
-        let top_k = if request.top_k <= 0 { 10 } else { request.top_k as usize };
+        let top_k = if request.top_k <= 0 {
+            10
+        } else {
+            std::cmp::min(request.top_k, MAX_TOP_K) as usize
+        };
 
         let results = self
             .state
@@ -338,12 +361,19 @@ impl Rag for EngineService {
         }))
     }
 
-    async fn get_rag_status(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<RagStatus>, Status> {
-        let documents = self.state.store.list_documents().await.map_err(internal_status)?;
-        let chunks = self.state.store.list_chunks().await.map_err(internal_status)?;
+    async fn get_rag_status(&self, _request: Request<()>) -> Result<Response<RagStatus>, Status> {
+        let documents = self
+            .state
+            .store
+            .list_documents()
+            .await
+            .map_err(internal_status)?;
+        let chunks = self
+            .state
+            .store
+            .list_chunks()
+            .await
+            .map_err(internal_status)?;
         let index_size_bytes = chunks
             .iter()
             .map(|chunk| (chunk.vector.len() * std::mem::size_of::<f32>()) as i64)
@@ -361,8 +391,18 @@ impl Rag for EngineService {
         &self,
         _request: Request<()>,
     ) -> Result<Response<DocumentList>, Status> {
-        let documents = self.state.store.list_documents().await.map_err(internal_status)?;
-        let chunks = self.state.store.list_chunks().await.map_err(internal_status)?;
+        let documents = self
+            .state
+            .store
+            .list_documents()
+            .await
+            .map_err(internal_status)?;
+        let chunks = self
+            .state
+            .store
+            .list_chunks()
+            .await
+            .map_err(internal_status)?;
 
         let infos = documents
             .into_iter()
@@ -397,16 +437,18 @@ impl Training for EngineService {
         let run = self
             .state
             .training
-            .start_run(&request.name, &request.model_id, &request.dataset_path, &config_json)
+            .start_run(
+                &request.name,
+                &request.model_id,
+                &request.dataset_path,
+                &config_json,
+            )
             .await
             .map_err(internal_status)?;
         Ok(Response::new(training_run(run)))
     }
 
-    async fn cancel_run(
-        &self,
-        request: Request<CancelRequest>,
-    ) -> Result<Response<()>, Status> {
+    async fn cancel_run(&self, request: Request<CancelRequest>) -> Result<Response<()>, Status> {
         self.state
             .training
             .cancel_run(&request.into_inner().run_id)
@@ -415,10 +457,7 @@ impl Training for EngineService {
         Ok(Response::new(()))
     }
 
-    async fn list_runs(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<TrainingRunList>, Status> {
+    async fn list_runs(&self, _request: Request<()>) -> Result<Response<TrainingRunList>, Status> {
         let runs = self
             .state
             .training
@@ -578,10 +617,13 @@ impl Mcp for EngineService {
         let tools = if connection.tools_json == "default" || connection.tools_json.is_empty() {
             default_tools()
         } else {
-            match serde_json::from_str::<Vec<Tool>>(&connection.tools_json) {
-                Ok(parsed_tools) => parsed_tools,
+            match serde_json::from_str::<Vec<StoredTool>>(&connection.tools_json) {
+                Ok(parsed_tools) => parsed_tools.into_iter().map(to_proto_tool).collect(),
                 Err(err) => {
-                    eprintln!("Failed to parse tools_json: {}, falling back to default", err);
+                    eprintln!(
+                        "Failed to parse tools_json: {}, falling back to default",
+                        err
+                    );
                     default_tools()
                 }
             }
@@ -638,10 +680,7 @@ fn training_run(run: storage::TrainingRunRecord) -> TrainingRun {
 }
 
 fn timestamp(seconds: i64) -> Timestamp {
-    Timestamp {
-        seconds,
-        nanos: 0,
-    }
+    Timestamp { seconds, nanos: 0 }
 }
 
 fn default_tools() -> Vec<Tool> {
@@ -675,6 +714,23 @@ fn default_tools() -> Vec<Tool> {
             ],
         },
     ]
+}
+
+fn to_proto_tool(tool: StoredTool) -> Tool {
+    Tool {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool
+            .parameters
+            .into_iter()
+            .map(|parameter| ToolParameter {
+                name: parameter.name,
+                r#type: parameter.parameter_type,
+                required: parameter.required,
+                description: parameter.description,
+            })
+            .collect(),
+    }
 }
 
 fn stable_id(value: &str) -> String {

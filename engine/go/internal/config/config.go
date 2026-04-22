@@ -15,6 +15,7 @@ type Config struct {
 	Daemon   DaemonConfig   `yaml:"daemon"`
 	Storage  StorageConfig  `yaml:"storage"`
 	Runtime  RuntimeConfig  `yaml:"runtime"`
+	Context  ContextConfig  `yaml:"context"`
 	RAG      RAGConfig      `yaml:"rag"`
 	Training TrainingConfig `yaml:"training"`
 	MCP      MCPConfig      `yaml:"mcp"`
@@ -57,6 +58,22 @@ type StorageConfig struct {
 type ProviderConfig struct {
 	Name   string `yaml:"name"`
 	Type   string `yaml:"type"`
+	URL    string `yaml:"url"`
+	APIKey string `yaml:"api_key"`
+}
+
+type ContextConfig struct {
+	Enabled        bool             `yaml:"enabled"`
+	ServiceURL     string           `yaml:"service_url"`
+	BinaryPath     string           `yaml:"binary_path"`
+	DataDir        string           `yaml:"data_dir"`
+	AutoStart      bool             `yaml:"auto_start"`
+	StartupTimeout time.Duration    `yaml:"startup_timeout"`
+	ManagedRoots   []string         `yaml:"managed_roots"`
+	OpenViking     OpenVikingConfig `yaml:"openviking"`
+}
+
+type OpenVikingConfig struct {
 	URL    string `yaml:"url"`
 	APIKey string `yaml:"api_key"`
 }
@@ -120,6 +137,16 @@ func DefaultConfig() *Config {
 			ModelsPath: filepath.Join(engineDir, "models"),
 			MaxMemory:  8192,
 			Providers:  []ProviderConfig{},
+		},
+		Context: ContextConfig{
+			Enabled:        false,
+			ServiceURL:     "http://127.0.0.1:9191",
+			BinaryPath:     "",
+			DataDir:        filepath.Join(engineDir, "context"),
+			AutoStart:      false,
+			StartupTimeout: 20 * time.Second,
+			ManagedRoots:   []string{},
+			OpenViking:     OpenVikingConfig{},
 		},
 		RAG: RAGConfig{
 			StoragePath:    filepath.Join(engineDir, "lancedb"),
@@ -192,8 +219,11 @@ func Load(path string) (*Config, error) {
 	// Expand ~ in local paths
 	cfg.Storage.LanceDBURI = expandPath(cfg.Storage.LanceDBURI)
 	cfg.Runtime.ModelsPath = expandPath(cfg.Runtime.ModelsPath)
+	cfg.Context.BinaryPath = expandPath(cfg.Context.BinaryPath)
+	cfg.Context.DataDir = expandPath(cfg.Context.DataDir)
 	cfg.Training.WorkingDir = expandPath(cfg.Training.WorkingDir)
 	cfg.RAG.StoragePath = expandPath(cfg.RAG.StoragePath)
+	cfg.Daemon.Command = expandPath(cfg.Daemon.Command)
 
 	if cfg.Daemon.Command == "" {
 		cfg.Daemon.Command = defaultDaemonCommand()
@@ -207,12 +237,27 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) EnsureDirs() error {
-	dirs := []string{
-		c.Runtime.ModelsPath,
-		c.Training.WorkingDir,
+	dirs := make([]string, 0, 5)
+	seen := make(map[string]struct{}, 5)
+	appendDir := func(dir string) {
+		if dir == "" {
+			return
+		}
+		if _, ok := seen[dir]; ok {
+			return
+		}
+		seen[dir] = struct{}{}
+		dirs = append(dirs, dir)
 	}
+
+	appendDir(c.Runtime.ModelsPath)
+	appendDir(c.Context.DataDir)
+	appendDir(c.Training.WorkingDir)
 	if isLocalPath(c.Storage.LanceDBURI) {
-		dirs = append(dirs, c.Storage.LanceDBURI)
+		appendDir(c.Storage.LanceDBURI)
+	}
+	if isLocalPath(c.RAG.StoragePath) {
+		appendDir(c.RAG.StoragePath)
 	}
 
 	for _, dir := range dirs {
