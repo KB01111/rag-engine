@@ -706,7 +706,8 @@ func (m *Manager) doJSON(ctx context.Context, method, path string, payload any, 
 }
 
 // layerToProto converts a contextsvc Layer into the corresponding protobuf ContextLayer.
-// It maps LayerL0, LayerL1, and LayerL2 to their proto equivalents and returns CONTEXT_LAYER_UNSPECIFIED for any other value.
+// layerToProto maps a Layer value to the corresponding protobuf ContextLayer enum.
+// It returns CONTEXT_LAYER_UNSPECIFIED for any unsupported or unknown Layer value.
 func layerToProto(layer Layer) pb.ContextLayer {
 	switch layer {
 	case LayerL0:
@@ -721,6 +722,7 @@ func layerToProto(layer Layer) pb.ContextLayer {
 }
 
 // statusFromProto converts a protobuf ContextStatus message into a StatusResponse DTO.
+// statusFromProto converts a protobuf ContextStatus into a StatusResponse.
 // If the input is nil it returns an empty StatusResponse.
 func statusFromProto(status *pb.ContextStatus) *StatusResponse {
 	if status == nil {
@@ -738,7 +740,10 @@ func statusFromProto(status *pb.ContextStatus) *StatusResponse {
 
 // listResourcesFromProto converts a protobuf ContextResourceList into a ListResourcesResponse.
 // If resp is nil, it returns an empty ListResourcesResponse. Each proto resource is mapped to a
-// Resource with URI, Title, Layer (cast from the proto enum), and Metadata.
+// listResourcesFromProto converts a protobuf ContextResourceList into a ListResourcesResponse.
+// 
+// If the input is nil, an empty ListResourcesResponse is returned. Each protobuf resource is
+// mapped to a Resource with URI, Title, Layer (cast from the proto enum), and Metadata.
 func listResourcesFromProto(resp *pb.ContextResourceList) *ListResourcesResponse {
 	out := &ListResourcesResponse{}
 	if resp == nil {
@@ -758,7 +763,7 @@ func listResourcesFromProto(resp *pb.ContextResourceList) *ListResourcesResponse
 
 // upsertResponseFromProto converts a protobuf ContextUpsertResourceResponse into an UpsertResourceResponse.
 // If resp is nil it returns an empty UpsertResourceResponse. The resulting value contains the mapped
-// Resource (zero-value if the proto resource is absent) and the ChunksIndexed count from the proto.
+// Resource is the zero value. ChunksIndexed is copied from the proto.
 func upsertResponseFromProto(resp *pb.ContextUpsertResourceResponse) *UpsertResourceResponse {
 	if resp == nil {
 		return &UpsertResourceResponse{}
@@ -781,7 +786,10 @@ func upsertResponseFromProto(resp *pb.ContextUpsertResourceResponse) *UpsertReso
 // searchResponseFromProto converts a protobuf ContextSearchResponse into a SearchResponse.
 // If resp is nil it returns an empty SearchResponse. The returned value contains Results
 // populated from the proto results (URI, DocumentID, ChunkText, Score, Metadata, and Layer)
-// and QueryTimeMs copied from the proto's QueryTimeMs.
+// searchResponseFromProto converts a protobuf ContextSearchResponse into a SearchResponse.
+// If resp is nil it returns an empty SearchResponse. Each proto result is mapped to a
+// SearchHit with URI, DocumentID, ChunkText, Score, Metadata, and Layer, and QueryTimeMs
+// is copied from the proto.
 func searchResponseFromProto(resp *pb.ContextSearchResponse) *SearchResponse {
 	out := &SearchResponse{}
 	if resp == nil {
@@ -803,6 +811,7 @@ func searchResponseFromProto(resp *pb.ContextSearchResponse) *SearchResponse {
 }
 
 // workspaceSyncFromProto converts a protobuf ContextWorkspaceSyncResponse into a WorkspaceSyncResponse.
+// workspaceSyncFromProto converts a protobuf ContextWorkspaceSyncResponse into a WorkspaceSyncResponse.
 // If resp is nil, it returns an empty WorkspaceSyncResponse.
 func workspaceSyncFromProto(resp *pb.ContextWorkspaceSyncResponse) *WorkspaceSyncResponse {
 	if resp == nil {
@@ -820,6 +829,9 @@ func workspaceSyncFromProto(resp *pb.ContextWorkspaceSyncResponse) *WorkspaceSyn
 
 // fileListFromProto converts a protobuf ContextFileListResponse into a FileListResponse.
 // If resp is nil it returns an empty FileListResponse.
+// Each proto entry is mapped to a FileListEntry with Name, Path, IsDir, and SizeBytes.
+// fileListFromProto converts a protobuf ContextFileListResponse into a FileListResponse.
+// If resp is nil, it returns an empty FileListResponse.
 // Each proto entry is mapped to a FileListEntry with Name, Path, IsDir, and SizeBytes.
 // The proto entry Version is converted to a *int64 when present; otherwise the resulting Version is nil.
 func fileListFromProto(resp *pb.ContextFileListResponse) *FileListResponse {
@@ -848,7 +860,11 @@ func fileListFromProto(resp *pb.ContextFileListResponse) *FileListResponse {
 // sessionResponseFromProto converts a protobuf ContextSessionHistory into a SessionResponse.
 // If resp is nil it returns an empty SessionResponse. Each proto entry is mapped to a
 // SessionEntry; when an entry's created_at timestamp is present it is converted to
-// milliseconds since the Unix epoch and stored in CreatedAt.
+// sessionResponseFromProto converts a protobuf ContextSessionHistory into a SessionResponse.
+// If resp is nil an empty SessionResponse is returned.
+// Each entry's fields (SessionId, Role, Content, Metadata) are copied into SessionEntry.
+// The entry CreatedAt is set to the timestamp converted to Unix milliseconds when the protobuf
+// timestamp is present, or zero when it is absent.
 func sessionResponseFromProto(resp *pb.ContextSessionHistory) *SessionResponse {
 	out := &SessionResponse{}
 	if resp == nil {

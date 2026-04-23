@@ -165,6 +165,23 @@ impl OpenVikingBridgeClient {
         Ok(body)
     }
 
+    /// Searches the bridge for resources matching a query and returns their summaries.
+    ///
+    /// # Parameters
+    /// - `query`: search query string to match against remote resources.
+    /// - `top_k`: maximum number of results to return.
+    ///
+    /// # Returns
+    /// A vector of `RemoteResourceSummary` containing the matched resources.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn run(client: &OpenVikingBridgeClient) -> anyhow::Result<()> {
+    /// let results = client.find_resources("example", 5).await?;
+    /// assert!(results.len() <= 5);
+    /// # Ok(()) }
+    /// ```
     pub async fn find_resources(
         &self,
         query: impl Into<String>,
@@ -183,10 +200,7 @@ impl OpenVikingBridgeClient {
         Ok(body.resources)
     }
 
-    /// Fetches a remote resource by its URI and returns the resource payload.
-    ///
-    /// The request is sent to the configured `read_path` with the provided `uri` appended to the path.
-    /// If a bearer token is configured, it is applied to the request.
+    /// Fetches the remote resource identified by the given URI.
     ///
     /// # Examples
     ///
@@ -196,10 +210,13 @@ impl OpenVikingBridgeClient {
     /// # async fn example_read_resource() {
     /// let cfg = OpenVikingBridgeConfig::new("http://example.com/");
     /// let client = OpenVikingBridgeClient::new(cfg);
-    /// // Performs a GET to `http://example.com/<read_path>/<uri>` and returns the parsed payload.
-    /// let _payload = client.read_resource("some/resource/uri").await;
+    /// let _payload = client.read_resource("some/resource/uri").await.unwrap();
     /// # }
     /// ```
+    ///
+    /// # Returns
+    ///
+    /// `RemoteResourcePayload` parsed from the HTTP response.
     pub async fn read_resource(
         &self,
         uri: impl Into<String>,

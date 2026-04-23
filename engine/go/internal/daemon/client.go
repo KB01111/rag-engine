@@ -33,7 +33,8 @@ type Client struct {
 // address (rejecting non-loopback addresses when TLS would be required), and
 // dials the daemon. On success it constructs a Client with gRPC service
 // clients and an empty MCP connection bookkeeping map. Returns an error if
-// address validation or dialing fails.
+// NewClient creates a Client connected to the daemon at addr.
+// It wraps ctx with a 10-second timeout, validates addr to ensure an insecure connection is only used for allowed loopback addresses, dials the daemon (blocking) using insecure credentials, and returns a Client with all service stubs initialized. An error is returned if address validation or dialing fails.
 func NewClient(ctx context.Context, addr string) (*Client, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

@@ -114,10 +114,7 @@ async fn incremental_upsert_reuses_unchanged_chunks() {
     assert_eq!(updated.reindexed_chunks, 1);
 }
 
-/// Verifies that a resource indexed into the engine can be found by a lexical search.
-///
-/// This test indexes a plain-text file as a resource in layer L2 and asserts that a
-/// search for matching terms returns the resource's URI.
+/// Verifies that a text resource indexed into the engine is discoverable via lexical search.
 ///
 /// # Examples
 ///
@@ -195,6 +192,18 @@ async fn lexical_search_finds_indexed_resource() {
     assert!(hits.iter().any(|hit| hit.uri.contains("fox.txt")));
 }
 
+/// Verifies that writing, moving, and deleting files keep the search index synchronized with the filesystem.
+///
+/// The test writes a file into a managed workspace, asserts the content is discoverable via `search_context`,
+/// moves the file and asserts search results reflect the new path, then deletes the file and asserts the index
+/// no longer returns results for the deleted path.
+///
+/// # Examples
+///
+/// ```
+/// // Run the test with `cargo test` (the test itself performs the operations against a temporary directory).
+/// file_operations_keep_index_in_sync();
+/// ```
 #[tokio::test]
 async fn file_operations_keep_index_in_sync() {
     let dir = tempdir().unwrap();

@@ -183,22 +183,40 @@ pub fn router(engine: ContextEngine) -> Router {
         .with_state(AppState { engine })
 }
 
+/// Starts the HTTP server on the given socket address serving the provided engine.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::net::SocketAddr;
+/// # use crate::ContextEngine;
+/// # async fn example() -> anyhow::Result<()> {
+/// let addr: SocketAddr = "127.0.0.1:3000".parse().unwrap();
+/// let engine = /* construct ContextEngine */ todo!();
+/// serve(addr, engine).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Returns
+///
+/// `Ok(())` if the server was started and served without error, or an `Err` if binding or serving fails.
 pub async fn serve(addr: SocketAddr, engine: ContextEngine) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router(engine)).await?;
     Ok(())
 }
 
-/// Return the HTTP health response reflecting whether the context engine is ready.
+/// Builds an HTTP health response indicating whether the context engine is ready.
 ///
-/// The response's `status` field is `"ok"` when the engine is ready and `"degraded"` otherwise;
-/// `ready` is `true` when the engine status check succeeds and `false` otherwise; `message` is
-/// `None` when ready and `Some("engine not ready")` when degraded.
+/// The response's `status` is `"ok"` when the engine is ready and `"degraded"` otherwise; `ready`
+/// mirrors the readiness state; `message` is `None` when ready and `Some("engine not ready")`
+/// when degraded.
 ///
 /// # Examples
 ///
 /// ```
-/// // Assume `state` is an `AppState` value available in an async context.
+/// // In an async handler context with an available `AppState`:
 /// // let state: AppState = ...;
 /// // let response = health(axum::extract::State(state)).await;
 /// ```
@@ -410,6 +428,25 @@ async fn append_session(
     }))
 }
 
+/// Retrieves the message history for the session identified by `id`.
+///
+/// # Returns
+///
+/// A `Json<SessionHistoryResponse>` containing the `session_id` and its list of session entries.
+///
+/// # Examples
+///
+/// ```
+/// # use axum::extract::{State, Path};
+/// # use axum::Json;
+/// # use context::AppState;
+/// # use context::handlers::get_session;
+/// # async fn _example(state: State<AppState>) {
+/// let id = "session-123".to_string();
+/// // Handler can be awaited in an async context when invoked with the required extractors.
+/// // let resp = get_session(state, Path(id)).await.unwrap();
+/// # }
+/// ```
 async fn get_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -499,6 +536,39 @@ pub async fn engine_from_env() -> anyhow::Result<ContextEngine> {
 /// }
 /// ```
 —
+/// Builds an optional `DragonflyConfig` from environment variables.
+///
+/// Reads the following environment variables and, if any are present or enabled,
+/// constructs a `DragonflyConfig` using provided values and defaults for missing fields:
+/// - `CONTEXT_DRAGONFLY_ENABLED`: treated as enabled unless empty, `"0"`, or `"false"` (case-insensitive)
+/// - `CONTEXT_DRAGONFLY_ADDR`: address string for the Dragonfly service
+/// - `CONTEXT_DRAGONFLY_KEY_PREFIX`: key prefix to use for Dragonfly keys
+/// - `CONTEXT_DRAGONFLY_RECENT_WINDOW`: parsed as a `usize` for the recent-window setting (clamped to at least 1)
+///
+/// # Returns
+///
+/// `Some(DragonflyConfig)` if any of the above inputs indicate Dragonfly should be configured; `None` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use std::env;
+/// // ensure no leftover env vars interfere
+/// env::remove_var("CONTEXT_DRAGONFLY_ENABLED");
+/// env::remove_var("CONTEXT_DRAGONFLY_ADDR");
+/// env::remove_var("CONTEXT_DRAGONFLY_KEY_PREFIX");
+/// env::remove_var("CONTEXT_DRAGONFLY_RECENT_WINDOW");
+///
+/// // enabling via flag produces a config
+/// env::set_var("CONTEXT_DRAGONFLY_ENABLED", "1");
+/// let cfg = dragonfly_config_from_env();
+/// assert!(cfg.is_some());
+///
+/// // clearing produces None when no inputs are present
+/// env::remove_var("CONTEXT_DRAGONFLY_ENABLED");
+/// let cfg2 = dragonfly_config_from_env();
+/// assert!(cfg2.is_none());
+/// ```
 fn dragonfly_config_from_env() -> Option<DragonflyConfig> {
     let enabled = std::env::var("CONTEXT_DRAGONFLY_ENABLED")
         .ok()

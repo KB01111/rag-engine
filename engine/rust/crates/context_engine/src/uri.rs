@@ -177,10 +177,9 @@ impl VikingUri {
 }
 
 impl std::fmt::Display for VikingUri {
-    /// Formats the `VikingUri` as a `viking://` URI string.
+    /// Render the `VikingUri` as a `viking://` URI string.
     ///
-    /// The output begins with `viking://` followed by the namespace string, then each stored
-    /// segment appended as `/segment`.
+    /// The output begins with `viking://{namespace}` and appends each stored segment as `/segment`.
     ///
     /// # Examples
     ///

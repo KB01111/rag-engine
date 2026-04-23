@@ -45,11 +45,12 @@ impl GraphNodeKind {
         }
     }
 
-    /// The lowercase string identifier for the `GraphNodeKind`.
+    /// Canonical lowercase identifier for this node kind.
     ///
     /// # Returns
     ///
-    /// The corresponding lowercase name: `"user"`, `"project"`, `"concept"`, `"document"`, or `"generic"`.
+    /// The lowercase name corresponding to the variant: `"user"`, `"project"`, `"concept"`,
+    /// `"document"`, or `"generic"`.
     ///
     /// # Examples
     ///
@@ -107,11 +108,11 @@ impl GraphRelationKind {
         }
     }
 
-    /// Returns the uppercase identifier for this relation kind as used in metadata and serialization.
+    /// Uppercase identifier for this relation kind used in metadata and serialization.
     ///
     /// # Returns
     ///
-    /// The relation kind as an uppercase `&'static str` (e.g. `"INTERESTED_IN"`, `"RELATED_TO"`).
+    /// The uppercase identifier as a `&'static str` (e.g., `"INTERESTED_IN"`, `"RELATED_TO"`).
     ///
     /// # Examples
     ///
