@@ -192,7 +192,11 @@ pub async fn serve(addr: SocketAddr, engine: ContextEngine) -> anyhow::Result<()
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let ready = state.engine.status().await.is_ok();
     Json(HealthResponse {
-        status: if ready { "ok".to_string() } else { "degraded".to_string() },
+        status: if ready {
+            "ok".to_string()
+        } else {
+            "degraded".to_string()
+        },
         ready,
         message: if ready {
             None

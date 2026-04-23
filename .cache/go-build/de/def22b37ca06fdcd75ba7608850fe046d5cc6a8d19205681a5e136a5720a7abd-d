@@ -1,0 +1,4 @@
+=== RUN   TestHealthReportsFallbackModeWithoutDaemon
+--- PASS: TestHealthReportsFallbackModeWithoutDaemon (0.00s)
+PASS
+ok  	github.com/ai-engine/go/internal/supervisor	1.692s

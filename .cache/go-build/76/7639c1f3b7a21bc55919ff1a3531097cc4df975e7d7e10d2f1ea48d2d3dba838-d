@@ -1,0 +1,10 @@
+=== RUN   TestManagerTestSuite
+=== RUN   TestManagerTestSuite/TestManagerDeleteAndStatusUseContextBackend
+=== RUN   TestManagerTestSuite/TestManagerSearchDelegatesToContextBackend
+=== RUN   TestManagerTestSuite/TestManagerUpsertDocumentDelegatesToContextBackend
+--- PASS: TestManagerTestSuite (0.00s)
+    --- PASS: TestManagerTestSuite/TestManagerDeleteAndStatusUseContextBackend (0.00s)
+    --- PASS: TestManagerTestSuite/TestManagerSearchDelegatesToContextBackend (0.00s)
+    --- PASS: TestManagerTestSuite/TestManagerUpsertDocumentDelegatesToContextBackend (0.00s)
+PASS
+ok  	github.com/ai-engine/go/internal/rag	0.324s

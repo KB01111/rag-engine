@@ -35,7 +35,7 @@ func (s *ServerSuite) SetupSuite() {
 	s.NoError(err)
 	s.cfg = cfg
 
-	s.ctxHTTP = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.ctxHTTP = newIPv4Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/health":
@@ -92,6 +92,7 @@ func (s *ServerSuite) TestHealthEndpoint() {
 
 	s.Equal(http.StatusOK, w.Code)
 	s.Contains(w.Body.String(), "ok")
+	s.Contains(w.Body.String(), "execution_mode")
 }
 
 func (s *ServerSuite) TestStatusEndpoint() {
@@ -109,7 +110,8 @@ func (s *ServerSuite) TestModelsEndpoint() {
 	s.router.ServeHTTP(w, req)
 
 	s.Equal(http.StatusOK, w.Code)
-	s.Contains(w.Body.String(), "models")
+	s.Contains(w.Body.String(), "loaded_models")
+	s.Contains(w.Body.String(), "\"models\"")
 }
 
 func (s *ServerSuite) TestContextStatusEndpoint() {

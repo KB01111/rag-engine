@@ -6,6 +6,16 @@ set "ROOT=%~dp0"
 set "GO_DIR=%ROOT%go"
 set "RUST_DIR=%ROOT%rust"
 set "PROTO_DIR=%ROOT%proto"
+set "CACHE_DIR=%ROOT%.cache"
+
+if not exist "%CACHE_DIR%" mkdir "%CACHE_DIR%"
+set "GOCACHE=%CACHE_DIR%\go-build"
+if not exist "%GOCACHE%" mkdir "%GOCACHE%"
+if not defined CARGO_HOME set "CARGO_HOME=%CACHE_DIR%\cargo-home"
+if not exist "%CARGO_HOME%" mkdir "%CARGO_HOME%"
+
+echo Using GOCACHE=%GOCACHE%
+echo Using CARGO_HOME=%CARGO_HOME%
 
 set "GOEXE=go"
 if exist "%ProgramFiles%\Go\bin\go.exe" set "GOEXE=%ProgramFiles%\Go\bin\go.exe"

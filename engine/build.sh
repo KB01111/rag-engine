@@ -7,12 +7,22 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GO_DIR="$ROOT_DIR/go"
 RUST_DIR="$ROOT_DIR/rust"
 PROTO_DIR="$ROOT_DIR/proto"
+CACHE_DIR="$ROOT_DIR/.cache"
 
 GOEXE="${GOEXE:-go}"
 CARGOEXE="${CARGOEXE:-cargo}"
 PROTOCEXE="${PROTOCEXE:-${PROTOC:-protoc}}"
 PROTOC_GEN_GO="${PROTOC_GEN_GO:-protoc-gen-go}"
 PROTOC_GEN_GO_GRPC="${PROTOC_GEN_GO_GRPC:-protoc-gen-go-grpc}"
+
+mkdir -p "$CACHE_DIR"
+export GOCACHE="${GOCACHE:-$CACHE_DIR/go-build}"
+mkdir -p "$GOCACHE"
+export CARGO_HOME="${CARGO_HOME:-$CACHE_DIR/cargo-home}"
+mkdir -p "$CARGO_HOME"
+
+echo "Using GOCACHE=$GOCACHE"
+echo "Using CARGO_HOME=$CARGO_HOME"
 
 if [ -x "$HOME/go/bin/protoc-gen-go" ]; then
     PROTOC_GEN_GO="$HOME/go/bin/protoc-gen-go"

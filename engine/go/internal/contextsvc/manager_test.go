@@ -26,7 +26,7 @@ type ManagerTestSuite struct {
 
 func (s *ManagerTestSuite) SetupTest() {
 	s.capturedSearchBody.Reset()
-	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.server = newIPv4Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/resources":

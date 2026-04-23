@@ -1,0 +1,8 @@
+# test log
+getenv USERPROFILE
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\supervisor\bin\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\supervisor\go\bin\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\supervisor\rust\target\debug\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\supervisor\rust\target\release\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rust\target\debug\ai_engine_daemon.exe
+stat C:\Users\kevin\.codex\worktrees\63b5\rag-engine\engine\go\internal\rust\target\release\ai_engine_daemon.exe
