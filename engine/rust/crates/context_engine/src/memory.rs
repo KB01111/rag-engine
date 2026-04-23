@@ -16,6 +16,21 @@ pub struct DragonflyConfig {
 }
 
 impl Default for DragonflyConfig {
+    /// Constructs a `DragonflyConfig` populated with sensible defaults for local use.
+    ///
+    /// The default values are:
+    /// - `addr = "127.0.0.1:6379"`
+    /// - `key_prefix = "ai-engine:sessions"`
+    /// - `recent_window = 10`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = DragonflyConfig::default();
+    /// assert_eq!(cfg.addr, "127.0.0.1:6379");
+    /// assert_eq!(cfg.key_prefix, "ai-engine:sessions");
+    /// assert_eq!(cfg.recent_window, 10);
+    /// ```
     fn default() -> Self {
         Self {
             addr: "127.0.0.1:6379".to_string(),

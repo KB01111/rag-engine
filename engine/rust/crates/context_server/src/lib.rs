@@ -189,6 +189,19 @@ pub async fn serve(addr: SocketAddr, engine: ContextEngine) -> anyhow::Result<()
     Ok(())
 }
 
+/// Return the HTTP health response reflecting whether the context engine is ready.
+///
+/// The response's `status` field is `"ok"` when the engine is ready and `"degraded"` otherwise;
+/// `ready` is `true` when the engine status check succeeds and `false` otherwise; `message` is
+/// `None` when ready and `Some("engine not ready")` when degraded.
+///
+/// # Examples
+///
+/// ```
+/// // Assume `state` is an `AppState` value available in an async context.
+/// // let state: AppState = ...;
+/// // let response = health(axum::extract::State(state)).await;
+/// ```
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let ready = state.engine.status().await.is_ok();
     Json(HealthResponse {
@@ -407,6 +420,32 @@ async fn get_session(
     }))
 }
 
+/// Constructs a ContextEngine using configuration derived from environment variables.
+///
+/// The function reads environment variables to build a ContextConfig (data directory, managed
+/// roots, optional OpenViking bridge, and optional Dragonfly settings) and opens the engine with
+/// that configuration. Environment variables consulted include:
+/// - `CONTEXT_DATA_DIR` (default: `./context-data`)
+/// - `CONTEXT_ROOTS` (default: `workspace=.`)
+/// - `CONTEXT_OPENVIKING_URL` and related OpenViking path/key variables
+/// - Dragonfly-related variables consumed by `dragonfly_config_from_env()`
+///
+/// # Returns
+///
+/// A `ContextEngine` opened with the resolved configuration, or an error if parsing or opening fails.
+///
+/// # Examples
+///
+/// ```
+/// # // This example requires an async runtime (e.g. Tokio) when used as a test.
+/// # #[tokio::main]
+/// # async fn main() -> anyhow::Result<()> {
+/// let engine = engine_from_env().await?;
+/// // Use `engine`...
+/// drop(engine);
+/// # Ok(())
+/// # }
+/// ```
 pub async fn engine_from_env() -> anyhow::Result<ContextEngine> {
     let data_dir =
         std::env::var("CONTEXT_DATA_DIR").unwrap_or_else(|_| "./context-data".to_string());
@@ -440,6 +479,26 @@ pub async fn engine_from_env() -> anyhow::Result<ContextEngine> {
     Ok(ContextEngine::open(config).await?)
 }
 
+/// Constructs a `DragonflyConfig` from environment variables when configuration is present.
+///
+/// Reads the following environment variables and uses their values to populate a `DragonflyConfig`:
+/// - `CONTEXT_DRAGONFLY_ENABLED` — treated as enabled unless empty, `0`, or `false` (case-insensitive)
+/// - `CONTEXT_DRAGONFLY_ADDR`
+/// - `CONTEXT_DRAGONFLY_KEY_PREFIX`
+/// - `CONTEXT_DRAGONFLY_RECENT_WINDOW` — parsed as a `usize`
+///
+/// If none of the above are set or enabled, the function returns `None`. Missing fields fall back to `DragonflyConfig::default()`, and `recent_window` is forced to be at least `1`.
+///
+/// # Examples
+///
+/// ```
+/// std::env::remove_var("CONTEXT_DRAGONFLY_ENABLED");
+/// std::env::set_var("CONTEXT_DRAGONFLY_ADDR", "127.0.0.1:7379");
+/// if let Some(cfg) = dragonfly_config_from_env() {
+///     assert_eq!(cfg.addr, "127.0.0.1:7379".to_string());
+/// }
+/// ```
+—
 fn dragonfly_config_from_env() -> Option<DragonflyConfig> {
     let enabled = std::env::var("CONTEXT_DRAGONFLY_ENABLED")
         .ok()
@@ -468,6 +527,19 @@ fn dragonfly_config_from_env() -> Option<DragonflyConfig> {
     })
 }
 
+/// Parses a semicolon-separated list of managed workspace roots.
+///
+/// Each entry may be either `name=path` to specify an explicit root name, or
+/// just a `path` to create an unnamed root. Unnamed roots receive generated
+/// names: the first becomes `"workspace"`, subsequent ones are `"workspace2"`,
+/// `"workspace3"`, etc.
+///
+/// # Examples
+///
+/// ```
+/// let roots = parse_roots("workspace=.;other=./src;./tests").unwrap();
+/// assert_eq!(roots.len(), 3);
+/// ```
 fn parse_roots(value: &str) -> anyhow::Result<Vec<ManagedRoot>> {
     let mut roots = Vec::new();
     for entry in value.split(';').filter(|part| !part.trim().is_empty()) {

@@ -77,6 +77,16 @@ pub struct OpenVikingBridgeClient {
 }
 
 impl OpenVikingBridgeClient {
+    /// Creates a bridge HTTP client from the given configuration.
+    ///
+    /// The constructed client uses a reqwest::Client configured with a 30-second timeout; if building that client fails, it falls back to reqwest's default client.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = OpenVikingBridgeConfig::new("https://example.com");
+    /// let client = OpenVikingBridgeClient::new(cfg);
+    /// ```
     pub fn new(config: OpenVikingBridgeConfig) -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -85,6 +95,19 @@ impl OpenVikingBridgeClient {
         Self { client, config }
     }
 
+    /// Normalize and return the configured base URL, ensuring its path ends with a trailing slash.
+    ///
+    /// Ensures the parsed `Url` has a path that terminates with `/`. Parsing failures are returned
+    /// as `BridgeError`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = OpenVikingBridgeConfig::new("https://example.com/api");
+    /// let client = OpenVikingBridgeClient::new(cfg);
+    /// let url = client.base_url().unwrap();
+    /// assert!(url.path().ends_with('/'));
+    /// ```
     fn base_url(&self) -> Result<Url, BridgeError> {
         let mut url = Url::parse(&self.config.base_url)?;
         if !url.path().ends_with('/') {
@@ -160,6 +183,23 @@ impl OpenVikingBridgeClient {
         Ok(body.resources)
     }
 
+    /// Fetches a remote resource by its URI and returns the resource payload.
+    ///
+    /// The request is sent to the configured `read_path` with the provided `uri` appended to the path.
+    /// If a bearer token is configured, it is applied to the request.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use crate::{OpenVikingBridgeClient, OpenVikingBridgeConfig};
+    /// # #[tokio::test]
+    /// # async fn example_read_resource() {
+    /// let cfg = OpenVikingBridgeConfig::new("http://example.com/");
+    /// let client = OpenVikingBridgeClient::new(cfg);
+    /// // Performs a GET to `http://example.com/<read_path>/<uri>` and returns the parsed payload.
+    /// let _payload = client.read_resource("some/resource/uri").await;
+    /// # }
+    /// ```
     pub async fn read_resource(
         &self,
         uri: impl Into<String>,

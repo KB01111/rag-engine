@@ -177,6 +177,19 @@ impl VikingUri {
 }
 
 impl std::fmt::Display for VikingUri {
+    /// Formats the `VikingUri` as a `viking://` URI string.
+    ///
+    /// The output begins with `viking://` followed by the namespace string, then each stored
+    /// segment appended as `/segment`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crate::VikingUri;
+    ///
+    /// let uri = VikingUri::resource("root", "path/to/res");
+    /// assert_eq!(format!("{}", uri), "viking://resources/root/path/to/res");
+    /// ```
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "viking://{}", self.namespace.as_str())?;
         for segment in &self.segments {

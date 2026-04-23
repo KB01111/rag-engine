@@ -34,6 +34,10 @@ type ContextAwareService struct {
 
 var preferOverPattern = regexp.MustCompile(`(?i)\bprefer(?:s|red)?\s+([a-z0-9._ -]+?)\s+over\s+([a-z0-9._ -]+)`)
 
+// NewContextAwareService creates a ContextAwareService that wraps the provided inner Service
+// and uses the given ContextOrchestrationBackend to optionally augment inference requests.
+// The returned service is initialized with a 1500ms context assembly timeout, a memory window
+// of 8 entries, and top-K values of 4 for both graph and document searches.
 func NewContextAwareService(inner Service, contextBackend ContextOrchestrationBackend) *ContextAwareService {
 	return &ContextAwareService{
 		inner:        inner,
@@ -223,6 +227,10 @@ func (s *ContextAwareService) assembleRequest(ctx context.Context, req *pb.Infer
 	return cloned, sessionID
 }
 
+// formatRecentSession formats the most recent session entries from resp into a multi-line string suitable for inclusion in a prompt.
+// If resp is nil or has no entries it returns an empty string.
+// It includes at most the last limit entries, prefixed by "Recent working memory:" and each entry on its own line as "- <Role>: <Content>".
+// Lines are joined with "\n".
 func formatRecentSession(resp *contextsvc.SessionResponse, limit int) string {
 	if resp == nil || len(resp.Entries) == 0 {
 		return ""
@@ -239,6 +247,10 @@ func formatRecentSession(resp *contextsvc.SessionResponse, limit int) string {
 	return strings.Join(lines, "\n")
 }
 
+// formatSearchHits formats a search response as a titled bullet list.
+// If resp is nil or contains no results it returns an empty string.
+// The output begins with `title + ":"` on its own line, followed by one line per
+// result in the form `- <ChunkText>`, joined with newline characters.
 func formatSearchHits(title string, resp *contextsvc.SearchResponse) string {
 	if resp == nil || len(resp.Results) == 0 {
 		return ""
@@ -250,6 +262,7 @@ func formatSearchHits(title string, resp *contextsvc.SearchResponse) string {
 	return strings.Join(lines, "\n")
 }
 
+// before any newly discovered refs from the responses.
 func mergeContextRefs(existing []string, responses ...*contextsvc.SearchResponse) []string {
 	seen := make(map[string]struct{}, len(existing))
 	merged := make([]string, 0, len(existing)+4)
@@ -281,6 +294,10 @@ func mergeContextRefs(existing []string, responses ...*contextsvc.SearchResponse
 	return merged
 }
 
+// cloneInferenceRequest creates a shallow clone of the provided InferenceRequest.
+// If req is nil, it returns an empty InferenceRequest. The returned request has
+// newly allocated copies of the Parameters map and ContextRefs slice to avoid
+// sharing those containers with the original; other scalar fields are copied.
 func cloneInferenceRequest(req *pb.InferenceRequest) *pb.InferenceRequest {
 	if req == nil {
 		return &pb.InferenceRequest{}
@@ -325,6 +342,13 @@ func (s *ContextAwareService) learnFromTurn(ctx context.Context, sessionID, prom
 	_, _ = s.context.UpsertResource(ctx, *fact)
 }
 
+// buildPreferenceFact constructs an UpsertResourceRequest representing a user preference
+// fact for the specified session and object identifier. The returned request uses a
+// graph URI under "viking://resources/graph/<sessionID>/prefers/<objectID>", a title
+// of the form "User prefers <TitleizedObject>", content describing the preference for
+// working memory, and LayerL1. The Metadata map populates graph-specific fields
+// including subject information, relation "PREFERS", object identifiers/names, the
+// session_id, and source "optimizer.heuristic".
 func buildPreferenceFact(sessionID, objectID string) *contextsvc.UpsertResourceRequest {
 	title := "User prefers " + titleizeFactValue(objectID)
 	return &contextsvc.UpsertResourceRequest{
@@ -347,12 +371,16 @@ func buildPreferenceFact(sessionID, objectID string) *contextsvc.UpsertResourceR
 	}
 }
 
+// normalizeFactID normalizes an extracted object identifier for use in URIs.
+// It lowercases the input, trims surrounding whitespace and the characters `. , ! ? : ;`, and replaces internal spaces with `-`.
 func normalizeFactID(value string) string {
 	trimmed := strings.TrimSpace(strings.ToLower(value))
 	trimmed = strings.Trim(trimmed, " .,!?:;")
 	return strings.ReplaceAll(trimmed, " ", "-")
 }
 
+// titleizeFactValue converts a normalized identifier into title-cased text.
+// It replaces hyphens with spaces and capitalizes the first letter of each word, preserving the remainder of each word as-is.
 func titleizeFactValue(value string) string {
 	parts := strings.Fields(strings.ReplaceAll(value, "-", " "))
 	for index, part := range parts {

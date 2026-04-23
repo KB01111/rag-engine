@@ -88,6 +88,26 @@ struct StoredToolParameter {
     description: String,
 }
 
+/// Starts and serves the AI engine gRPC daemon, configuring services from environment variables.
+///
+/// The function reads these environment variables (with shown defaults) to configure the server:
+/// - `AI_ENGINE_DAEMON_ADDR` (default `127.0.0.1:50061`)
+/// - `AI_ENGINE_LANCEDB_URI` (default `.ai-engine/lancedb`)
+/// - `AI_ENGINE_MODELS_PATH` (default `.ai-engine/models`)
+/// - `AI_ENGINE_TRAINING_DIR` (default `.ai-engine/training`)
+///
+/// It initializes persistence, embedding, runtime, training, and context engines, registers gRPC
+/// services and health reporting, and then binds and serves the tonic gRPC server on the chosen address.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use anyhow::Result;
+/// # async fn _example() -> Result<()> {
+/// crate::main().await?;
+/// # Ok(())
+/// # }
+/// ```
 #[tokio::main]
 async fn main() -> Result<()> {
     let addr =
@@ -682,6 +702,27 @@ fn model_info(model: ModelRecord) -> ModelInfo {
     }
 }
 
+/// Convert a storage `TrainingRunRecord` into its RPC `TrainingRun` representation.
+///
+/// This maps timestamps and preserves fields; specifically, a `completed_at` value of `0`
+/// is converted to `None` in the resulting `TrainingRun`.
+///
+/// # Examples
+///
+/// ```
+/// let stored = storage::TrainingRunRecord {
+///     id: "run1".to_string(),
+///     name: "test".to_string(),
+///     status: "running".to_string(),
+///     started_at: 1_700_000_000,
+///     completed_at: 0,
+///     progress: 42,
+///     error: None,
+/// };
+/// let proto = training_run(stored);
+/// assert_eq!(proto.id, "run1");
+/// assert!(proto.completed_at.is_none());
+/// ```
 fn training_run(run: storage::TrainingRunRecord) -> TrainingRun {
     TrainingRun {
         id: run.id,
@@ -698,6 +739,51 @@ fn training_run(run: storage::TrainingRunRecord) -> TrainingRun {
     }
 }
 
+/// Convert a `context_engine::ResourceSummary` into an `engine::ContextResource`.
+
+///
+
+/// The returned `engine::ContextResource` preserves the source `uri`, `title`,
+
+/// `layer`, and converts the source `metadata` into the proto-compatible map.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// use std::collections::HashMap;
+
+/// let mut meta = HashMap::new();
+
+/// meta.insert("k".to_string(), "v".to_string());
+
+/// let src = context_engine::ResourceSummary {
+
+///     uri: "urn:example".to_string(),
+
+///     title: "Example".to_string(),
+
+///     layer: "L1".to_string(),
+
+///     metadata: meta,
+
+/// };
+
+/// let dst = crate::context_resource(src);
+
+/// assert_eq!(dst.uri, "urn:example");
+
+/// assert_eq!(dst.title, "Example");
+
+/// assert_eq!(dst.layer, "L1");
+
+/// assert_eq!(dst.metadata.get("k").and_then(|v| v.as_ref()), Some(&"v".to_string()));
+
+/// ```
 fn context_resource(resource: context_engine::ResourceSummary) -> engine::ContextResource {
     engine::ContextResource {
         uri: resource.uri,
@@ -707,6 +793,29 @@ fn context_resource(resource: context_engine::ResourceSummary) -> engine::Contex
     }
 }
 
+/// Convert a `context_engine::SearchHit` into an `engine::ContextSearchResult`.
+///
+/// The returned value mirrors the input hit: `uri`, `document_id`, `chunk_text`,
+/// `score`, and `layer` are copied directly, and `metadata` is collected into the
+/// target container type.
+///
+/// # Examples
+///
+/// ```
+/// let hit = context_engine::SearchHit {
+///     uri: "urn:doc:1".to_string(),
+///     document_id: "doc1".to_string(),
+///     chunk_text: "chunk".to_string(),
+///     score: 0.75,
+///     metadata: vec![("k".to_string(), "v".to_string())].into_iter().collect(),
+///     layer: 1,
+/// };
+/// let res = context_search_result(hit);
+/// assert_eq!(res.uri, "urn:doc:1");
+/// assert_eq!(res.document_id, "doc1");
+/// assert_eq!(res.chunk_text, "chunk");
+/// assert_eq!(res.score, 0.75);
+/// ```
 fn context_search_result(result: context_engine::SearchHit) -> engine::ContextSearchResult {
     engine::ContextSearchResult {
         uri: result.uri,
@@ -718,6 +827,24 @@ fn context_search_result(result: context_engine::SearchHit) -> engine::ContextSe
     }
 }
 
+/// Build a ContextSearchResult from a graph fact, enriching metadata and deriving display fields.
+///
+/// The returned result synthesizes:
+/// - `uri`: uses the fact's `resource_uri` if present, otherwise `viking://graph/{edge_id}`
+/// - `document_id`: the edge id
+/// - `chunk_text`: "`{subject_name} {relation} {object_name}`"
+/// - `score`: `1.0 - rank * 0.01`, clamped to a minimum of `0.1`
+/// - `metadata`: the fact's metadata plus graph-specific keys (`kind`, `subject_id`, `subject_type`, `subject_name`, `relation`, `object_id`, `object_type`, `object_name`, and optionally `session_id`)
+/// - `layer`: set to `L1`
+///
+/// # Examples
+///
+/// ```
+/// // Given a `fact: GraphFactRecord` and a zero-based rank:
+/// let result = context_graph_search_result(fact, 2);
+/// assert!(result.chunk_text.contains(" "));
+/// assert!(result.score >= 0.1 && result.score <= 1.0);
+/// ```
 fn context_graph_search_result(fact: GraphFactRecord, rank: usize) -> engine::ContextSearchResult {
     let edge_id = fact.edge_id.clone();
     let subject_name = fact.subject.name.clone();
@@ -754,6 +881,27 @@ fn context_graph_search_result(fact: GraphFactRecord, rank: usize) -> engine::Co
     }
 }
 
+/// Converts a context engine file entry into the protobuf-compatible context file entry.
+///
+/// Copies `name`, `path`, `is_dir`, and `version`, and converts `size_bytes` to `i64`.
+///
+/// # Examples
+///
+/// ```
+/// let fe = context_engine::FileEntry {
+///     name: "file.txt".into(),
+///     path: "dir/file.txt".into(),
+///     is_dir: false,
+///     size_bytes: 256,
+///     version: 2,
+/// };
+/// let out = context_file_entry(fe);
+/// assert_eq!(out.name, "file.txt");
+/// assert_eq!(out.path, "dir/file.txt");
+/// assert_eq!(out.is_dir, false);
+/// assert_eq!(out.size_bytes, 256_i64);
+/// assert_eq!(out.version, 2);
+/// ```
 fn context_file_entry(entry: context_engine::FileEntry) -> engine::ContextFileEntry {
     engine::ContextFileEntry {
         name: entry.name,
@@ -764,6 +912,34 @@ fn context_file_entry(entry: context_engine::FileEntry) -> engine::ContextFileEn
     }
 }
 
+/// Converts a Context Engine `SessionEntry` into a protobuf `ContextSessionEntry`.
+///
+/// The returned struct preserves session id, role, content, metadata map, and converts
+/// the entry's millisecond timestamp into a `Timestamp`.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// let entry = context_engine::SessionEntry {
+///     session_id: "sess-1".to_string(),
+///     role: "user".to_string(),
+///     content: "hello".to_string(),
+///     metadata: {
+///         let mut m = HashMap::new();
+///         m.insert("lang".to_string(), "en".to_string());
+///         m
+///     },
+///     created_at: 1_650_000_000_000i64, // milliseconds
+/// };
+///
+/// let proto = context_session_entry(entry);
+/// assert_eq!(proto.session_id, "sess-1");
+/// assert_eq!(proto.role, "user");
+/// assert_eq!(proto.content, "hello");
+/// assert!(proto.metadata.contains_key("lang"));
+/// assert!(proto.created_at.is_some());
+/// ```
 fn context_session_entry(entry: context_engine::SessionEntry) -> engine::ContextSessionEntry {
     engine::ContextSessionEntry {
         session_id: entry.session_id,
@@ -774,6 +950,17 @@ fn context_session_entry(entry: context_engine::SessionEntry) -> engine::Context
     }
 }
 
+/// Maps a protobuf numeric layer value to the corresponding `ResourceLayer`.
+///
+/// The mapping is: `1` -> `ResourceLayer::L0`, `2` -> `ResourceLayer::L1`, any other value -> `ResourceLayer::L2`.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(resource_layer_from_proto(1), ResourceLayer::L0);
+/// assert_eq!(resource_layer_from_proto(2), ResourceLayer::L1);
+/// assert_eq!(resource_layer_from_proto(0), ResourceLayer::L2);
+/// ```
 fn resource_layer_from_proto(layer: i32) -> ResourceLayer {
     match layer {
         1 => ResourceLayer::L0,
@@ -782,6 +969,25 @@ fn resource_layer_from_proto(layer: i32) -> ResourceLayer {
     }
 }
 
+/// Convert a numeric layer identifier into a `ResourceLayer`.
+///
+/// Maps `1` → `ResourceLayer::L0`, `2` → `ResourceLayer::L1`, and `3` → `ResourceLayer::L2`.
+///
+/// # Parameters
+///
+/// - `layer`: numeric layer identifier where 1, 2, and 3 correspond to L0, L1, and L2 respectively.
+///
+/// # Returns
+///
+/// `Some(ResourceLayer)` for recognized layer values, `None` for any other value.
+///
+/// # Examples
+///
+/// ```
+/// let r = context_search_layer(2);
+/// assert_eq!(r, Some(ResourceLayer::L1));
+/// assert_eq!(context_search_layer(0), None);
+/// ```
 fn context_search_layer(layer: i32) -> Option<ResourceLayer> {
     match layer {
         1 => Some(ResourceLayer::L0),
@@ -791,16 +997,65 @@ fn context_search_layer(layer: i32) -> Option<ResourceLayer> {
     }
 }
 
+/// Create a protobuf `Timestamp` representing the given Unix epoch seconds.
+///
+/// The resulting `Timestamp` has `seconds` set to `seconds` and `nanos` set to `0`.
+///
+/// # Examples
+///
+/// ```
+/// let ts = timestamp(1_620_000_000);
+/// assert_eq!(ts.seconds, 1_620_000_000);
+/// assert_eq!(ts.nanos, 0);
+/// ```
 fn timestamp(seconds: i64) -> Timestamp {
     Timestamp { seconds, nanos: 0 }
 }
 
+/// Convert milliseconds since the UNIX epoch to a `Timestamp` with second and nanosecond fields.
+
+///
+
+/// The input is interpreted as milliseconds since UNIX epoch; the resulting `Timestamp`
+
+/// has `seconds` set to the whole seconds and `nanos` set to the remaining milliseconds
+
+/// converted to nanoseconds.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// let ts = timestamp_millis(1_500); // 1.5 seconds since epoch
+
+/// assert_eq!(ts.seconds, 1);
+
+/// assert_eq!(ts.nanos, 500_000_000);
+
+/// ```
 fn timestamp_millis(millis: i64) -> Timestamp {
     let seconds = millis.div_euclid(1000);
     let nanos = (millis.rem_euclid(1000) * 1_000_000) as i32;
     Timestamp { seconds, nanos }
 }
 
+/// Provides default tool schemas used for MCP connections.
+///
+/// The returned vector contains two predefined tools:
+/// - `get_weather`: accepts a required `location` string parameter.
+/// - `search_files`: accepts a required `query` string and an optional `path` string parameter.
+///
+/// # Examples
+///
+/// ```
+/// let tools = default_tools();
+/// let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+/// assert_eq!(names, vec!["get_weather", "search_files"]);
+/// ```
 fn default_tools() -> Vec<Tool> {
     vec![
         Tool {
@@ -874,6 +1129,18 @@ fn not_found_status(error: impl std::fmt::Display) -> Status {
     Status::not_found(error.to_string())
 }
 
+/// Get the current UNIX timestamp in seconds.
+///
+/// The value is the number of whole seconds elapsed since the UNIX epoch (1970-01-01 UTC).
+/// If the system clock is earlier than the UNIX epoch or the system time cannot be represented,
+/// the function returns `0`.
+///
+/// # Examples
+///
+/// ```
+/// let ts = now();
+/// assert!(ts >= 0);
+/// ```
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -881,6 +1148,35 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+/// Opens a ContextEngine configured from environment variables.
+///
+/// Reads configuration from the following environment variables:
+/// - `CONTEXT_DATA_DIR` (default: `./context-data`)
+/// - `CONTEXT_ROOTS` (default: `workspace=.`)
+/// - Optional OpenViking bridge config via `CONTEXT_OPENVIKING_URL` and related `CONTEXT_OPENVIKING_*` vars
+/// - Optional Dragonfly config via `CONTEXT_DRAGONFLY_*` vars
+///
+/// The function parses `CONTEXT_ROOTS` into managed roots, builds an optional OpenViking bridge
+/// configuration when `CONTEXT_OPENVIKING_URL` is present, and supplies a Dragonfly configuration
+/// if enabled via environment. It then opens and returns a `ContextEngine` initialized with
+/// the assembled configuration.
+///
+/// # Returns
+///
+/// `Ok(ContextEngine)` on success, `Err(anyhow::Error)` if the engine cannot be opened or parsing fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::env;
+///
+/// // Optionally set environment variables for testing:
+/// env::set_var("CONTEXT_DATA_DIR", "./tmp-context");
+/// env::set_var("CONTEXT_ROOTS", "workspace=./;notes=./notes");
+///
+/// // Open the context engine (async context required).
+/// // let engine = tokio::runtime::Runtime::new().unwrap().block_on(open_context_engine_from_env()).unwrap();
+/// ```
 async fn open_context_engine_from_env() -> Result<ContextEngine> {
     let data_dir =
         std::env::var("CONTEXT_DATA_DIR").unwrap_or_else(|_| "./context-data".to_string());
@@ -916,6 +1212,32 @@ async fn open_context_engine_from_env() -> Result<ContextEngine> {
     .map_err(Into::into)
 }
 
+/// Build a Dragonfly configuration from environment variables if any relevant option is set.
+///
+/// Reads the following environment variables:
+/// - `CONTEXT_DRAGONFLY_ENABLED` — enable flag; empty, `"0"`, or `"false"` (case-insensitive) are treated as disabled.
+/// - `CONTEXT_DRAGONFLY_ADDR` — optional address override.
+/// - `CONTEXT_DRAGONFLY_KEY_PREFIX` — optional key prefix override.
+/// - `CONTEXT_DRAGONFLY_RECENT_WINDOW` — optional positive integer override for recent-window.
+///
+/// If none of these variables are present (or enabled), returns `None`.
+///
+/// # Examples
+///
+/// ```
+/// // Ensure a clean environment for the example.
+/// std::env::remove_var("CONTEXT_DRAGONFLY_ENABLED");
+/// std::env::remove_var("CONTEXT_DRAGONFLY_ADDR");
+/// std::env::remove_var("CONTEXT_DRAGONFLY_KEY_PREFIX");
+/// std::env::remove_var("CONTEXT_DRAGONFLY_RECENT_WINDOW");
+///
+/// // Set an explicit override so a config is produced.
+/// std::env::set_var("CONTEXT_DRAGONFLY_ADDR", "127.0.0.1:8080");
+/// let cfg = crate::dragonfly_config_from_env();
+/// assert!(cfg.is_some());
+/// let cfg = cfg.unwrap();
+/// assert_eq!(cfg.addr, "127.0.0.1:8080");
+/// ```
 fn dragonfly_config_from_env() -> Option<DragonflyConfig> {
     let enabled = std::env::var("CONTEXT_DRAGONFLY_ENABLED")
         .ok()
@@ -944,6 +1266,25 @@ fn dragonfly_config_from_env() -> Option<DragonflyConfig> {
     })
 }
 
+/// Parses a semicolon-separated list of context root specifications into `ManagedRoot` entries.
+///
+/// Each non-empty entry may be either `name=path` or just `path`. Entries are trimmed of
+/// surrounding whitespace and empty entries are ignored. If a name is omitted the first
+/// unnamed root is given the name `"workspace"` and subsequent unnamed roots are named
+/// `"root-<n>"` (1-based).
+///
+/// Returns `Ok(Vec<ManagedRoot>)` on success or the underlying `ManagedRoot::new` error if any
+/// entry fails validation.
+///
+/// # Examples
+///
+/// ```
+/// let roots = parse_context_roots("workspace=.;data=./data;./other").unwrap();
+/// assert_eq!(roots.len(), 3);
+/// assert_eq!(roots[0].name(), "workspace");
+/// assert_eq!(roots[1].name(), "data");
+/// assert_eq!(roots[2].name(), "root-3");
+/// ```
 fn parse_context_roots(value: &str) -> Result<Vec<ManagedRoot>> {
     let mut roots = Vec::new();
     for entry in value.split(';').filter(|entry| !entry.trim().is_empty()) {
@@ -964,6 +1305,16 @@ fn parse_context_roots(value: &str) -> Result<Vec<ManagedRoot>> {
 
 #[tonic::async_trait]
 impl ContextRpc for ContextGrpcService {
+    /// Return the current status of the context engine, including document and chunk counts, index size, embedding model name, readiness, and managed roots.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // given a `ContextGrpcService` instance `svc`
+    /// let resp = svc.get_context_status(tonic::Request::new(())).await.unwrap();
+    /// let status = resp.into_inner();
+    /// println!("documents: {}, chunks: {}", status.document_count, status.chunk_count);
+    /// ```
     async fn get_context_status(
         &self,
         _request: Request<()>,
@@ -979,6 +1330,25 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// Returns the list of context-managed resources known to the engine.
+    ///
+    /// The response contains a `ContextResourceList` whose `resources` field is populated
+    /// from the engine's resource summaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns a gRPC `Status::internal` if the underlying context engine fails to list resources.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use tonic::Request;
+    /// # async fn example(svc: &crate::ContextGrpcService) {
+    /// let resp = svc.list_resources(Request::new(())).await.unwrap();
+    /// let list = resp.into_inner();
+    /// println!("found {} resources", list.resources.len());
+    /// # }
+    /// ```
     async fn list_resources(
         &self,
         _request: Request<()>,
@@ -993,6 +1363,31 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// Upserts (creates or updates) a resource in the context engine and returns the stored resource plus how many chunks were indexed.
+    ///
+    /// The request's `title` and `previous_uri` are treated as optional: empty strings become `None`.
+    ///
+    /// # Returns
+    ///
+    /// A response containing the stored resource and the number of text chunks the engine indexed for it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tonic::Request;
+    /// use engine::ContextUpsertResourceRequest;
+    ///
+    /// let req = ContextUpsertResourceRequest {
+    ///     uri: "viking://resource/1".to_string(),
+    ///     title: "My Resource".to_string(),
+    ///     content: "Some content to index".to_string(),
+    ///     layer: 0,
+    ///     metadata: std::collections::HashMap::new(),
+    ///     previous_uri: "".to_string(),
+    /// };
+    ///
+    /// // `service.upsert_resource(Request::new(req)).await` calls the method shown here.
+    /// ```
     async fn upsert_resource(
         &self,
         request: Request<engine::ContextUpsertResourceRequest>,
@@ -1025,6 +1420,21 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// Deletes a resource identified by `uri` from the context engine.
+    ///
+    /// The request's `uri` field specifies which resource to remove.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Response(()))` on success, `Err(Status)` if the deletion fails.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let req = engine::ContextDeleteResourceRequest { uri: "viking://workspace/doc".into() };
+    /// let resp = context_service.delete_resource(tonic::Request::new(req)).await?;
+    /// assert_eq!(resp.into_inner(), ());
+    /// ```
     async fn delete_resource(
         &self,
         request: Request<engine::ContextDeleteResourceRequest>,
@@ -1036,6 +1446,34 @@ impl ContextRpc for ContextGrpcService {
         Ok(Response::new(()))
     }
 
+    /// Searches the context index or graph facts for the given query and returns ranked results.
+    ///
+    /// If the request contains a filter "kind" = "graph" (case-insensitive), performs a graph facts
+    /// lookup and returns graph-formatted search results. Otherwise performs a regular context search
+    /// honoring optional `scope_uri`, `top_k`, `filters`, `layer`, and `rerank`.
+    ///
+    /// The response includes the list of matched results and the query time in milliseconds.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use tonic::Request;
+    /// use crate::engine;
+    ///
+    /// // build a request
+    /// let req = engine::ContextSearchRequest {
+    ///     query: "find relevant context".to_string(),
+    ///     scope_uri: "".to_string(),
+    ///     top_k: 0,
+    ///     filters: std::collections::HashMap::new(),
+    ///     layer: 0,
+    ///     rerank: false,
+    /// };
+    ///
+    /// // call the service (async context required)
+    /// // let resp = my_service.search_context(Request::new(req)).await.unwrap();
+    /// // println!("found {} results", resp.get_ref().results.len());
+    /// ```
     async fn search_context(
         &self,
         request: Request<engine::ContextSearchRequest>,
@@ -1093,6 +1531,27 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// Synchronizes a workspace root (and optional path) and returns counts of affected resources.
+    ///
+    /// Calls the context engine to sync the given `root` and optional `path`, then returns the
+    /// resulting summary including the root, prefix, and counts of indexed, reindexed, deleted,
+    /// and skipped items.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(service: &crate::ContextGrpcService) -> Result<(), tonic::Status> {
+    /// use tonic::Request;
+    /// let req = crate::engine::ContextWorkspaceSyncRequest {
+    ///     root: "workspace".into(),
+    ///     path: ".".into(),
+    /// };
+    /// let resp = service.sync_workspace(Request::new(req)).await?;
+    /// let summary = resp.into_inner();
+    /// println!("Indexed: {}", summary.indexed_resources);
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn sync_workspace(
         &self,
         request: Request<engine::ContextWorkspaceSyncRequest>,
@@ -1117,6 +1576,20 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// List files under a managed root and path and return their metadata as proto entries.
+    ///
+    /// The request's `root` selects the managed workspace and `path` is interpreted relative to that root.
+    /// On success returns a `ContextFileListResponse` whose `entries` are the engine's file listings
+    /// converted to protobuf `ContextFileEntry` values. Engine errors are translated into gRPC `Status` (internal).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Example usage (async context):
+    /// // let resp = service.list_files(Request::new(engine::ContextFileListRequest { root: "workspace".into(), path: ".".into() })).await?;
+    /// // let list = resp.into_inner();
+    /// // assert!(list.entries.len() >= 0);
+    /// ```
     async fn list_files(
         &self,
         request: Request<engine::ContextFileListRequest>,
@@ -1132,6 +1605,23 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// Reads a file from the specified managed root and returns its content and version.
+    ///
+    /// Returns a `ContextFileReadResponse` containing the requested `path`, the file `content`,
+    /// and the `version` (0 if no version information is available).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(svc: crate::ContextGrpcService) {
+    /// let req = engine::ContextFileReadRequest {
+    ///     root: "workspace".into(),
+    ///     path: "README.md".into(),
+    /// };
+    /// let resp = svc.read_file(tonic::Request::new(req)).await.unwrap().into_inner();
+    /// assert_eq!(resp.path, "README.md");
+    /// # }
+    /// ```
     async fn read_file(
         &self,
         request: Request<engine::ContextFileReadRequest>,
@@ -1155,6 +1645,29 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// Writes content to a file under the specified managed root and returns the saved path and resulting version.
+    ///
+    /// The request's `root` selects the managed workspace root, `path` is the file path within that root,
+    /// `content` is stored as the file body, and `version` is an optional expected version used by the engine.
+    /// On success, the response contains the (possibly normalized) `path` and the file's new `version`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use tonic::Request;
+    /// # use crate::engine;
+    /// # async fn example(svc: &super::ContextGrpcService) -> Result<(), Box<dyn std::error::Error>> {
+    /// let req = engine::ContextFileWriteRequest {
+    ///     root: "workspace".into(),
+    ///     path: "notes/todo.txt".into(),
+    ///     content: "buy milk".into(),
+    ///     version: 0,
+    /// };
+    /// let resp = svc.write_file(Request::new(req)).await?;
+    /// let body = resp.into_inner();
+    /// println!("wrote {} v{}", body.path, body.version);
+    /// # Ok(()) }
+    /// ```
     async fn write_file(
         &self,
         request: Request<engine::ContextFileWriteRequest>,
@@ -1176,6 +1689,26 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// Deletes a file in the specified managed root at the given path and returns whether the file was removed.
+    ///
+    /// The response includes the original `path` and a `deleted` flag that is `true` when a file was actually deleted.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use tonic::Request;
+    ///
+    /// // `svc` is a ContextGrpcService instance available in your runtime.
+    /// let req = Request::new(engine::ContextFileDeleteRequest {
+    ///     root: "workspace".into(),
+    ///     path: "docs/readme.md".into(),
+    ///     version: 0,
+    /// });
+    ///
+    /// let resp = futures::executor::block_on(svc.delete_file(req)).unwrap();
+    /// let out = resp.into_inner();
+    /// assert_eq!(out.path, "docs/readme.md");
+    /// ```
     async fn delete_file(
         &self,
         request: Request<engine::ContextFileDeleteRequest>,
@@ -1192,6 +1725,24 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// Moves a file within the specified managed root and returns the moved paths and the file's resulting version.
+    ///
+    /// The request's `root` selects the workspace root; `from_path` and `to_path` are the source and destination paths within that root. On success the response contains the original `from_path`, the destination `to_path`, and the updated `version`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let req = engine::ContextFileMoveRequest {
+    ///     root: "workspace".into(),
+    ///     from_path: "docs/old.md".into(),
+    ///     to_path: "docs/new.md".into(),
+    ///     version: 0,
+    /// };
+    /// let resp = service.move_file(tonic::Request::new(req)).await?;
+    /// let body = resp.into_inner();
+    /// assert_eq!(body.from_path, "docs/old.md");
+    /// assert_eq!(body.to_path, "docs/new.md");
+    /// ```
     async fn move_file(
         &self,
         request: Request<engine::ContextFileMoveRequest>,
@@ -1214,6 +1765,33 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// Appends an event to a session and returns the session's full history.
+    ///
+    /// The request's `session_id`, `role`, `content`, and `metadata` are forwarded to the
+    /// context engine; after the append succeeds the engine's session entries are loaded
+    /// and returned as a `ContextSessionHistory`.
+    ///
+    /// # Returns
+    ///
+    /// `ContextSessionHistory` containing the `session_id` and all session entries after the append.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tonic::Request;
+    /// # use crate::engine;
+    /// # async fn _example(svc: &crate::ContextGrpcService) {
+    /// let req = engine::ContextSessionAppendRequest {
+    ///     session_id: "s1".to_string(),
+    ///     role: "user".to_string(),
+    ///     content: "hello".to_string(),
+    ///     metadata: std::collections::HashMap::new(),
+    /// };
+    /// let resp = svc.append_session(Request::new(req)).await.unwrap();
+    /// let history = resp.into_inner();
+    /// assert_eq!(history.session_id, "s1");
+    /// # }
+    /// ```
     async fn append_session(
         &self,
         request: Request<engine::ContextSessionAppendRequest>,
@@ -1240,6 +1818,27 @@ impl ContextRpc for ContextGrpcService {
         }))
     }
 
+    /// Fetches the full history for a context session identified by `session_id`.
+    ///
+    /// The response contains the requested `session_id` and a chronological list of session entries.
+    ///
+    /// # Returns
+    ///
+    /// `engine::ContextSessionHistory` containing the session ID and a list of session entries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tonic::Request;
+    /// # use crate::engine;
+    /// # async fn example(svc: &crate::ContextGrpcService) -> Result<(), tonic::Status> {
+    /// let req = engine::ContextSessionGetRequest { session_id: "session-123".to_string() };
+    /// let resp = svc.get_session(Request::new(req)).await?;
+    /// let history = resp.into_inner();
+    /// assert_eq!(history.session_id, "session-123");
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn get_session(
         &self,
         request: Request<engine::ContextSessionGetRequest>,

@@ -57,6 +57,17 @@ async fn managed_root_rejects_path_escape() {
     assert!(message.contains("outside managed root") || message.contains("escape"));
 }
 
+/// Verifies that incremental upserts reuse unchanged content chunks and only reindex modified chunks.
+///
+/// This test upserts a multi-paragraph resource, then upserts it again with a single paragraph changed
+/// and asserts that the engine reports two reused chunks and one reindexed chunk.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Conceptual example: initial upsert followed by a small change should reuse unchanged chunks.
+/// // The test harness sets up a temporary workspace and asserts reused/reindexed counts.
+/// ```
 #[tokio::test]
 async fn incremental_upsert_reuses_unchanged_chunks() {
     let dir = tempdir().unwrap();
@@ -103,6 +114,36 @@ async fn incremental_upsert_reuses_unchanged_chunks() {
     assert_eq!(updated.reindexed_chunks, 1);
 }
 
+/// Verifies that a resource indexed into the engine can be found by a lexical search.
+///
+/// This test indexes a plain-text file as a resource in layer L2 and asserts that a
+/// search for matching terms returns the resource's URI.
+///
+/// # Examples
+///
+/// ```rust
+/// # async fn example(engine: &ContextEngine) -> anyhow::Result<()> {
+/// engine.upsert_resource(ResourceUpsertRequest {
+///     uri: "viking://resources/workspace/fox.txt".to_string(),
+///     title: Some("Fox".to_string()),
+///     content: "The quick brown fox jumps over the lazy dog.".to_string(),
+///     layer: ResourceLayer::L2,
+///     metadata: std::collections::BTreeMap::new(),
+///     previous_uri: None,
+/// }).await?;
+///
+/// let hits = engine.search_context(SearchRequest {
+///     query: "quick fox".to_string(),
+///     scope_uri: None,
+///     top_k: Some(5),
+///     filters: None,
+///     layer: Some(ResourceLayer::L2),
+///     rerank: Some(true),
+/// }).await?;
+///
+/// assert!(hits.iter().any(|hit| hit.uri.contains("fox.txt")));
+/// # Ok(()) }
+/// ```
 #[tokio::test]
 async fn lexical_search_finds_indexed_resource() {
     let dir = tempdir().unwrap();
@@ -241,6 +282,19 @@ async fn file_operations_keep_index_in_sync() {
         .any(|hit| hit.uri.ends_with("/archive/notes.md")));
 }
 
+/// Verifies that syncing a managed workspace indexes new files and prunes resources for files removed from disk.
+///
+/// This test:
+/// - Creates a temporary managed root with two files under `docs/`.
+/// - Runs `sync_workspace` and asserts both files are indexed.
+/// - Removes one file from disk, re-runs `sync_workspace`, and asserts the deleted resource is pruned.
+/// - Confirms `list_resources` reflects the removal.
+///
+/// # Examples
+///
+/// ```rust
+/// // Creates workspace with docs/alpha.md and docs/beta.md, syncs, then deletes beta.md and re-syncs.
+/// ```
 #[tokio::test]
 async fn workspace_sync_indexes_files_and_prunes_missing_resources() {
     let dir = tempdir().unwrap();
@@ -292,6 +346,33 @@ async fn workspace_sync_indexes_files_and_prunes_missing_resources() {
         .any(|resource| resource.uri.ends_with("/docs/beta.md")));
 }
 
+/// Verifies that graph-typed resources are materialized into facts with provenance and that Dragonfly session recent-windowing works.
+///
+/// This test upserts a graph resource carrying provenance metadata (subject, object, relation, session id), asserts that
+/// `graph_facts` returns the expected materialized fact with the provided identifiers and provenance, and confirms the
+/// graph resource is discoverable via `search_context` when filtered by graph kind. It then appends multiple session
+/// events for the same session id and verifies `recent_session_entries` returns only the most recent entries according
+/// to the configured `recent_window`, while `list_sessions` reports the full session history length.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Demonstrates the expected high-level interactions used by the test:
+/// # async fn example(engine: &ContextEngine) {
+/// let facts = engine.graph_facts("Project X", 5).await.unwrap();
+/// assert!(!facts.is_empty());
+///
+/// engine.append_session(SessionEventRequest {
+///     session_id: "sess-graph".to_string(),
+///     role: "user".to_string(),
+///     content: "Example".to_string(),
+///     metadata: std::collections::BTreeMap::new(),
+/// }).await.unwrap();
+///
+/// let recent = engine.recent_session_entries("sess-graph", 2).await.unwrap();
+/// assert!(recent.len() <= 2);
+/// # }
+/// ```
 #[tokio::test]
 async fn graph_resources_materialize_facts_with_provenance_and_recent_window() {
     let dir = tempdir().unwrap();

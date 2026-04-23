@@ -66,6 +66,23 @@ fn apply_cli_overrides() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Retrieves the next value from an argument iterator for the specified flag, returning an error if no value is available.
+///
+/// # Parameters
+///
+/// - `args`: iterator over command-line arguments positioned after the flag.
+/// - `flag`: flag name used in the error message when a value is missing.
+///
+/// # Returns
+///
+/// `Ok(String)` containing the next argument value, or `Err` with the message `missing value for {flag}` if the iterator is exhausted.
+///
+/// # Examples
+///
+/// ```
+/// let mut it = vec!["bar".to_string()].into_iter();
+/// assert_eq!(expect_value(&mut it, "--foo").unwrap(), "bar");
+/// ```
 fn expect_value(args: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Result<String> {
     args.next()
         .ok_or_else(|| anyhow::anyhow!("missing value for {flag}"))

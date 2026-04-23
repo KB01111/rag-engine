@@ -28,6 +28,12 @@ type Client struct {
 	mcpConnections map[string]struct{}
 }
 
+// NewClient creates and returns a Client connected to the daemon at addr.
+// It wraps the provided context with a 10-second timeout, validates the daemon
+// address (rejecting non-loopback addresses when TLS would be required), and
+// dials the daemon. On success it constructs a Client with gRPC service
+// clients and an empty MCP connection bookkeeping map. Returns an error if
+// address validation or dialing fails.
 func NewClient(ctx context.Context, addr string) (*Client, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

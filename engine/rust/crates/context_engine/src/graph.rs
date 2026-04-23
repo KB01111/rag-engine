@@ -19,6 +19,22 @@ pub enum GraphNodeKind {
 }
 
 impl GraphNodeKind {
+    /// Maps a metadata string to the corresponding `GraphNodeKind`.
+    ///
+    /// Comparison is case-insensitive and ignores surrounding whitespace. Recognized inputs:
+    /// - `"user"` -> `GraphNodeKind::User`
+    /// - `"project"` -> `GraphNodeKind::Project`
+    /// - `"concept"` -> `GraphNodeKind::Concept`
+    /// - `"document"` -> `GraphNodeKind::Document`
+    /// Any other value yields `GraphNodeKind::Generic`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(matches!(GraphNodeKind::from_metadata(" User "), GraphNodeKind::User));
+    /// assert!(matches!(GraphNodeKind::from_metadata("PROJECT"), GraphNodeKind::Project));
+    /// assert!(matches!(GraphNodeKind::from_metadata("unknown"), GraphNodeKind::Generic));
+    /// ```
     pub fn from_metadata(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "user" => Self::User,
@@ -29,6 +45,18 @@ impl GraphNodeKind {
         }
     }
 
+    /// The lowercase string identifier for the `GraphNodeKind`.
+    ///
+    /// # Returns
+    ///
+    /// The corresponding lowercase name: `"user"`, `"project"`, `"concept"`, `"document"`, or `"generic"`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let k = GraphNodeKind::User;
+    /// assert_eq!(k.as_str(), "user");
+    /// ```
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::User => "user",
@@ -53,6 +81,20 @@ pub enum GraphRelationKind {
 }
 
 impl GraphRelationKind {
+    /// Parses a metadata string into a `GraphRelationKind`.
+    ///
+    /// The input is interpreted case-insensitively and may include surrounding whitespace.
+    /// Unrecognized values are mapped to `GraphRelationKind::RelatedTo`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crate::graph::GraphRelationKind;
+    ///
+    /// assert_eq!(GraphRelationKind::from_metadata("INTERESTED_IN"), GraphRelationKind::InterestedIn);
+    /// assert_eq!(GraphRelationKind::from_metadata(" recommended "), GraphRelationKind::Recommended);
+    /// assert_eq!(GraphRelationKind::from_metadata("unknown_value"), GraphRelationKind::RelatedTo);
+    /// ```
     pub fn from_metadata(value: &str) -> Self {
         match value.trim().to_ascii_uppercase().as_str() {
             "INTERESTED_IN" => Self::InterestedIn,
@@ -65,6 +107,18 @@ impl GraphRelationKind {
         }
     }
 
+    /// Returns the uppercase identifier for this relation kind as used in metadata and serialization.
+    ///
+    /// # Returns
+    ///
+    /// The relation kind as an uppercase `&'static str` (e.g. `"INTERESTED_IN"`, `"RELATED_TO"`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let s = GraphRelationKind::Uses.as_str();
+    /// assert_eq!(s, "USES");
+    /// ```
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::InterestedIn => "INTERESTED_IN",
