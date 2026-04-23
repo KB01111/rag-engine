@@ -354,7 +354,6 @@ async fn workspace_sync_indexes_files_and_prunes_missing_resources() {
         .iter()
         .any(|resource| resource.uri.ends_with("/docs/beta.md")));
 }
-
 /// Verifies that graph-typed resources are materialized into facts with provenance and that Dragonfly session recent-windowing works.
 ///
 /// This test upserts a graph resource carrying provenance metadata (subject, object, relation, session id), asserts that

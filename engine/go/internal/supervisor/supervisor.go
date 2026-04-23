@@ -26,6 +26,7 @@ type Supervisor struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	config  *config.Config
+	mode    string
 
 	Context  *contextsvc.Manager
 	Runtime  runtime.Service
@@ -153,6 +154,11 @@ func (s *Supervisor) Health() map[string]interface{} {
 	ragSvc := s.RAG
 	trainingSvc := s.Training
 	mcpSvc := s.MCP
+	mode := s.mode
+	daemonConfigured := s.config.Daemon.Command != ""
+	daemonCommand := s.config.Daemon.Command
+	daemonAddr := s.config.Daemon.Addr()
+	daemonConnected := s.daemonClient != nil
 	s.mu.RUnlock()
 
 	contextHealth := map[string]interface{}{
@@ -173,9 +179,40 @@ func (s *Supervisor) Health() map[string]interface{} {
 		}
 	}
 
+	degraded := mode != "daemon"
+	status := "ok"
+	if !running {
+		status = "stopped"
+		degraded = true
+	} else if !daemonConnected && daemonConfigured {
+		status = "degraded"
+		degraded = true
+	} else if contextManager != nil && contextManager.Enabled() {
+		if ready, ok := contextHealth["ready"].(bool); ok && !ready {
+			status = "degraded"
+			degraded = true
+		}
+	}
+
 	return map[string]interface{}{
-		"running": running,
+		"running":        running,
+		"status":         status,
+		"execution_mode": mode,
+		"degraded":       degraded,
+		"daemon": map[string]interface{}{
+			"configured": daemonConfigured,
+			"connected":  daemonConnected,
+			"addr":       daemonAddr,
+			"command":    daemonCommand,
+		},
 		"context": contextHealth,
+		"service_modes": map[string]interface{}{
+			"runtime":  mode,
+			"rag":      mode,
+			"training": mode,
+			"mcp":      mode,
+			"context":  "context-service",
+		},
 		"runtime": map[string]interface{}{
 			"loaded_models": loadedModelCount(runtimeSvc),
 		},
@@ -196,6 +233,7 @@ func (s *Supervisor) initLocalServicesLocked() {
 	s.RAG = rag.NewManager(s.config, s.Context)
 	s.Training = training.NewManager(s.config)
 	s.MCP = mcp.NewManager(s.config)
+	s.mode = "local-fallback"
 }
 
 func (s *Supervisor) launchDaemonLocked() error {
@@ -230,6 +268,7 @@ func (s *Supervisor) launchDaemonLocked() error {
 	s.RAG = rag.NewManager(s.config, s.Context)
 	s.Training = client
 	s.MCP = client
+	s.mode = "daemon"
 
 	s.wg.Add(1)
 	go s.watchDaemon(cmd)
@@ -355,4 +394,10 @@ func connectionCount(svc mcp.Service) int {
 		return 0
 	}
 	return svc.ConnectionCount()
+}
+
+func (s *Supervisor) ExecutionMode() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.mode
 }

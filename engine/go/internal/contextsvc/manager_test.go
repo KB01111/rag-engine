@@ -137,13 +137,14 @@ func (s *daemonContextStub) GetSession(_ context.Context, req *pb.ContextSession
 func (s *ManagerTestSuite) SetupTest() {
 	s.capturedSearchBody.Reset()
 	s.httpCalls = 0
+	s.server = nil
 	if strings.Contains(s.T().Name(), "UsesDaemonContextClientWhenAttached") {
 		s.manager = NewManager(Config{
 			Enabled: true,
 		})
 		return
 	}
-	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.server = newIPv4Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.httpCalls++
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {

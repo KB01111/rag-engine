@@ -14,7 +14,7 @@ use context_engine::{
 use embedding::{create_default_engine, EmbeddingEngine};
 use prost_types::{value, Struct, Timestamp, Value};
 use runtime_engine::RuntimeEngine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use storage::{
     ChunkSearchQuery, DocumentRecord, EngineStore, MCPConnectionRecord, ModelRecord, SearchMode,
     VectorRecord,
@@ -71,7 +71,7 @@ struct ContextGrpcService {
     engine: ContextEngine,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredTool {
     name: String,
     description: String,
@@ -79,13 +79,19 @@ struct StoredTool {
     parameters: Vec<StoredToolParameter>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredToolParameter {
     name: String,
     #[serde(rename = "type")]
     parameter_type: String,
     required: bool,
     description: String,
+}
+
+#[derive(Clone)]
+struct ActiveConnection {
+    record: MCPConnectionRecord,
+    tools: Vec<Tool>,
 }
 
 /// Starts the AI Engine daemon gRPC server configured from environment variables.
@@ -242,16 +248,26 @@ impl Runtime for EngineService {
             .await?
             .ok_or_else(|| Status::invalid_argument("missing inference request"))?;
 
-        let tokens = self.state.runtime.infer_tokens(&first.prompt);
+        if first.model_id.is_empty() {
+            return Err(Status::invalid_argument(
+                "model_id is required for daemon-backed inference",
+            ));
+        }
+
+        let chunks = self
+            .state
+            .runtime
+            .stream_inference(&first.model_id, &first.prompt)
+            .await
+            .map_err(not_found_status)?;
         let (sender, receiver) = mpsc::channel(8);
         tokio::spawn(async move {
-            let total = tokens.len();
-            for (index, token) in tokens.into_iter().enumerate() {
+            for chunk in chunks {
                 if sender
                     .send(Ok(InferenceResponse {
-                        token,
-                        complete: index + 1 == total,
-                        metrics: HashMap::new(),
+                        token: chunk.token,
+                        complete: chunk.complete,
+                        metrics: chunk.metrics,
                     }))
                     .await
                     .is_err()
@@ -598,16 +614,20 @@ impl Mcp for EngineService {
         let request = request.into_inner();
         let connection_id = format!("conn-{}", stable_id(&request.server_url));
         let auth_json = serde_json::to_string(&request.auth).map_err(internal_status)?;
+        let server_name = server_name_from_url(&request.server_url);
+        let tools = builtin_tools();
+        let tools_json = serde_json::to_string(&tools.iter().map(stored_tool).collect::<Vec<_>>())
+            .map_err(internal_status)?;
 
         self.state
             .store
             .upsert_mcp_connection(MCPConnectionRecord {
                 connection_id: connection_id.clone(),
                 server_url: request.server_url.clone(),
-                server_name: "MCP Server".to_string(),
+                server_name: server_name.clone(),
                 connected: true,
                 auth_json,
-                tools_json: "default".to_string(),
+                tools_json,
                 updated_at: now(),
             })
             .await
@@ -616,7 +636,7 @@ impl Mcp for EngineService {
         Ok(Response::new(McpConnection {
             connection_id,
             connected: true,
-            server_name: "MCP Server".to_string(),
+            server_name,
         }))
     }
 
@@ -637,34 +657,17 @@ impl Mcp for EngineService {
         request: Request<McpConnectionRequest>,
     ) -> Result<Response<ToolList>, Status> {
         let request = request.into_inner();
-        let connections = self
-            .state
-            .store
-            .list_mcp_connections()
+        let Some(connection) = self
+            .find_connection_by_url(&request.server_url)
             .await
-            .map_err(internal_status)?;
-        let Some(connection) = connections
-            .into_iter()
-            .find(|connection| connection.server_url == request.server_url)
+            .map_err(internal_status)?
         else {
             return Err(Status::not_found("connection not found"));
         };
 
-        let tools = if connection.tools_json == "default" || connection.tools_json.is_empty() {
-            default_tools()
-        } else {
-            match serde_json::from_str::<Vec<StoredTool>>(&connection.tools_json) {
-                Ok(parsed_tools) => parsed_tools.into_iter().map(to_proto_tool).collect(),
-                Err(err) => {
-                    eprintln!(
-                        "Failed to parse tools_json: {}, falling back to default",
-                        err
-                    );
-                    default_tools()
-                }
-            }
-        };
-        Ok(Response::new(ToolList { tools }))
+        Ok(Response::new(ToolList {
+            tools: connection.tools,
+        }))
     }
 
     async fn call_tool(
@@ -672,16 +675,104 @@ impl Mcp for EngineService {
         request: Request<CallToolRequest>,
     ) -> Result<Response<CallToolResponse>, Status> {
         let request = request.into_inner();
+        let Some(connection) = self
+            .find_connection_by_id(&request.connection_id)
+            .await
+            .map_err(internal_status)?
+        else {
+            return Ok(Response::new(CallToolResponse {
+                success: false,
+                result: None,
+                error: format!("connection not found: {}", request.connection_id),
+            }));
+        };
+
+        if !connection
+            .tools
+            .iter()
+            .any(|tool| tool.name == request.tool_name)
+        {
+            return Ok(Response::new(CallToolResponse {
+                success: false,
+                result: None,
+                error: format!("tool not found: {}", request.tool_name),
+            }));
+        }
+
+        let result = match request.tool_name.as_str() {
+            "mcp.describe_connection" => Struct {
+                fields: BTreeMap::from([
+                    (
+                        "connection_id".to_string(),
+                        string_value(&connection.record.connection_id),
+                    ),
+                    (
+                        "server_url".to_string(),
+                        string_value(&connection.record.server_url),
+                    ),
+                    (
+                        "server_name".to_string(),
+                        string_value(&connection.record.server_name),
+                    ),
+                    ("status".to_string(), string_value("connected")),
+                ]),
+            },
+            "mcp.echo" => {
+                let mut fields = BTreeMap::from([
+                    (
+                        "connection_id".to_string(),
+                        string_value(&connection.record.connection_id),
+                    ),
+                    ("tool".to_string(), string_value(&request.tool_name)),
+                ]);
+                if let Some(arguments) = request.arguments {
+                    fields.insert(
+                        "arguments".to_string(),
+                        Value {
+                            kind: Some(value::Kind::StructValue(arguments)),
+                        },
+                    );
+                }
+                Struct { fields }
+            }
+            _ => {
+                return Ok(Response::new(CallToolResponse {
+                    success: false,
+                    result: None,
+                    error: format!("tool {} is staged and not executable", request.tool_name),
+                }));
+            }
+        };
+
         Ok(Response::new(CallToolResponse {
             success: true,
-            result: Some(Struct {
-                fields: BTreeMap::from([
-                    ("status".to_string(), string_value("success")),
-                    ("tool".to_string(), string_value(&request.tool_name)),
-                ]),
-            }),
+            result: Some(result),
             error: String::new(),
         }))
+    }
+}
+
+impl EngineService {
+    async fn find_connection_by_url(&self, server_url: &str) -> Result<Option<ActiveConnection>> {
+        let connection = self
+            .state
+            .store
+            .list_mcp_connections()
+            .await?
+            .into_iter()
+            .find(|connection| connection.server_url == server_url);
+        Ok(connection.map(to_active_connection))
+    }
+
+    async fn find_connection_by_id(&self, connection_id: &str) -> Result<Option<ActiveConnection>> {
+        let connection = self
+            .state
+            .store
+            .list_mcp_connections()
+            .await?
+            .into_iter()
+            .find(|connection| connection.connection_id == connection_id);
+        Ok(connection.map(to_active_connection))
     }
 }
 
@@ -1030,49 +1121,40 @@ fn timestamp_millis(millis: i64) -> Timestamp {
     Timestamp { seconds, nanos }
 }
 
-/// Constructs a list of default tool definitions used by MCP connections.
+/// Constructs the built-in MCP tool definitions bundled with the daemon.
 ///
-/// Returns a `Vec<Tool>` containing two predefined tools:
-/// - `get_weather` (requires `location`)
-/// - `search_files` (requires `query`, optional `path`)
+/// Returns the tools advertised for in-process/demo MCP connections and used as a
+/// fallback when persisted tool metadata cannot be decoded.
 ///
 /// # Examples
 ///
 /// ```
-/// let tools = default_tools();
-/// assert_eq!(tools.len(), 2);
-/// assert_eq!(tools[0].name, "get_weather");
-/// assert_eq!(tools[1].name, "search_files");
+/// let tools = builtin_tools();
+/// assert!(!tools.is_empty());
 /// ```
-fn default_tools() -> Vec<Tool> {
+fn builtin_tools() -> Vec<Tool> {
     vec![
         Tool {
-            name: "get_weather".to_string(),
-            description: "Get current weather for a location".to_string(),
+            name: "mcp.describe_connection".to_string(),
+            description: "Return the stored metadata for the active MCP connection.".to_string(),
             parameters: vec![ToolParameter {
-                name: "location".to_string(),
-                r#type: "string".to_string(),
-                required: true,
-                description: "City name".to_string(),
+                name: "verbose".to_string(),
+                r#type: "boolean".to_string(),
+                required: false,
+                description: "Include any additional connection metadata when available."
+                    .to_string(),
             }],
         },
         Tool {
-            name: "search_files".to_string(),
-            description: "Search files in a directory".to_string(),
-            parameters: vec![
-                ToolParameter {
-                    name: "query".to_string(),
-                    r#type: "string".to_string(),
-                    required: true,
-                    description: "Search query".to_string(),
-                },
-                ToolParameter {
-                    name: "path".to_string(),
-                    r#type: "string".to_string(),
-                    required: false,
-                    description: "Directory path".to_string(),
-                },
-            ],
+            name: "mcp.echo".to_string(),
+            description: "Echo a structured payload to verify end-to-end MCP execution wiring."
+                .to_string(),
+            parameters: vec![ToolParameter {
+                name: "payload".to_string(),
+                r#type: "object".to_string(),
+                required: false,
+                description: "Arbitrary JSON-compatible payload to echo back.".to_string(),
+            }],
         },
     ]
 }
@@ -2080,18 +2162,9 @@ mod tests {
 
     #[test]
     fn test_context_search_layer_all_variants() {
-        assert!(matches!(
-            context_search_layer(1),
-            Some(ResourceLayer::L0)
-        ));
-        assert!(matches!(
-            context_search_layer(2),
-            Some(ResourceLayer::L1)
-        ));
-        assert!(matches!(
-            context_search_layer(3),
-            Some(ResourceLayer::L2)
-        ));
+        assert!(matches!(context_search_layer(1), Some(ResourceLayer::L0)));
+        assert!(matches!(context_search_layer(2), Some(ResourceLayer::L1)));
+        assert!(matches!(context_search_layer(3), Some(ResourceLayer::L2)));
         assert!(context_search_layer(0).is_none());
         assert!(context_search_layer(4).is_none());
         assert!(context_search_layer(-1).is_none());
@@ -2138,4 +2211,40 @@ mod tests {
         assert_eq!(ts.seconds, -1);
         assert_eq!(ts.nanos, 999_000_000);
     }
+}
+
+fn stored_tool(tool: &Tool) -> StoredTool {
+    StoredTool {
+        name: tool.name.clone(),
+        description: tool.description.clone(),
+        parameters: tool
+            .parameters
+            .iter()
+            .map(|parameter| StoredToolParameter {
+                name: parameter.name.clone(),
+                parameter_type: parameter.r#type.clone(),
+                required: parameter.required,
+                description: parameter.description.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn to_active_connection(record: MCPConnectionRecord) -> ActiveConnection {
+    let tools = match serde_json::from_str::<Vec<StoredTool>>(&record.tools_json) {
+        Ok(parsed_tools) => parsed_tools.into_iter().map(to_proto_tool).collect(),
+        Err(_) => builtin_tools(),
+    };
+    ActiveConnection { record, tools }
+}
+
+fn server_name_from_url(server_url: &str) -> String {
+    server_url
+        .split("://")
+        .nth(1)
+        .unwrap_or(server_url)
+        .split('/')
+        .next()
+        .unwrap_or("mcp-server")
+        .to_string()
 }

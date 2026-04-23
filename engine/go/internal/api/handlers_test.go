@@ -33,7 +33,7 @@ func (s *ExtendedServerSuite) SetupSuite() {
 	cfg, err := config.Load("")
 	s.NoError(err)
 
-	s.ctxHTTP = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.ctxHTTP = newIPv4Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/health":

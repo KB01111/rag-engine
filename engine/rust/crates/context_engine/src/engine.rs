@@ -2847,7 +2847,6 @@ fn hash_token(token: &str) -> u64 {
     let digest = hasher.finalize();
     u64::from_le_bytes(digest[0..8].try_into().unwrap())
 }
-
 #[derive(Debug, Clone)]
 struct GraphEdgeRow {
     edge_id: String,

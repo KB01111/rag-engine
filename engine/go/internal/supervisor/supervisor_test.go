@@ -63,27 +63,16 @@ func TestHealthContainsExpectedTopLevelKeys(t *testing.T) {
 	health := sup.Health()
 
 	assert.Contains(t, health, "running")
+	assert.Contains(t, health, "status")
+	assert.Contains(t, health, "execution_mode")
+	assert.Contains(t, health, "degraded")
+	assert.Contains(t, health, "daemon")
 	assert.Contains(t, health, "context")
+	assert.Contains(t, health, "service_modes")
 	assert.Contains(t, health, "runtime")
 	assert.Contains(t, health, "rag")
 	assert.Contains(t, health, "training")
 	assert.Contains(t, health, "mcp")
-}
-
-func TestHealthDoesNotContainRemovedKeys(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Context.Enabled = false
-	cfg.Daemon.Command = ""
-
-	sup := NewSupervisor(cfg)
-	health := sup.Health()
-
-	// Keys that were removed in this PR
-	assert.NotContains(t, health, "execution_mode")
-	assert.NotContains(t, health, "degraded")
-	assert.NotContains(t, health, "daemon")
-	assert.NotContains(t, health, "service_modes")
-	assert.NotContains(t, health, "status")
 }
 
 func TestHealthRunningIsFalseBeforeStart(t *testing.T) {
@@ -97,4 +86,23 @@ func TestHealthRunningIsFalseBeforeStart(t *testing.T) {
 	running, ok := health["running"].(bool)
 	require.True(t, ok)
 	assert.False(t, running)
+}
+
+func TestHealthReportsFallbackModeWithoutDaemon(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Context.Enabled = false
+	cfg.Daemon.Command = ""
+
+	sup := NewSupervisor(cfg)
+
+	require.Equal(t, "local-fallback", sup.ExecutionMode())
+
+	health := sup.Health()
+	require.Equal(t, "local-fallback", health["execution_mode"])
+	require.Equal(t, true, health["degraded"])
+
+	daemon, ok := health["daemon"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, false, daemon["configured"])
+	require.Equal(t, false, daemon["connected"])
 }

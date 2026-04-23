@@ -535,7 +535,6 @@ pub async fn engine_from_env() -> anyhow::Result<ContextEngine> {
 ///     assert_eq!(cfg.addr, "127.0.0.1:7379".to_string());
 /// }
 /// ```
-—
 /// Builds an optional `DragonflyConfig` from environment variables.
 ///
 /// Reads the following environment variables and, if any are present or enabled,
