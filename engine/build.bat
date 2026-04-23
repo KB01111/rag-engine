@@ -7,6 +7,7 @@ set "GO_DIR=%ROOT%go"
 set "RUST_DIR=%ROOT%rust"
 set "PROTO_DIR=%ROOT%proto"
 set "CACHE_DIR=%ROOT%.cache"
+set "PROTOC_SCRIPT=%ROOT%scripts\ensure_protoc.ps1"
 
 if not exist "%CACHE_DIR%" mkdir "%CACHE_DIR%"
 set "GOCACHE=%CACHE_DIR%\go-build"
@@ -23,9 +24,14 @@ if exist "%ProgramFiles%\Go\bin\go.exe" set "GOEXE=%ProgramFiles%\Go\bin\go.exe"
 set "CARGOEXE=cargo"
 if exist "%USERPROFILE%\.cargo\bin\cargo.exe" set "CARGOEXE=%USERPROFILE%\.cargo\bin\cargo.exe"
 
-set "PROTOCEXE=protoc"
-if exist "%ROOT%..\.tools\protoc-34.1-win64\bin\protoc.exe" set "PROTOCEXE=%ROOT%..\.tools\protoc-34.1-win64\bin\protoc.exe"
-if defined PROTOC set "PROTOCEXE=%PROTOC%"
+REM Ensure protoc is available locally for both Go codegen and Rust builds.
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PROTOC_SCRIPT%"`) do set "PROTOC=%%i"
+if not exist "%PROTOC%" (
+    echo Failed to provision protoc
+    exit /b 1
+)
+
+set "PROTOCEXE=%PROTOC%"
 
 set "PROTOC_GEN_GO=protoc-gen-go"
 if exist "%USERPROFILE%\go\bin\protoc-gen-go.exe" set "PROTOC_GEN_GO=%USERPROFILE%\go\bin\protoc-gen-go.exe"
@@ -67,16 +73,16 @@ if exist "%PROTO_DIR%\engine.proto" (
     if errorlevel 1 (
         echo Warning: failed to generate root proto package.
         exit /b 1
-    ) else (
-        call "%PROTOCEXE%" -I . ^
-                          --plugin=protoc-gen-go="%PROTOC_GEN_GO%" ^
-                          --plugin=protoc-gen-go-grpc="%PROTOC_GEN_GO_GRPC%" ^
-                          --go_out=go --go_opt=paths=source_relative ^
-                          --go-grpc_out=go --go-grpc_opt=paths=source_relative ^
-                          engine.proto
-        if errorlevel 1 (
-            echo Warning: failed to generate Go module proto package.
-        )
+    )
+    call "%PROTOCEXE%" -I . ^
+                      --plugin=protoc-gen-go="%PROTOC_GEN_GO%" ^
+                      --plugin=protoc-gen-go-grpc="%PROTOC_GEN_GO_GRPC%" ^
+                      --go_out=go --go_opt=paths=source_relative ^
+                      --go-grpc_out=go --go-grpc_opt=paths=source_relative ^
+                      engine.proto
+    if errorlevel 1 (
+        echo Warning: failed to generate Go module proto package.
+        exit /b 1
     )
     popd
 )

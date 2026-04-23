@@ -2,11 +2,25 @@
 
 A high-performance local AI engine with a Go control plane, a Rust execution daemon, and a dedicated Rust context service.
 
+## WinUI v1 Surface
+
+The packaged WinUI integration path is:
+
+1. WinUI launches the Go server with a config file.
+2. The Go supervisor launches and health-checks the Rust daemon.
+3. The WinUI app talks to the Go control plane over local gRPC.
+
+For this v1 surface:
+
+- `Runtime` and `RAG` are the supported frontend services.
+- `Training` and `MCP` are disabled by default and return `UNIMPLEMENTED` from the Go control plane.
+- The daemon is required by default. If no daemon binary or command is available, startup fails fast instead of silently falling back to in-memory managers.
+
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     Electron (Renderer)                      │
+│                 WinUI / Native Frontend                      │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ↓
@@ -29,21 +43,9 @@ A high-performance local AI engine with a Go control plane, a Rust execution dae
 
 ## Quick Start
 
-### 1. Generate Proto Files
+### 1. Build Binaries
 
-```bash
-# Install protoc and Go plugins
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-
-# Generate Go code
-cd engine/proto
-protoc --go_out=../go --go_opt=paths=source_relative \
-       --go-grpc_out=../go --go-grpc_opt=paths=source_relative \
-       engine.proto
-```
-
-### 2. Build The Whole Stack
+`build.bat` and `build.sh` now bootstrap a pinned official `protoc` automatically if the machine does not already have one on `PATH`.
 
 ```bash
 cd engine
@@ -51,7 +53,7 @@ cd engine
 build.bat    # Windows
 ```
 
-### 3. Run Server
+### 2. Run Server
 
 ```bash
 ./go/bin/server
@@ -59,14 +61,7 @@ build.bat    # Windows
 ./go/bin/server --config ./config.example.yaml
 ```
 
-### 4. Build Rust Crates
-
-```bash
-cd engine/rust
-cargo build --release
-```
-
-### 5. Run Client Demo
+### 3. Run Runtime + RAG Demo
 
 ```bash
 cd engine/go
@@ -97,6 +92,7 @@ go run ./cmd/client/main.go
 - `AppendSession` / `GetSession` - Session persistence
 
 ### Training Service
+- Disabled by default for the WinUI v1 surface.
 - `StartRun` - Start a training job
 - `CancelRun` - Cancel a running job
 - `ListRuns` - List all training runs
@@ -104,6 +100,7 @@ go run ./cmd/client/main.go
 - `StreamLogs` - Stream training logs
 
 ### MCP Service
+- Disabled by default for the WinUI v1 surface.
 - `Connect` - Connect to MCP server
 - `Disconnect` - Disconnect from server
 - `ListTools` - List available tools
@@ -122,6 +119,19 @@ See `config.example.yaml` for configuration options:
 - MCP timeout and retry settings
 
 ## Development
+
+### Packaged Smoke Test
+
+`smoke.ps1` is the release-style verification path for the bundled local backend. It:
+
+- builds the server and daemon,
+- provisions a temporary local config with ephemeral ports,
+- launches the Go server and Rust daemon together,
+- runs the `Runtime + RAG` client flow,
+- restarts the stack, and
+- verifies document persistence after restart.
+
+The smoke path uses a deterministic fake `llama-cli` command so it can validate the runtime contract without depending on an external model runner being preinstalled.
 
 ### Directory Structure
 

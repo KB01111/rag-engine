@@ -15,8 +15,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -338,38 +340,65 @@ func (s *Server) GetSession(ctx context.Context, req *pb.ContextSessionGetReques
 }
 
 func (s *Server) StartRun(ctx context.Context, req *pb.TrainingRunRequest) (*pb.TrainingRun, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.StartRun(ctx, req)
 }
 
 func (s *Server) CancelRun(ctx context.Context, req *pb.CancelRequest) (*emptypb.Empty, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.CancelRun(ctx, req)
 }
 
 func (s *Server) ListRuns(ctx context.Context, _ *emptypb.Empty) (*pb.TrainingRunList, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.ListRuns(ctx, &emptypb.Empty{})
 }
 
 func (s *Server) ListArtifacts(ctx context.Context, req *pb.ArtifactsRequest) (*pb.ArtifactList, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.ListArtifacts(ctx, req)
 }
 
 func (s *Server) StreamLogs(req *pb.LogsRequest, stream pb.Training_StreamLogsServer) error {
+	if !s.config.Services.EnableTraining {
+		return status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.StreamLogs(req, stream)
 }
 
 func (s *Server) Connect(ctx context.Context, req *pb.MCPConnectionRequest) (*pb.MCPConnection, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.Connect(ctx, req)
 }
 
 func (s *Server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*emptypb.Empty, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.Disconnect(ctx, req)
 }
 
 func (s *Server) ListTools(ctx context.Context, req *pb.MCPConnectionRequest) (*pb.ToolList, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.ListTools(ctx, req)
 }
 
 func (s *Server) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.CallToolResponse, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.CallTool(ctx, req)
 }
 

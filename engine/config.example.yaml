@@ -8,6 +8,7 @@ server:
 daemon:
   host: "127.0.0.1"
   port: 50061
+  required: true
   # If blank, the server auto-detects a locally built daemon in ./go/bin or ./rust/target/*.
   command: ""
   args: []
@@ -16,6 +17,10 @@ daemon:
   ready_timeout: 10s
   llama_cli: "llama-cli"
   training_cli: "llama-train"
+
+services:
+  enable_training: false
+  enable_mcp: false
 
 storage:
   lancedb_uri: "~/ai-engine/lancedb"

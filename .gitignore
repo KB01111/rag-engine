@@ -2,6 +2,7 @@
 engine/go/bin/
 engine/go/bin
 *.exe
+engine/.tools/
 .cache/
 engine/.cache/
 

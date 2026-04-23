@@ -33,6 +33,8 @@ func (s *ServerSuite) SetupSuite() {
 
 	cfg, err := config.Load("")
 	s.NoError(err)
+	cfg.Daemon.Required = false
+	cfg.Daemon.Command = ""
 	s.cfg = cfg
 
 	s.ctxHTTP = newIPv4Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -90,8 +92,8 @@ func (s *ServerSuite) TestHealthEndpoint() {
 	w := httptest.NewRecorder()
 	s.router.ServeHTTP(w, req)
 
-	s.Equal(http.StatusOK, w.Code)
-	s.Contains(w.Body.String(), "ok")
+	s.Equal(http.StatusServiceUnavailable, w.Code)
+	s.Contains(w.Body.String(), "degraded")
 	s.Contains(w.Body.String(), "execution_mode")
 }
 

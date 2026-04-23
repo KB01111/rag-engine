@@ -69,6 +69,12 @@ $daemonPort = Get-FreePort
 $configPath = Join-Path $workspace "config.yaml"
 $serverStdout = Join-Path $workspace "server.stdout.log"
 $serverStderr = Join-Path $workspace "server.stderr.log"
+$fakeLlamaCli = Join-Path $workspace "fake-llama.cmd"
+
+@"
+@echo off
+echo local-backend:STREAM_OK
+"@ | Set-Content -Path $fakeLlamaCli -Encoding ASCII
 
 @"
 server:
@@ -81,13 +87,18 @@ server:
 daemon:
   host: "127.0.0.1"
   port: $daemonPort
+  required: true
   command: "$($daemonBin -replace '\\','/')"
   args: []
   startup_timeout: 15s
   restart_backoff: 3s
   ready_timeout: 10s
-  llama_cli: "llama-cli"
+  llama_cli: "$($fakeLlamaCli -replace '\\','/')"
   training_cli: "llama-train"
+
+services:
+  enable_training: false
+  enable_mcp: false
 
 storage:
   lancedb_uri: "$($lancedbDir -replace '\\','/')"
@@ -119,50 +130,93 @@ logging:
   format: "json"
 "@ | Set-Content -Path $configPath
 
-Write-Host "Starting server..."
-$proc = Start-Process -FilePath $serverBin `
-    -ArgumentList @("--config", $configPath) `
-    -WorkingDirectory $goDir `
-    -RedirectStandardOutput $serverStdout `
-    -RedirectStandardError $serverStderr `
-    -PassThru
+function Start-EngineServer {
+    param(
+        [string]$Binary,
+        [string]$Config,
+        [string]$WorkingDirectory,
+        [string]$StdoutPath,
+        [string]$StderrPath
+    )
 
-try {
-    $healthUrl = "http://127.0.0.1:$httpPort/health"
-    $ready = $false
+    Start-Process -FilePath $Binary `
+        -ArgumentList @("--config", $Config) `
+        -WorkingDirectory $WorkingDirectory `
+        -RedirectStandardOutput $StdoutPath `
+        -RedirectStandardError $StderrPath `
+        -PassThru
+}
+
+function Wait-ForEngine {
+    param(
+        [string]$HealthUrl,
+        $Process
+    )
+
     for ($i = 0; $i -lt 60; $i++) {
         Start-Sleep -Milliseconds 500
         try {
-            $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2
+            $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
             if ($health.status -eq "ok") {
-                $ready = $true
-                break
+                return
             }
         } catch {
             Write-Verbose "Health check attempt $i failed: $($_.Exception.Message)"
         }
-        if ($proc.HasExited) {
+        if ($Process.HasExited) {
             throw "server exited early; see $serverStdout and $serverStderr"
         }
     }
 
-    if (-not $ready) {
-        throw "server did not become healthy; see $serverStdout and $serverStderr"
+    throw "server did not become healthy; see $serverStdout and $serverStderr"
+}
+
+function Stop-Engine {
+    param(
+        $Process
+    )
+
+    $daemonChildren = @()
+    if ($Process) {
+        $daemonChildren = Get-CimInstance Win32_Process -Filter ("ParentProcessId = {0}" -f $Process.Id) -ErrorAction SilentlyContinue
     }
+    if ($Process -and -not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $Process.Id -Timeout 5 -ErrorAction SilentlyContinue
+    }
+    foreach ($child in $daemonChildren) {
+        Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $child.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
+    }
+}
+
+Write-Host "Starting server..."
+$proc = Start-EngineServer -Binary $serverBin -Config $configPath -WorkingDirectory $goDir -StdoutPath $serverStdout -StderrPath $serverStderr
+
+try {
+    $healthUrl = "http://127.0.0.1:$httpPort/health"
+    Wait-ForEngine -HealthUrl $healthUrl -Process $proc
 
     Write-Host "Running gRPC smoke client..."
-    $clientOutput = & $clientBin -addr ("127.0.0.1:{0}" -f $grpcPort) 2>&1
+    $docId = "doc-smoke"
+    $clientOutput = & $clientBin `
+        -addr ("127.0.0.1:{0}" -f $grpcPort) `
+        -doc-id $docId `
+        -query "retrieval local models" `
+        -prompt "Say hello from the bundled WinUI runtime path." 2>&1
     $clientText = ($clientOutput | Out-String)
     $clientText | Write-Host
 
     foreach ($needle in @(
         "Version:",
         "Available models:",
+        "Loaded model:",
+        "Inference output: local-backend:STREAM_OK",
         "Upserted document:",
+        "Documents:",
+        "Document present: True",
         "Search results:",
-        "Started training run:",
-        "MCP connected:",
-        "Available tools:"
+        "Demo Complete"
     )) {
         if ($clientText -notmatch [regex]::Escape($needle)) {
             throw "missing smoke output marker '$needle'"
@@ -174,17 +228,34 @@ try {
         throw "expected running status from HTTP endpoint"
     }
 
+    Write-Host "Restarting server to verify persistence..."
+    Stop-Engine -Process $proc
+    Start-Sleep -Seconds 1
+    $proc = Start-EngineServer -Binary $serverBin -Config $configPath -WorkingDirectory $goDir -StdoutPath $serverStdout -StderrPath $serverStderr
+    Wait-ForEngine -HealthUrl $healthUrl -Process $proc
+
+    $restartOutput = & $clientBin `
+        -addr ("127.0.0.1:{0}" -f $grpcPort) `
+        -doc-id $docId `
+        -query "retrieval local models" `
+        -prompt "Verify the restarted runtime path is alive." `
+        -skip-upsert 2>&1
+    $restartText = ($restartOutput | Out-String)
+    $restartText | Write-Host
+
+    foreach ($needle in @(
+        "Loaded model:",
+        "Inference output: local-backend:STREAM_OK",
+        "Documents:",
+        "Document present: True",
+        "Search results:"
+    )) {
+        if ($restartText -notmatch [regex]::Escape($needle)) {
+            throw "missing restart smoke output marker '$needle'"
+        }
+    }
+
     Write-Host "Smoke test passed."
 } finally {
-    $daemonChildren = @()
-    if ($proc) {
-        $daemonChildren = Get-CimInstance Win32_Process -Filter ("ParentProcessId = {0}" -f $proc.Id) -ErrorAction SilentlyContinue
-    }
-    if ($proc -and -not $proc.HasExited) {
-        Stop-Process -Id $proc.Id -Force
-    }
-    foreach ($child in $daemonChildren) {
-        Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue
-    }
-    Get-Process ai_engine_daemon -ErrorAction SilentlyContinue | Stop-Process -Force
+    Stop-Engine -Process $proc
 }

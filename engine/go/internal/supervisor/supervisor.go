@@ -78,10 +78,16 @@ func (s *Supervisor) Start() error {
 
 	if s.config.Daemon.Command != "" {
 		if err := s.launchDaemonLocked(); err != nil {
+			if s.config.Daemon.Required {
+				return fmt.Errorf("failed to launch required daemon: %w", err)
+			}
+			log.Error().Err(err).Msg("failed to launch optional daemon, falling back to local services")
 			s.initLocalServicesLocked()
-			return fmt.Errorf("failed to launch daemon: %w", err)
 		}
 	} else {
+		if s.config.Daemon.Required {
+			return fmt.Errorf("daemon is required but no command or binary was found")
+		}
 		if err := s.Context.Start(s.ctx); err != nil {
 			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
 				log.Error().Err(stopErr).Msg("failed to stop context backend after startup error")
@@ -266,7 +272,7 @@ func (s *Supervisor) launchDaemonLocked() error {
 	s.daemonCmd = cmd
 	s.Context.SetDaemonContextClient(client)
 	s.Runtime = s.wrapRuntimeService(client)
-	s.RAG = rag.NewManager(s.config, s.Context)
+	s.RAG = client
 	s.Training = client
 	s.MCP = client
 	s.mode = "daemon"
