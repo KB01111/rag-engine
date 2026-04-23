@@ -4,11 +4,13 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ai-engine/go/internal/contextsvc"
 	pb "github.com/ai-engine/proto/go"
 	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -56,10 +58,11 @@ func (r *runtimeRecorder) StreamInference(_ context.Context, stream pb.Runtime_S
 }
 
 type contextBackendStub struct {
+	mu              sync.Mutex
 	enabled         bool
 	session         *contextsvc.SessionResponse
 	sessionErr      error
-	searchResponses []*contextsvc.SearchResponse
+	searchResponses map[string]*contextsvc.SearchResponse
 	searchErr       error
 	searchErrors    map[string]error
 	searchRequests  []contextsvc.SearchRequest
@@ -82,19 +85,24 @@ func (s *contextBackendStub) GetSession(_ context.Context, sessionID string) (*c
 }
 
 func (s *contextBackendStub) Search(_ context.Context, req contextsvc.SearchRequest) (*contextsvc.SearchResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.searchRequests = append(s.searchRequests, req)
+
 	if err := s.searchErrors[req.Filters["kind"]]; err != nil {
 		return nil, err
 	}
 	if s.searchErr != nil {
 		return nil, s.searchErr
 	}
-	if len(s.searchResponses) == 0 {
-		return &contextsvc.SearchResponse{}, nil
+
+	kind := req.Filters["kind"]
+	if resp, ok := s.searchResponses[kind]; ok {
+		return resp, nil
 	}
-	resp := s.searchResponses[0]
-	s.searchResponses = s.searchResponses[1:]
-	return resp, nil
+
+	return &contextsvc.SearchResponse{}, nil
 }
 
 func (s *contextBackendStub) AppendSession(_ context.Context, req contextsvc.SessionAppendRequest) (*contextsvc.SessionResponse, error) {
@@ -149,155 +157,155 @@ func (s *inferenceStreamHarness) SetTrailer(metadata.MD)       {}
 func (s *inferenceStreamHarness) SendMsg(any) error            { return nil }
 func (s *inferenceStreamHarness) RecvMsg(any) error            { return nil }
 
-func TestContextAwareServiceAssemblesPromptAndPersistsTurns(t *testing.T) {
-	inner := &runtimeRecorder{}
-	contextBackend := &contextBackendStub{
-		enabled: true,
-		session: &contextsvc.SessionResponse{
-			SessionID: "sess-1",
-			Entries: []contextsvc.SessionEntry{
-				{Role: "user", Content: "We moved away from Redis."},
-				{Role: "assistant", Content: "Dragonfly is the preferred working memory store."},
-			},
-		},
-		searchResponses: []*contextsvc.SearchResponse{
-			{
-				Results: []contextsvc.SearchHit{
-					{
-						URI:       "viking://graph/project-x",
-						ChunkText: "Project X uses Dragonfly for hot memory.",
-						Metadata:  map[string]string{"kind": "graph"},
-					},
-				},
-			},
-			{
-				Results: []contextsvc.SearchHit{
-					{
-						URI:       "viking://resources/workspace/docs/project-x.md",
-						ChunkText: "Project X is local-first and stores session context durably.",
-						Metadata:  map[string]string{"kind": "resource"},
-					},
-				},
-			},
-		},
-	}
-
-	service := NewContextAwareService(inner, contextBackend)
-	stream := &inferenceStreamHarness{
-		ctx: context.Background(),
-		requests: []*pb.InferenceRequest{
-			{
-				ModelId: "cloud/gpt-4o-mini",
-				Prompt:  "What should Project X use for working memory?",
-				Parameters: map[string]string{
-					"session_id": "sess-1",
-				},
-			},
-		},
-	}
-
-	err := service.StreamInference(stream.ctx, stream)
-	require.NoError(t, err)
-	require.Len(t, inner.seen, 1)
-	require.Len(t, stream.sent, 1)
-	require.True(t, stream.sent[0].Complete)
-
-	assembledPrompt := inner.seen[0].GetPrompt()
-	require.Contains(t, assembledPrompt, "Recent working memory")
-	require.Contains(t, assembledPrompt, "Graph facts")
-	require.Contains(t, assembledPrompt, "Retrieved documents")
-	require.Contains(t, assembledPrompt, "Dragonfly")
-	require.Contains(t, assembledPrompt, "What should Project X use for working memory?")
-	require.Contains(t, inner.seen[0].GetContextRefs(), "viking://resources/workspace/docs/project-x.md")
-
-	require.Len(t, contextBackend.searchRequests, 2)
-	require.Len(t, contextBackend.appendRequests, 2)
-	require.Len(t, contextBackend.upsertRequests, 1)
-	require.Equal(t, "user", contextBackend.appendRequests[0].Role)
-	require.Equal(t, "assistant", contextBackend.appendRequests[1].Role)
-	require.True(t, strings.Contains(contextBackend.appendRequests[1].Content, "Dragonfly"))
-	require.Equal(t, "graph", contextBackend.upsertRequests[0].Metadata["kind"])
-	require.Equal(t, "PREFERS", contextBackend.upsertRequests[0].Metadata["relation"])
-	require.Equal(t, "dragonfly", contextBackend.upsertRequests[0].Metadata["object_id"])
+type ContextAwareSuite struct {
+	suite.Suite
+	inner          *runtimeRecorder
+	contextBackend *contextBackendStub
+	service        *ContextAwareService
+	stream         *inferenceStreamHarness
 }
 
-func TestContextAwareServiceFallsBackWhenContextLookupsFail(t *testing.T) {
-	inner := &runtimeRecorder{}
-	contextBackend := &contextBackendStub{
-		enabled:    true,
-		sessionErr: io.ErrUnexpectedEOF,
-		searchErr:  io.ErrUnexpectedEOF,
-	}
-
-	service := NewContextAwareService(inner, contextBackend)
-	stream := &inferenceStreamHarness{
+func (s *ContextAwareSuite) SetupTest() {
+	s.inner = &runtimeRecorder{}
+	s.contextBackend = &contextBackendStub{}
+	s.service = NewContextAwareService(s.inner, s.contextBackend)
+	s.stream = &inferenceStreamHarness{
 		ctx: context.Background(),
-		requests: []*pb.InferenceRequest{
-			{
-				ModelId: "local.gguf",
-				Prompt:  "Answer directly.",
-				Parameters: map[string]string{
-					"session_id": "sess-2",
-				},
-			},
-		},
 	}
-
-	err := service.StreamInference(stream.ctx, stream)
-	require.NoError(t, err)
-	require.Len(t, inner.seen, 1)
-	require.Equal(t, "Answer directly.", inner.seen[0].GetPrompt())
-	require.Empty(t, inner.seen[0].GetContextRefs())
-	require.Empty(t, contextBackend.upsertRequests)
-	require.Len(t, contextBackend.appendRequests, 2)
 }
 
-func TestContextAwareServiceKeepsSurvivingContextSourcesOnPartialFailures(t *testing.T) {
-	inner := &runtimeRecorder{}
-	contextBackend := &contextBackendStub{
-		enabled: true,
-		session: &contextsvc.SessionResponse{
-			SessionID: "sess-3",
-			Entries: []contextsvc.SessionEntry{
-				{Role: "user", Content: "Project X used Redis before."},
-				{Role: "assistant", Content: "We should keep local-first context."},
-			},
+func TestContextAwareSuite(t *testing.T) {
+	suite.Run(t, new(ContextAwareSuite))
+}
+
+func (s *ContextAwareSuite) TestAssemblesPromptAndPersistsTurns() {
+	s.contextBackend.enabled = true
+	s.contextBackend.session = &contextsvc.SessionResponse{
+		SessionID: "sess-1",
+		Entries: []contextsvc.SessionEntry{
+			{Role: "user", Content: "We moved away from Redis."},
+			{Role: "assistant", Content: "Dragonfly is the preferred working memory store."},
 		},
-		searchResponses: []*contextsvc.SearchResponse{
-			{
-				Results: []contextsvc.SearchHit{
-					{
-						URI:       "viking://resources/workspace/docs/project-x.md",
-						ChunkText: "Project X keeps context local and durable.",
-						Metadata:  map[string]string{"kind": "resource"},
-					},
+	}
+	s.contextBackend.searchResponses = map[string]*contextsvc.SearchResponse{
+		"graph": {
+			Results: []contextsvc.SearchHit{
+				{
+					URI:       "viking://graph/project-x",
+					ChunkText: "Project X uses Dragonfly for hot memory.",
+					Metadata:  map[string]string{"kind": "graph"},
 				},
 			},
 		},
-		searchErrors: map[string]error{
-			"graph": io.ErrUnexpectedEOF,
-		},
-	}
-
-	service := NewContextAwareService(inner, contextBackend)
-	stream := &inferenceStreamHarness{
-		ctx: context.Background(),
-		requests: []*pb.InferenceRequest{
-			{
-				ModelId: "local.gguf",
-				Prompt:  "How should Project X keep context?",
-				Parameters: map[string]string{
-					"session_id": "sess-3",
+		"resource": {
+			Results: []contextsvc.SearchHit{
+				{
+					URI:       "viking://resources/workspace/docs/project-x.md",
+					ChunkText: "Project X is local-first and stores session context durably.",
+					Metadata:  map[string]string{"kind": "resource"},
 				},
 			},
 		},
 	}
 
-	err := service.StreamInference(stream.ctx, stream)
-	require.NoError(t, err)
-	require.Len(t, inner.seen, 1)
-	require.Contains(t, inner.seen[0].GetPrompt(), "Recent working memory")
-	require.NotContains(t, inner.seen[0].GetPrompt(), "Graph facts")
-	require.Contains(t, inner.seen[0].GetPrompt(), "Retrieved documents")
-	require.Contains(t, inner.seen[0].GetContextRefs(), "viking://resources/workspace/docs/project-x.md")
+	s.stream.requests = []*pb.InferenceRequest{
+		{
+			ModelId: "cloud/gpt-4o-mini",
+			Prompt:  "What should Project X use for working memory?",
+			Parameters: map[string]string{
+				"session_id": "sess-1",
+			},
+		},
+	}
+
+	err := s.service.StreamInference(s.stream.ctx, s.stream)
+	s.Require().NoError(err)
+	s.Require().Len(s.inner.seen, 1)
+	s.Require().Len(s.stream.sent, 1)
+	s.Require().True(s.stream.sent[0].Complete)
+
+	assembledPrompt := s.inner.seen[0].GetPrompt()
+	s.Require().Contains(assembledPrompt, "Recent working memory")
+	s.Require().Contains(assembledPrompt, "Graph facts")
+	s.Require().Contains(assembledPrompt, "Retrieved documents")
+	s.Require().Contains(assembledPrompt, "Dragonfly")
+	s.Require().Contains(assembledPrompt, "What should Project X use for working memory?")
+	s.Require().Contains(s.inner.seen[0].GetContextRefs(), "viking://resources/workspace/docs/project-x.md")
+
+	s.Require().Len(s.contextBackend.searchRequests, 2)
+	s.Require().Len(s.contextBackend.appendRequests, 2)
+	s.Require().Len(s.contextBackend.upsertRequests, 1)
+	s.Require().Equal("user", s.contextBackend.appendRequests[0].Role)
+	s.Require().Equal("assistant", s.contextBackend.appendRequests[1].Role)
+	s.Require().True(strings.Contains(s.contextBackend.appendRequests[1].Content, "Dragonfly"))
+	s.Require().Equal("graph", s.contextBackend.upsertRequests[0].Metadata["kind"])
+	s.Require().Equal("PREFERS", s.contextBackend.upsertRequests[0].Metadata["relation"])
+	s.Require().Equal("dragonfly", s.contextBackend.upsertRequests[0].Metadata["object_id"])
+}
+
+func (s *ContextAwareSuite) TestFallsBackWhenContextLookupsFail() {
+	s.contextBackend.enabled = true
+	s.contextBackend.sessionErr = io.ErrUnexpectedEOF
+	s.contextBackend.searchErr = io.ErrUnexpectedEOF
+
+	s.stream.requests = []*pb.InferenceRequest{
+		{
+			ModelId: "local.gguf",
+			Prompt:  "Answer directly.",
+			Parameters: map[string]string{
+				"session_id": "sess-2",
+			},
+		},
+	}
+
+	err := s.service.StreamInference(s.stream.ctx, s.stream)
+	s.Require().NoError(err)
+	s.Require().Len(s.inner.seen, 1)
+	s.Require().Equal("Answer directly.", s.inner.seen[0].GetPrompt())
+	s.Require().Empty(s.inner.seen[0].GetContextRefs())
+	s.Require().Empty(s.contextBackend.upsertRequests)
+	s.Require().Len(s.contextBackend.appendRequests, 2)
+}
+
+func (s *ContextAwareSuite) TestKeepsSurvivingContextSourcesOnPartialFailures() {
+	s.contextBackend.enabled = true
+	s.contextBackend.session = &contextsvc.SessionResponse{
+		SessionID: "sess-3",
+		Entries: []contextsvc.SessionEntry{
+			{Role: "user", Content: "Project X used Redis before."},
+			{Role: "assistant", Content: "We should keep local-first context."},
+		},
+	}
+	s.contextBackend.searchResponses = map[string]*contextsvc.SearchResponse{
+		"resource": {
+			Results: []contextsvc.SearchHit{
+				{
+					URI:       "viking://resources/workspace/docs/project-x.md",
+					ChunkText: "Project X keeps context local and durable.",
+					Metadata:  map[string]string{"kind": "resource"},
+				},
+			},
+		},
+	}
+	s.contextBackend.searchErrors = map[string]error{
+		"graph": io.ErrUnexpectedEOF,
+	}
+
+	s.stream.requests = []*pb.InferenceRequest{
+		{
+			ModelId: "local.gguf",
+			Prompt:  "How should Project X keep context?",
+			Parameters: map[string]string{
+				"session_id": "sess-3",
+			},
+		},
+	}
+
+	err := s.service.StreamInference(s.stream.ctx, s.stream)
+	s.Require().NoError(err)
+	s.Require().Len(s.inner.seen, 1)
+	s.Require().Contains(s.inner.seen[0].GetPrompt(), "Recent working memory")
+	s.Require().NotContains(s.inner.seen[0].GetPrompt(), "Graph facts")
+	s.Require().Contains(s.inner.seen[0].GetPrompt(), "Retrieved documents")
+	s.Require().Contains(s.inner.seen[0].GetContextRefs(), "viking://resources/workspace/docs/project-x.md")
 }

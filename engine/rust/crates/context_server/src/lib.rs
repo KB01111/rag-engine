@@ -569,14 +569,14 @@ pub async fn engine_from_env() -> anyhow::Result<ContextEngine> {
 /// assert!(cfg2.is_none());
 /// ```
 fn dragonfly_config_from_env() -> Option<DragonflyConfig> {
-    if let Ok(enabled_val) = std::env::var("CONTEXT_DRAGONFLY_ENABLED") {
-        if matches!(
+    let enabled = if let Ok(enabled_val) = std::env::var("CONTEXT_DRAGONFLY_ENABLED") {
+        !matches!(
             enabled_val.trim().to_ascii_lowercase().as_str(),
             "" | "0" | "false"
-        ) {
-            return None;
-        }
-    }
+        )
+    } else {
+        false
+    };
 
     let addr = std::env::var("CONTEXT_DRAGONFLY_ADDR").ok();
     let key_prefix = std::env::var("CONTEXT_DRAGONFLY_KEY_PREFIX").ok();
@@ -584,7 +584,7 @@ fn dragonfly_config_from_env() -> Option<DragonflyConfig> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok());
 
-    if addr.is_none() && key_prefix.is_none() && recent_window.is_none() {
+    if !enabled && addr.is_none() && key_prefix.is_none() && recent_window.is_none() {
         return None;
     }
 

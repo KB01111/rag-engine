@@ -194,13 +194,16 @@ func (s *ContextAwareService) assembleRequest(ctx context.Context, req *pb.Infer
 		docErr      error
 	)
 
-	group, groupCtx := errgroup.WithContext(assemblyCtx)
-	group.Go(func() error {
-		sessionResp, sessionErr = s.context.GetSession(groupCtx, sessionID)
-		return sessionErr
-	})
-	group.Go(func() error {
-		graphResp, graphErr = s.context.Search(groupCtx, contextsvc.SearchRequest{
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		sessionResp, sessionErr = s.context.GetSession(assemblyCtx, sessionID)
+	}()
+	go func() {
+		defer wg.Done()
+		graphResp, graphErr = s.context.Search(assemblyCtx, contextsvc.SearchRequest{
 			Query: req.GetPrompt(),
 			TopK:  s.graphTopK,
 			Filters: map[string]string{
@@ -208,10 +211,10 @@ func (s *ContextAwareService) assembleRequest(ctx context.Context, req *pb.Infer
 			},
 			Layer: contextsvc.LayerL1,
 		})
-		return graphErr
-	})
-	group.Go(func() error {
-		docResp, docErr = s.context.Search(groupCtx, contextsvc.SearchRequest{
+	}()
+	go func() {
+		defer wg.Done()
+		docResp, docErr = s.context.Search(assemblyCtx, contextsvc.SearchRequest{
 			Query: req.GetPrompt(),
 			TopK:  s.documentTopK,
 			Filters: map[string]string{
@@ -219,12 +222,10 @@ func (s *ContextAwareService) assembleRequest(ctx context.Context, req *pb.Infer
 			},
 			Layer: contextsvc.LayerL2,
 		})
-		return docErr
-	})
+	}()
 
-	if err := group.Wait(); err != nil {
-		return cloned, sessionID
-	}
+	wg.Wait()
+
 	if sessionErr != nil && graphErr != nil && docErr != nil {
 		return cloned, sessionID
 	}
