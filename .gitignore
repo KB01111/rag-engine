@@ -3,13 +3,19 @@ engine/go/bin/
 engine/go/bin
 *.exe
 engine/.tools/
+.cache/
+engine/.cache/
 
 # Rust build output
 engine/rust/target/
 engine/rust/target
+engine/.cache/
 **/*.rlib
 **/*.rlib
 **/*.d
+**/*.pdb
+**/*.ilk
+**/*.rmeta
 
 # Go vendor and modules (keep go.mod and go.sum)
 engine/go/vendor/

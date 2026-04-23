@@ -20,7 +20,93 @@ pub struct RuntimeResources {
     pub memory_total_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InferenceChunk {
+    pub token: String,
+    pub complete: bool,
+    pub metrics: HashMap<String, String>,
+}
+
+pub trait InferenceBackend: Send + Sync {
+    fn backend_name(&self) -> &str;
+    fn infer(&self, model: &ModelRecord, prompt: &str) -> Result<Vec<InferenceChunk>>;
+}
+
 #[derive(Debug, Clone)]
+pub struct WhitespaceInferenceBackend {
+    backend_name: String,
+}
+
+impl WhitespaceInferenceBackend {
+    pub fn new(backend_name: impl Into<String>) -> Self {
+        Self {
+            backend_name: backend_name.into(),
+        }
+    }
+}
+
+impl InferenceBackend for WhitespaceInferenceBackend {
+    fn backend_name(&self) -> &str {
+        &self.backend_name
+    }
+
+    fn infer(&self, model: &ModelRecord, prompt: &str) -> Result<Vec<InferenceChunk>> {
+        let trimmed = prompt.trim();
+        let tokens = if trimmed.is_empty() {
+            vec![
+                "No".to_string(),
+                "prompt".to_string(),
+                "provided.".to_string(),
+            ]
+        } else {
+            let split: Vec<String> = trimmed.split_whitespace().map(String::from).collect();
+            let mut result = Vec::with_capacity(split.len() * 2 - 1);
+            for (i, token) in split.into_iter().enumerate() {
+                if i > 0 {
+                    result.push(" ".to_string());
+                }
+                result.push(token);
+            }
+            result
+        };
+
+        let mut chunks = Vec::with_capacity(tokens.len().max(1));
+        for (index, token) in tokens.into_iter().enumerate() {
+            let complete = index + 1 == chunks.capacity();
+            let mut metrics = HashMap::new();
+            metrics.insert("backend".to_string(), self.backend_name.clone());
+            metrics.insert("model".to_string(), model.id.clone());
+            if complete {
+                metrics.insert("status".to_string(), "complete".to_string());
+            }
+            chunks.push(InferenceChunk {
+                token,
+                complete,
+                metrics,
+            });
+        }
+
+        if chunks.is_empty() {
+            chunks.push(InferenceChunk {
+                token: String::new(),
+                complete: true,
+                metrics: HashMap::from([
+                    ("backend".to_string(), self.backend_name.clone()),
+                    ("model".to_string(), model.id.clone()),
+                    ("status".to_string(), "complete".to_string()),
+                ]),
+            });
+        } else if let Some(last) = chunks.last_mut() {
+            last.complete = true;
+            last.metrics
+                .insert("status".to_string(), "complete".to_string());
+        }
+
+        Ok(chunks)
+    }
+}
+
+#[derive(Clone)]
 pub struct RuntimeEngine {
     store: EngineStore,
     models_path: PathBuf,

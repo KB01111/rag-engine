@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use arrow_array::types::Float32Type;
 use arrow_array::{
-    Array, BooleanArray, Float32Array, FixedSizeListArray, Int64Array, RecordBatch, StringArray,
+    Array, BooleanArray, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures::TryStreamExt;
@@ -145,7 +145,11 @@ impl EngineStore {
         let documents = self.ensure_documents_table(&db).await?;
         let document_id = document.id.clone();
 
-        delete_where(&documents, &format!("id = '{}'", escape_literal(&document_id))).await?;
+        delete_where(
+            &documents,
+            &format!("id = '{}'", escape_literal(&document_id)),
+        )
+        .await?;
         add_record_batch(&documents, document_batch(&[document])?).await?;
 
         // Only create chunks table and perform chunk operations when we have actual chunks
@@ -389,9 +393,9 @@ impl EngineStore {
             .execute()
             .await
             .map_err(|error| StorageError::Backend(error.to_string()))?;
-        self.open_table(db, "documents")
-            .await?
-            .ok_or_else(|| StorageError::Backend("documents table missing after creation".to_string()))
+        self.open_table(db, "documents").await?.ok_or_else(|| {
+            StorageError::Backend("documents table missing after creation".to_string())
+        })
     }
 
     async fn ensure_chunks_table(
@@ -438,9 +442,9 @@ impl EngineStore {
         .execute()
         .await
         .map_err(|error| StorageError::Backend(error.to_string()))?;
-        self.open_table(db, "training_runs")
-            .await?
-            .ok_or_else(|| StorageError::Backend("training_runs table missing after creation".to_string()))
+        self.open_table(db, "training_runs").await?.ok_or_else(|| {
+            StorageError::Backend("training_runs table missing after creation".to_string())
+        })
     }
 
     async fn ensure_training_logs_table(&self, db: &Connection) -> Result<Table, StorageError> {
@@ -454,15 +458,12 @@ impl EngineStore {
         .execute()
         .await
         .map_err(|error| StorageError::Backend(error.to_string()))?;
-        self.open_table(db, "training_logs")
-            .await?
-            .ok_or_else(|| StorageError::Backend("training_logs table missing after creation".to_string()))
+        self.open_table(db, "training_logs").await?.ok_or_else(|| {
+            StorageError::Backend("training_logs table missing after creation".to_string())
+        })
     }
 
-    async fn ensure_mcp_connections_table(
-        &self,
-        db: &Connection,
-    ) -> Result<Table, StorageError> {
+    async fn ensure_mcp_connections_table(&self, db: &Connection) -> Result<Table, StorageError> {
         if let Some(table) = self.open_table(db, "mcp_connections").await? {
             return Ok(table);
         }
@@ -475,7 +476,9 @@ impl EngineStore {
         .map_err(|error| StorageError::Backend(error.to_string()))?;
         self.open_table(db, "mcp_connections")
             .await?
-            .ok_or_else(|| StorageError::Backend("mcp_connections table missing after creation".to_string()))
+            .ok_or_else(|| {
+                StorageError::Backend("mcp_connections table missing after creation".to_string())
+            })
     }
 
     async fn ensure_chunk_indexes(&self, table: &Table) -> Result<(), StorageError> {
@@ -489,10 +492,7 @@ impl EngineStore {
             }
         }
         let text_index_result = table
-            .create_index(
-                &["chunk_text"],
-                Index::FTS(FtsIndexBuilder::default()),
-            )
+            .create_index(&["chunk_text"], Index::FTS(FtsIndexBuilder::default()))
             .execute()
             .await;
         if let Err(error) = text_index_result {
@@ -504,11 +504,7 @@ impl EngineStore {
         Ok(())
     }
 
-    async fn open_table(
-        &self,
-        db: &Connection,
-        name: &str,
-    ) -> Result<Option<Table>, StorageError> {
+    async fn open_table(&self, db: &Connection, name: &str) -> Result<Option<Table>, StorageError> {
         match db.open_table(name).execute().await {
             Ok(table) => Ok(Some(table)),
             Err(error) => {
@@ -839,7 +835,10 @@ fn document_batch(records: &[DocumentRecord]) -> Result<RecordBatch, StorageErro
         document_schema(),
         vec![
             Arc::new(StringArray::from(
-                records.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.id.as_str())
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
                 records
@@ -860,10 +859,16 @@ fn document_batch(records: &[DocumentRecord]) -> Result<RecordBatch, StorageErro
                     .collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
-                records.iter().map(|record| record.created_at).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.created_at)
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
-                records.iter().map(|record| record.updated_at).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.updated_at)
+                    .collect::<Vec<_>>(),
             )),
         ],
     )
@@ -908,7 +913,10 @@ fn chunk_batch(records: &[VectorRecord]) -> Result<RecordBatch, StorageError> {
         chunk_schema(vector_dimension),
         vec![
             Arc::new(StringArray::from(
-                records.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.id.as_str())
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
                 records
@@ -930,7 +938,10 @@ fn chunk_batch(records: &[VectorRecord]) -> Result<RecordBatch, StorageError> {
                     .collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
-                records.iter().map(|record| record.created_at).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.created_at)
+                    .collect::<Vec<_>>(),
             )),
         ],
     )
@@ -942,13 +953,22 @@ fn model_batch(records: &[ModelRecord]) -> Result<RecordBatch, StorageError> {
         model_schema(),
         vec![
             Arc::new(StringArray::from(
-                records.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.id.as_str())
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
-                records.iter().map(|record| record.name.as_str()).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.name.as_str())
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
-                records.iter().map(|record| record.path.as_str()).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.path.as_str())
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
                 records
@@ -969,10 +989,16 @@ fn model_batch(records: &[ModelRecord]) -> Result<RecordBatch, StorageError> {
                     .collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
-                records.iter().map(|record| record.size_bytes).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.size_bytes)
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
-                records.iter().map(|record| record.updated_at).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.updated_at)
+                    .collect::<Vec<_>>(),
             )),
         ],
     )
@@ -984,10 +1010,16 @@ fn training_run_batch(records: &[TrainingRunRecord]) -> Result<RecordBatch, Stor
         training_run_schema(),
         vec![
             Arc::new(StringArray::from(
-                records.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.id.as_str())
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
-                records.iter().map(|record| record.name.as_str()).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.name.as_str())
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
                 records
@@ -1008,10 +1040,16 @@ fn training_run_batch(records: &[TrainingRunRecord]) -> Result<RecordBatch, Stor
                     .collect::<Vec<_>>(),
             )),
             Arc::new(Float32Array::from(
-                records.iter().map(|record| record.progress).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.progress)
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
-                records.iter().map(|record| record.error.as_str()).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.error.as_str())
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
                 records
@@ -1032,7 +1070,10 @@ fn training_run_batch(records: &[TrainingRunRecord]) -> Result<RecordBatch, Stor
                     .collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
-                records.iter().map(|record| record.started_at).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.started_at)
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
                 records
@@ -1074,7 +1115,10 @@ fn training_log_batch(records: &[TrainingLogRecord]) -> Result<RecordBatch, Stor
                     .collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
-                records.iter().map(|record| record.timestamp).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.timestamp)
+                    .collect::<Vec<_>>(),
             )),
         ],
     )
@@ -1104,7 +1148,10 @@ fn mcp_connection_batch(records: &[MCPConnectionRecord]) -> Result<RecordBatch, 
                     .collect::<Vec<_>>(),
             )),
             Arc::new(BooleanArray::from(
-                records.iter().map(|record| record.connected).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.connected)
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
                 records
@@ -1119,7 +1166,10 @@ fn mcp_connection_batch(records: &[MCPConnectionRecord]) -> Result<RecordBatch, 
                     .collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
-                records.iter().map(|record| record.updated_at).collect::<Vec<_>>(),
+                records
+                    .iter()
+                    .map(|record| record.updated_at)
+                    .collect::<Vec<_>>(),
             )),
         ],
     )

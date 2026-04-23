@@ -30,7 +30,25 @@ storage:
 runtime:
   models_path: "~/ai-engine/models"
   max_memory_mb: 8192
-  providers: []
+  providers:
+    - name: "local-openai"
+      type: "openai-compatible"
+      url: "http://127.0.0.1:11434/v1"
+      api_key: ""
+
+context:
+  enabled: true
+  service_url: "http://127.0.0.1:9191"
+  # Context remains a separate Rust service; the Go server proxies its contracts.
+  binary_path: "rust/target/release/context_server"
+  data_dir: "~/ai-engine/context"
+  auto_start: true
+  startup_timeout: 20s
+  managed_roots:
+    - "workspace=."
+  openviking:
+    url: ""
+    api_key: ""
 
 rag:
   storage_path: "~/ai-engine/lancedb"

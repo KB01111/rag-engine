@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"github.com/ai-engine/go/internal/config"
+	contextsvc "github.com/ai-engine/go/internal/contextsvc"
 	"github.com/ai-engine/go/internal/daemon"
 	"github.com/ai-engine/go/internal/mcp"
 	"github.com/ai-engine/go/internal/rag"
 	"github.com/ai-engine/go/internal/runtime"
 	"github.com/ai-engine/go/internal/training"
-	"log"
+	"github.com/rs/zerolog/log"
+	stdlog "log"
 )
 
 type Supervisor struct {
@@ -25,7 +27,9 @@ type Supervisor struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	config  *config.Config
+	mode    string
 
+	Context  *contextsvc.Manager
 	Runtime  runtime.Service
 	RAG      rag.Service
 	Training training.Service
@@ -39,10 +43,22 @@ type Supervisor struct {
 
 func NewSupervisor(cfg *config.Config) *Supervisor {
 	ctx, cancel := context.WithCancel(context.Background())
+	contextManager := contextsvc.NewManager(contextsvc.Config{
+		Enabled:          cfg.Context.Enabled,
+		BaseURL:          cfg.Context.ServiceURL,
+		BinaryPath:       cfg.Context.BinaryPath,
+		DataDir:          cfg.Context.DataDir,
+		AutoStart:        cfg.Context.AutoStart,
+		StartupTimeout:   cfg.Context.StartupTimeout,
+		ManagedRoots:     cfg.Context.ManagedRoots,
+		OpenVikingURL:    cfg.Context.OpenViking.URL,
+		OpenVikingAPIKey: cfg.Context.OpenViking.APIKey,
+	})
 	sup := &Supervisor{
-		ctx:    ctx,
-		cancel: cancel,
-		config: cfg,
+		ctx:     ctx,
+		cancel:  cancel,
+		config:  cfg,
+		Context: contextManager,
 	}
 	sup.initLocalServicesLocked()
 	return sup
@@ -72,12 +88,18 @@ func (s *Supervisor) Start() error {
 		if s.config.Daemon.Required {
 			return fmt.Errorf("daemon is required but no command or binary was found")
 		}
+		if err := s.Context.Start(s.ctx); err != nil {
+			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
+				log.Error().Err(stopErr).Msg("failed to stop context backend after startup error")
+			}
+			return fmt.Errorf("failed to start context backend: %w", err)
+		}
 		s.initLocalServicesLocked()
 	}
 
 	s.running = true
 
-	log.Printf("AI Engine supervisor started")
+	stdlog.Printf("AI Engine supervisor started")
 
 	s.wg.Add(1)
 	go s.handleSignals()
@@ -98,13 +120,16 @@ func (s *Supervisor) Stop() error {
 		s.daemonClient = nil
 	}
 	s.mu.Unlock()
+	if err := s.Context.Stop(context.Background()); err != nil {
+		stdlog.Printf("failed to stop context backend: %v", err)
+	}
 	s.wg.Wait()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.running = false
 
-	log.Printf("AI Engine supervisor stopped")
+	stdlog.Printf("AI Engine supervisor stopped")
 	return nil
 }
 
@@ -122,7 +147,7 @@ func (s *Supervisor) handleSignals() {
 
 	select {
 	case sig := <-sigCh:
-		log.Printf("Received signal: %v", sig)
+		stdlog.Printf("Received signal: %v", sig)
 		s.cancel()
 	case <-s.ctx.Done():
 	}
@@ -130,30 +155,92 @@ func (s *Supervisor) handleSignals() {
 
 func (s *Supervisor) Health() map[string]interface{} {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	running := s.running
+	contextManager := s.Context
+	runtimeSvc := s.Runtime
+	ragSvc := s.RAG
+	trainingSvc := s.Training
+	mcpSvc := s.MCP
+	mode := s.mode
+	daemonConfigured := s.config.Daemon.Command != ""
+	daemonCommand := s.config.Daemon.Command
+	daemonAddr := s.config.Daemon.Addr()
+	daemonConnected := s.daemonClient != nil
+	s.mu.RUnlock()
+
+	contextHealth := map[string]interface{}{
+		"enabled": false,
+		"ready":   false,
+	}
+	if contextManager != nil {
+		contextHealth["enabled"] = contextManager.Enabled()
+	}
+	if contextManager != nil && contextManager.Enabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if health, err := contextManager.Readiness(ctx); err == nil {
+			contextHealth["ready"] = health.Ready
+			contextHealth["status"] = health.Status
+		} else {
+			contextHealth["error"] = err.Error()
+		}
+	}
+
+	degraded := mode != "daemon"
+	status := "ok"
+	if !running {
+		status = "stopped"
+		degraded = true
+	} else if !daemonConnected && daemonConfigured {
+		status = "degraded"
+		degraded = true
+	} else if contextManager != nil && contextManager.Enabled() {
+		if ready, ok := contextHealth["ready"].(bool); ok && !ready {
+			status = "degraded"
+			degraded = true
+		}
+	}
 
 	return map[string]interface{}{
-		"running": s.running,
+		"running":        running,
+		"status":         status,
+		"execution_mode": mode,
+		"degraded":       degraded,
+		"daemon": map[string]interface{}{
+			"configured": daemonConfigured,
+			"connected":  daemonConnected,
+			"addr":       daemonAddr,
+			"command":    daemonCommand,
+		},
+		"context": contextHealth,
+		"service_modes": map[string]interface{}{
+			"runtime":  mode,
+			"rag":      mode,
+			"training": mode,
+			"mcp":      mode,
+			"context":  "context-service",
+		},
 		"runtime": map[string]interface{}{
-			"loaded_models": s.Runtime.LoadedModelCount(),
+			"loaded_models": loadedModelCount(runtimeSvc),
 		},
 		"rag": map[string]interface{}{
-			"documents": s.RAG.DocumentCount(),
+			"documents": documentCount(ragSvc),
 		},
 		"training": map[string]interface{}{
-			"active_runs": s.Training.ActiveRunCount(),
+			"active_runs": activeRunCount(trainingSvc),
 		},
 		"mcp": map[string]interface{}{
-			"connections": s.MCP.ConnectionCount(),
+			"connections": connectionCount(mcpSvc),
 		},
 	}
 }
 
 func (s *Supervisor) initLocalServicesLocked() {
-	s.Runtime = runtime.NewManager(s.config)
-	s.RAG = rag.NewManager(s.config)
+	s.Runtime = s.wrapRuntimeService(runtime.NewManager(s.config))
+	s.RAG = rag.NewManager(s.config, s.Context)
 	s.Training = training.NewManager(s.config)
 	s.MCP = mcp.NewManager(s.config)
+	s.mode = "local-fallback"
 }
 
 func (s *Supervisor) launchDaemonLocked() error {
@@ -183,10 +270,12 @@ func (s *Supervisor) launchDaemonLocked() error {
 	}
 	s.daemonClient = client
 	s.daemonCmd = cmd
-	s.Runtime = client
-	s.RAG = client
+	s.Context.SetDaemonContextClient(client)
+	s.Runtime = s.wrapRuntimeService(client)
+	s.RAG = rag.NewManager(s.config, s.Context)
 	s.Training = client
 	s.MCP = client
+	s.mode = "daemon"
 
 	s.wg.Add(1)
 	go s.watchDaemon(cmd)
@@ -229,11 +318,18 @@ func (s *Supervisor) daemonEnv() []string {
 	}
 }
 
+func (s *Supervisor) wrapRuntimeService(service runtime.Service) runtime.Service {
+	if service == nil || s.Context == nil || !s.Context.Enabled() {
+		return service
+	}
+	return runtime.NewContextAwareService(service, s.Context)
+}
+
 func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {
 	defer s.wg.Done()
 
 	if err := cmd.Wait(); err != nil && s.ctx.Err() == nil {
-		log.Printf("AI Engine daemon exited: %v", err)
+		stdlog.Printf("AI Engine daemon exited: %v", err)
 	}
 
 	if s.ctx.Err() != nil {
@@ -259,14 +355,14 @@ func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {
 
 		restartCount++
 		if restartCount > maxRestarts {
-			log.Printf("AI Engine daemon exceeded max restart attempts (%d)", maxRestarts)
+			stdlog.Printf("AI Engine daemon exceeded max restart attempts (%d)", maxRestarts)
 			s.mu.Unlock()
 			return
 		}
 
-		log.Printf("Restarting AI Engine daemon (attempt %d/%d)...", restartCount, maxRestarts)
+		stdlog.Printf("Restarting AI Engine daemon (attempt %d/%d)...", restartCount, maxRestarts)
 		if err := s.launchDaemonLocked(); err != nil {
-			log.Printf("AI Engine daemon restart failed: %v", err)
+			stdlog.Printf("AI Engine daemon restart failed: %v", err)
 			backoff = backoff * 2
 			if backoff > 30*time.Second {
 				backoff = 30 * time.Second
@@ -277,4 +373,38 @@ func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {
 		s.mu.Unlock()
 		return
 	}
+}
+
+func loadedModelCount(svc runtime.Service) int {
+	if svc == nil {
+		return 0
+	}
+	return svc.LoadedModelCount()
+}
+
+func documentCount(svc rag.Service) int64 {
+	if svc == nil {
+		return 0
+	}
+	return svc.DocumentCount()
+}
+
+func activeRunCount(svc training.Service) int {
+	if svc == nil {
+		return 0
+	}
+	return svc.ActiveRunCount()
+}
+
+func connectionCount(svc mcp.Service) int {
+	if svc == nil {
+		return 0
+	}
+	return svc.ConnectionCount()
+}
+
+func (s *Supervisor) ExecutionMode() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.mode
 }

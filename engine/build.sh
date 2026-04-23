@@ -1,58 +1,91 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "Building AI Engine..."
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GO_DIR="$ROOT_DIR/go"
 RUST_DIR="$ROOT_DIR/rust"
+PROTO_DIR="$ROOT_DIR/proto"
+CACHE_DIR="$ROOT_DIR/.cache"
 PROTOC_SCRIPT="$ROOT_DIR/scripts/ensure_protoc.sh"
+
+GOEXE="${GOEXE:-go}"
+CARGOEXE="${CARGOEXE:-cargo}"
+PROTOC_GEN_GO="${PROTOC_GEN_GO:-protoc-gen-go}"
+PROTOC_GEN_GO_GRPC="${PROTOC_GEN_GO_GRPC:-protoc-gen-go-grpc}"
+
+mkdir -p "$CACHE_DIR"
+export GOCACHE="${GOCACHE:-$CACHE_DIR/go-build}"
+mkdir -p "$GOCACHE"
+export CARGO_HOME="${CARGO_HOME:-$CACHE_DIR/cargo-home}"
+mkdir -p "$CARGO_HOME"
+
+echo "Using GOCACHE=$GOCACHE"
+echo "Using CARGO_HOME=$CARGO_HOME"
 
 if [ -z "${PROTOC:-}" ]; then
     PROTOC="$(bash "$PROTOC_SCRIPT")"
     export PROTOC
 fi
+PROTOCEXE="${PROTOC}"
 
-# Setup Go modules
+if [ -x "$HOME/go/bin/protoc-gen-go" ]; then
+    PROTOC_GEN_GO="$HOME/go/bin/protoc-gen-go"
+fi
+if [ -x "$HOME/go/bin/protoc-gen-go-grpc" ]; then
+    PROTOC_GEN_GO_GRPC="$HOME/go/bin/protoc-gen-go-grpc"
+fi
+
 cd "$GO_DIR"
-go mod download
-GOPATH_BIN="$(go env GOPATH)/bin"
+"$GOEXE" mod download
+GOPATH_BIN="$("$GOEXE" env GOPATH)/bin"
 export PATH="$GOPATH_BIN:$PATH"
 
 echo "Installing Go proto plugins..."
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+"$GOEXE" install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+"$GOEXE" install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
-# Generate proto files
-if [ -f "../proto/engine.proto" ]; then
+if [ -f "$PROTO_DIR/engine.proto" ]; then
     echo "Generating proto files..."
-    cd ../proto
-    "$PROTOC" --go_out=. --go_opt=paths=source_relative \
-              --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-              engine.proto
-    "$PROTOC" --go_out=go --go_opt=paths=source_relative \
-              --go-grpc_out=go --go-grpc_opt=paths=source_relative \
-              engine.proto
-    cd ../go
+    cd "$PROTO_DIR"
+    "$PROTOCEXE" -I . \
+        --plugin=protoc-gen-go="$PROTOC_GEN_GO" \
+        --plugin=protoc-gen-go-grpc="$PROTOC_GEN_GO_GRPC" \
+        --go_out=. --go_opt=paths=source_relative \
+        --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+        engine.proto
+    "$PROTOCEXE" -I . \
+        --plugin=protoc-gen-go="$PROTOC_GEN_GO" \
+        --plugin=protoc-gen-go-grpc="$PROTOC_GEN_GO_GRPC" \
+        --go_out=go --go_opt=paths=source_relative \
+        --go-grpc_out=go --go-grpc_opt=paths=source_relative \
+        engine.proto
 fi
 
-mkdir -p bin
+mkdir -p "$GO_DIR/bin"
 
-# Build Rust daemon
 echo "Building Rust daemon..."
 cd "$RUST_DIR"
-cargo build --release -p ai_engine_daemon
+export PROTOC="$PROTOCEXE"
+"$CARGOEXE" build --release -p ai_engine_daemon
 cp "target/release/ai_engine_daemon" "$GO_DIR/bin/ai_engine_daemon"
+
+echo "Building Rust context service..."
+"$CARGOEXE" build --release -p context_server
+cp "target/release/context_server" "$GO_DIR/bin/context_server" || {
+    echo "Failed to install context_server binary"
+    exit 1
+}
+chmod +x "$GO_DIR/bin/context_server"
 
 cd "$GO_DIR"
 
-# Build server
 echo "Building server..."
-go build -o bin/server ./cmd/server
+"$GOEXE" build -o bin/server ./cmd/server
 
-# Build client
 echo "Building client..."
-go build -o bin/client ./cmd/client
+"$GOEXE" build -o bin/client ./cmd/client
 
 echo "Build complete!"
-echo "Run: ./bin/server --config ../config.example.yaml"
+echo "Run: ./go/bin/server --config ./config.example.yaml"

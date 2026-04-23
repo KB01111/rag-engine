@@ -24,6 +24,22 @@ service Rag {
   rpc ListDocuments(google.protobuf.Empty) returns (DocumentList);
 }
 
+service Context {
+  rpc GetContextStatus(google.protobuf.Empty) returns (ContextStatus);
+  rpc ListResources(google.protobuf.Empty) returns (ContextResourceList);
+  rpc UpsertResource(ContextUpsertResourceRequest) returns (ContextUpsertResourceResponse);
+  rpc DeleteResource(ContextDeleteResourceRequest) returns (google.protobuf.Empty);
+  rpc SearchContext(ContextSearchRequest) returns (ContextSearchResponse);
+  rpc SyncWorkspace(ContextWorkspaceSyncRequest) returns (ContextWorkspaceSyncResponse);
+  rpc ListFiles(ContextFileListRequest) returns (ContextFileListResponse);
+  rpc ReadFile(ContextFileReadRequest) returns (ContextFileReadResponse);
+  rpc WriteFile(ContextFileWriteRequest) returns (ContextFileWriteResponse);
+  rpc DeleteFile(ContextFileDeleteRequest) returns (ContextFileDeleteResponse);
+  rpc MoveFile(ContextFileMoveRequest) returns (ContextFileMoveResponse);
+  rpc AppendSession(ContextSessionAppendRequest) returns (ContextSessionHistory);
+  rpc GetSession(ContextSessionGetRequest) returns (ContextSessionHistory);
+}
+
 service Training {
   rpc StartRun(TrainingRunRequest) returns (TrainingRun);
   rpc CancelRun(CancelRequest) returns (google.protobuf.Empty);
@@ -78,6 +94,8 @@ message InferenceRequest {
   string model_id = 1;
   string prompt = 2;
   map<string, string> parameters = 3;
+  string provider = 4;
+  repeated string context_refs = 5;
 }
 
 message InferenceResponse {
@@ -117,6 +135,176 @@ message SearchResult {
 message SearchResponse {
   repeated SearchResult results = 1;
   double query_time_ms = 2;
+}
+
+enum ContextLayer {
+  CONTEXT_LAYER_UNSPECIFIED = 0;
+  CONTEXT_LAYER_L0 = 1;
+  CONTEXT_LAYER_L1 = 2;
+  CONTEXT_LAYER_L2 = 3;
+}
+
+message ContextStatus {
+  int64 document_count = 1;
+  int64 chunk_count = 2;
+  int64 index_size_bytes = 3;
+  string embedding_model = 4;
+  bool ready = 5;
+  repeated string managed_roots = 6;
+}
+
+message ContextResource {
+  string uri = 1;
+  string title = 2;
+  string layer = 3;
+  map<string, string> metadata = 4;
+}
+
+message ContextResourceList {
+  repeated ContextResource resources = 1;
+}
+
+message ContextUpsertResourceRequest {
+  string uri = 1;
+  string title = 2;
+  string content = 3;
+  ContextLayer layer = 4;
+  map<string, string> metadata = 5;
+  string previous_uri = 6;
+}
+
+message ContextUpsertResourceResponse {
+  ContextResource resource = 1;
+  int32 chunks_indexed = 2;
+}
+
+message ContextDeleteResourceRequest {
+  string uri = 1;
+}
+
+message ContextSearchRequest {
+  string query = 1;
+  string scope_uri = 2;
+  int32 top_k = 3;
+  map<string, string> filters = 4;
+  ContextLayer layer = 5;
+  optional bool rerank = 6;
+}
+
+message ContextSearchResult {
+  string uri = 1;
+  string document_id = 2;
+  string chunk_text = 3;
+  float score = 4;
+  map<string, string> metadata = 5;
+  string layer = 6;
+}
+
+message ContextSearchResponse {
+  repeated ContextSearchResult results = 1;
+  double query_time_ms = 2;
+}
+
+message ContextWorkspaceSyncRequest {
+  string root = 1;
+  string path = 2;
+}
+
+message ContextWorkspaceSyncResponse {
+  string root = 1;
+  optional string prefix = 2;
+  int32 indexed_resources = 3;
+  int32 reindexed_resources = 4;
+  int32 deleted_resources = 5;
+  int32 skipped_files = 6;
+}
+
+message ContextFileListRequest {
+  string root = 1;
+  string path = 2;
+}
+
+message ContextFileEntry {
+  string name = 1;
+  string path = 2;
+  bool is_dir = 3;
+  int64 size_bytes = 4;
+  optional int64 version = 5;
+}
+
+message ContextFileListResponse {
+  repeated ContextFileEntry entries = 1;
+}
+
+message ContextFileReadRequest {
+  string root = 1;
+  string path = 2;
+}
+
+message ContextFileReadResponse {
+  string path = 1;
+  string content = 2;
+  int64 version = 3;
+}
+
+message ContextFileWriteRequest {
+  string root = 1;
+  string path = 2;
+  string content = 3;
+  optional int64 version = 4;
+}
+
+message ContextFileWriteResponse {
+  string path = 1;
+  int64 version = 2;
+}
+
+message ContextFileDeleteRequest {
+  string root = 1;
+  string path = 2;
+  optional int64 version = 3;
+}
+
+message ContextFileDeleteResponse {
+  string path = 1;
+  bool deleted = 2;
+}
+
+message ContextFileMoveRequest {
+  string root = 1;
+  string from_path = 2;
+  string to_path = 3;
+  optional int64 version = 4;
+}
+
+message ContextFileMoveResponse {
+  string from_path = 1;
+  string to_path = 2;
+  int64 version = 3;
+}
+
+message ContextSessionAppendRequest {
+  string session_id = 1;
+  string role = 2;
+  string content = 3;
+  map<string, string> metadata = 4;
+}
+
+message ContextSessionGetRequest {
+  string session_id = 1;
+}
+
+message ContextSessionEntry {
+  string session_id = 1;
+  string role = 2;
+  string content = 3;
+  map<string, string> metadata = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message ContextSessionHistory {
+  string session_id = 1;
+  repeated ContextSessionEntry entries = 2;
 }
 
 message RagStatus {
