@@ -20,6 +20,7 @@ type Client struct {
 	conn     *grpc.ClientConn
 	runtime  pb.RuntimeClient
 	rag      pb.RagClient
+	context  pb.ContextClient
 	training pb.TrainingClient
 	mcp      pb.MCPClient
 
@@ -27,6 +28,13 @@ type Client struct {
 	mcpConnections map[string]struct{}
 }
 
+// NewClient creates and returns a Client connected to the daemon at addr.
+// It wraps the provided context with a 10-second timeout, validates the daemon
+// address (rejecting non-loopback addresses when TLS would be required), and
+// dials the daemon. On success it constructs a Client with gRPC service
+// clients and an empty MCP connection bookkeeping map. Returns an error if
+// NewClient creates a Client connected to the daemon at addr.
+// It wraps ctx with a 10-second timeout, validates addr to ensure an insecure connection is only used for allowed loopback addresses, dials the daemon (blocking) using insecure credentials, and returns a Client with all service stubs initialized. An error is returned if address validation or dialing fails.
 func NewClient(ctx context.Context, addr string) (*Client, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -50,6 +58,7 @@ func NewClient(ctx context.Context, addr string) (*Client, error) {
 		conn:           conn,
 		runtime:        pb.NewRuntimeClient(conn),
 		rag:            pb.NewRagClient(conn),
+		context:        pb.NewContextClient(conn),
 		training:       pb.NewTrainingClient(conn),
 		mcp:            pb.NewMCPClient(conn),
 		mcpConnections: make(map[string]struct{}),
@@ -190,6 +199,58 @@ func (c *Client) DocumentCount() int64 {
 		return 0
 	}
 	return status.DocumentCount
+}
+
+func (c *Client) GetContextStatus(ctx context.Context, req *emptypb.Empty) (*pb.ContextStatus, error) {
+	return c.context.GetContextStatus(ctx, req)
+}
+
+func (c *Client) ListResources(ctx context.Context, req *emptypb.Empty) (*pb.ContextResourceList, error) {
+	return c.context.ListResources(ctx, req)
+}
+
+func (c *Client) UpsertResource(ctx context.Context, req *pb.ContextUpsertResourceRequest) (*pb.ContextUpsertResourceResponse, error) {
+	return c.context.UpsertResource(ctx, req)
+}
+
+func (c *Client) DeleteResource(ctx context.Context, req *pb.ContextDeleteResourceRequest) (*emptypb.Empty, error) {
+	return c.context.DeleteResource(ctx, req)
+}
+
+func (c *Client) SearchContext(ctx context.Context, req *pb.ContextSearchRequest) (*pb.ContextSearchResponse, error) {
+	return c.context.SearchContext(ctx, req)
+}
+
+func (c *Client) SyncWorkspace(ctx context.Context, req *pb.ContextWorkspaceSyncRequest) (*pb.ContextWorkspaceSyncResponse, error) {
+	return c.context.SyncWorkspace(ctx, req)
+}
+
+func (c *Client) ListFiles(ctx context.Context, req *pb.ContextFileListRequest) (*pb.ContextFileListResponse, error) {
+	return c.context.ListFiles(ctx, req)
+}
+
+func (c *Client) ReadFile(ctx context.Context, req *pb.ContextFileReadRequest) (*pb.ContextFileReadResponse, error) {
+	return c.context.ReadFile(ctx, req)
+}
+
+func (c *Client) WriteFile(ctx context.Context, req *pb.ContextFileWriteRequest) (*pb.ContextFileWriteResponse, error) {
+	return c.context.WriteFile(ctx, req)
+}
+
+func (c *Client) DeleteFile(ctx context.Context, req *pb.ContextFileDeleteRequest) (*pb.ContextFileDeleteResponse, error) {
+	return c.context.DeleteFile(ctx, req)
+}
+
+func (c *Client) MoveFile(ctx context.Context, req *pb.ContextFileMoveRequest) (*pb.ContextFileMoveResponse, error) {
+	return c.context.MoveFile(ctx, req)
+}
+
+func (c *Client) AppendSession(ctx context.Context, req *pb.ContextSessionAppendRequest) (*pb.ContextSessionHistory, error) {
+	return c.context.AppendSession(ctx, req)
+}
+
+func (c *Client) GetSession(ctx context.Context, req *pb.ContextSessionGetRequest) (*pb.ContextSessionHistory, error) {
+	return c.context.GetSession(ctx, req)
 }
 
 func (c *Client) StartRun(ctx context.Context, req *pb.TrainingRunRequest) (*pb.TrainingRun, error) {

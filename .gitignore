@@ -8,6 +8,7 @@ engine/.cache/
 # Rust build output
 engine/rust/target/
 engine/rust/target
+engine/.cache/
 **/*.rlib
 **/*.rlib
 **/*.d

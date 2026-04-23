@@ -38,6 +38,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "chunking",
+ "context_engine",
  "embedding",
  "prost",
  "prost-types",
@@ -4765,6 +4766,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "storage",
+ "tempfile",
  "tokio",
 ]
 

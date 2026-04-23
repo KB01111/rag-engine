@@ -11,6 +11,26 @@ fn main() -> anyhow::Result<()> {
     })
 }
 
+/// Process supported CLI flags and set corresponding `CONTEXT_*` environment variables.
+///
+/// Recognizes the following flags (each consumes a single value): `--host`, `--port`,
+/// `--bind`, `--data-dir`, `--managed-root` (can be repeated), `--openviking-url`,
+/// and `--openviking-api-key`. When provided, values are written to these environment
+/// variables: `CONTEXT_BIND`, `CONTEXT_DATA_DIR`, `CONTEXT_ROOTS` (semicolon-separated),
+/// `CONTEXT_OPENVIKING_URL`, and `CONTEXT_OPENVIKING_API_KEY`. If `--bind` is not given
+/// but `--host` and/or `--port` are, `CONTEXT_BIND` is constructed as `host:port` using
+/// defaults `127.0.0.1` and `8090` for missing parts.
+///
+/// # Returns
+///
+/// `Ok(())` on success; an `Err` if an unknown flag is encountered or a flag is missing its value.
+///
+/// # Examples
+///
+/// ```
+/// // With no additional command-line arguments this should succeed.
+/// assert!(crate::apply_cli_overrides().is_ok());
+/// ```
 fn apply_cli_overrides() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let mut host: Option<String> = None;
@@ -66,6 +86,23 @@ fn apply_cli_overrides() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Retrieves the next value from an argument iterator for the specified flag, returning an error if no value is available.
+///
+/// # Parameters
+///
+/// - `args`: iterator over command-line arguments positioned after the flag.
+/// - `flag`: flag name used in the error message when a value is missing.
+///
+/// # Returns
+///
+/// `Ok(String)` containing the next argument value, or `Err` with the message `missing value for {flag}` if the iterator is exhausted.
+///
+/// # Examples
+///
+/// ```
+/// let mut it = vec!["bar".to_string()].into_iter();
+/// assert_eq!(expect_value(&mut it, "--foo").unwrap(), "bar");
+/// ```
 fn expect_value(args: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Result<String> {
     args.next()
         .ok_or_else(|| anyhow::anyhow!("missing value for {flag}"))
