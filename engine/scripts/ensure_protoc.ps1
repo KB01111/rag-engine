@@ -2,20 +2,46 @@
 param()
 
 $ErrorActionPreference = "Stop"
+$version = "34.1"
 
-if ($env:PROTOC -and (Test-Path $env:PROTOC)) {
-    Write-Output $env:PROTOC
+function Get-MatchingProtocPath {
+    param(
+        [string]$Candidate
+    )
+
+    if (-not $Candidate -or -not (Test-Path $Candidate)) {
+        return $null
+    }
+
+    try {
+        $versionOutput = & $Candidate --version 2>$null
+    } catch {
+        return $null
+    }
+
+    if ($versionOutput -match "libprotoc\\s+$([regex]::Escape($version))") {
+        return $Candidate
+    }
+
+    return $null
+}
+
+$resolved = Get-MatchingProtocPath $env:PROTOC
+if ($resolved) {
+    Write-Output $resolved
     exit 0
 }
 
 $existing = Get-Command protoc -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Output $existing.Source
-    exit 0
+    $resolved = Get-MatchingProtocPath $existing.Source
+    if ($resolved) {
+        Write-Output $resolved
+        exit 0
+    }
 }
 
 $engineRoot = Split-Path -Parent $PSScriptRoot
-$version = "34.1"
 $toolDir = Join-Path $engineRoot ".tools\protoc\$version\win64"
 $binPath = Join-Path $toolDir "bin\protoc.exe"
 

@@ -1,18 +1,28 @@
 #!/bin/bash
 set -euo pipefail
 
-if [ -n "${PROTOC:-}" ] && [ -x "${PROTOC}" ]; then
+VERSION="34.1"
+
+matches_version() {
+    local candidate="$1"
+    [ -x "$candidate" ] || return 1
+    [ "$("$candidate" --version 2>/dev/null || true)" = "libprotoc $VERSION" ]
+}
+
+if [ -n "${PROTOC:-}" ] && matches_version "${PROTOC}"; then
     printf '%s\n' "${PROTOC}"
     exit 0
 fi
 
 if command -v protoc >/dev/null 2>&1; then
-    command -v protoc
-    exit 0
+    EXISTING_PROTOC="$(command -v protoc)"
+    if matches_version "$EXISTING_PROTOC"; then
+        printf '%s\n' "$EXISTING_PROTOC"
+        exit 0
+    fi
 fi
 
 ENGINE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="34.1"
 
 OS_NAME="$(uname -s)"
 ARCH_NAME="$(uname -m)"
@@ -43,7 +53,7 @@ if [ ! -x "$BIN_PATH" ]; then
   ARCHIVE_PATH="$TOOL_DIR/protoc-$VERSION-$OS_PART-$ARCH_PART.zip"
   URL="https://github.com/protocolbuffers/protobuf/releases/download/v$VERSION/protoc-$VERSION-$OS_PART-$ARCH_PART.zip"
 
-  echo "Downloading protoc $VERSION for $OS_PART-$ARCH_PART..."
+  echo "Downloading protoc $VERSION for $OS_PART-$ARCH_PART..." >&2
   curl -fsSL "$URL" -o "$ARCHIVE_PATH"
   python3 - <<'PY' "$ARCHIVE_PATH" "$TOOL_DIR"
 import sys

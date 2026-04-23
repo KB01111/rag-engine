@@ -82,6 +82,7 @@ if exist "%PROTO_DIR%\engine.proto" (
                       engine.proto
     if errorlevel 1 (
         echo Warning: failed to generate Go module proto package.
+        exit /b 1
     )
     popd
 )

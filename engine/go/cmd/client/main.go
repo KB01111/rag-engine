@@ -48,12 +48,16 @@ func main() {
 		log.Fatalf("GetStatus error: %v", err)
 	}
 	fmt.Printf("Version: %s, Healthy: %v\n", status.Version, status.Healthy)
-	fmt.Printf(
-		"Resources: cpu=%.2f%% memory=%d/%d\n",
-		status.Resources.CpuPercent,
-		status.Resources.MemoryUsedBytes,
-		status.Resources.MemoryTotalBytes,
-	)
+	if status.Resources != nil {
+		fmt.Printf(
+			"Resources: cpu=%.2f%% memory=%d/%d\n",
+			status.Resources.CpuPercent,
+			status.Resources.MemoryUsedBytes,
+			status.Resources.MemoryTotalBytes,
+		)
+	} else {
+		fmt.Println("Resources: unavailable")
+	}
 
 	models, err := runtimeClient.ListModels(ctx, &emptypb.Empty{})
 	if err != nil {
@@ -133,6 +137,9 @@ func main() {
 		}
 	}
 	fmt.Printf("Document present: %v\n", present)
+	if !present {
+		log.Fatalf("Document %q is missing from ListDocuments", *docID)
+	}
 
 	searchResp, err := ragClient.Search(ctx, &pb.SearchRequest{
 		Query:   *query,
@@ -143,6 +150,9 @@ func main() {
 		log.Fatalf("Search error: %v", err)
 	}
 	fmt.Printf("Search results: %d, time: %.2fms\n", len(searchResp.Results), searchResp.QueryTimeMs)
+	if len(searchResp.Results) == 0 {
+		log.Fatalf("Search returned no results for document %q", *docID)
+	}
 
 	fmt.Println("=== Demo Complete ===")
 }
@@ -162,8 +172,4 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
-}
-
-func boolPtr(value bool) *bool {
-	return &value
 }

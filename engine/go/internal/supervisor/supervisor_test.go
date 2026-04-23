@@ -41,6 +41,23 @@ func TestStartFallsBackToLocalServicesWhenDaemonIsOptional(t *testing.T) {
 	}
 }
 
+func TestStartFallsBackToLocalServicesWhenOptionalDaemonLaunchFails(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Daemon.Command = "__missing_daemon_command__"
+	cfg.Daemon.Required = false
+
+	sup := NewSupervisor(cfg)
+	if err := sup.Start(); err != nil {
+		t.Fatalf("expected optional daemon launch failures to fall back to local services, got %v", err)
+	}
+	defer sup.Stop()
+
+	if !sup.IsRunning() {
+		t.Fatal("expected supervisor to be running")
+	}
+	assert.Equal(t, "local-fallback", sup.mode)
+}
+
 func TestNewSupervisorWrapsRuntimeWithContextAwareService(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Context.Enabled = true

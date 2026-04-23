@@ -73,8 +73,8 @@ $fakeLlamaCli = Join-Path $workspace "fake-llama.cmd"
 
 @"
 @echo off
-echo local-backend:%~4
-"@ | Set-Content -Path $fakeLlamaCli
+echo local-backend:STREAM_OK
+"@ | Set-Content -Path $fakeLlamaCli -Encoding ASCII
 
 @"
 server:
@@ -181,12 +181,13 @@ function Stop-Engine {
         $daemonChildren = Get-CimInstance Win32_Process -Filter ("ParentProcessId = {0}" -f $Process.Id) -ErrorAction SilentlyContinue
     }
     if ($Process -and -not $Process.HasExited) {
-        Stop-Process -Id $Process.Id -Force
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $Process.Id -Timeout 5 -ErrorAction SilentlyContinue
     }
     foreach ($child in $daemonChildren) {
         Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $child.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
     }
-    Get-Process ai_engine_daemon -ErrorAction SilentlyContinue | Stop-Process -Force
 }
 
 Write-Host "Starting server..."
@@ -210,7 +211,7 @@ try {
         "Version:",
         "Available models:",
         "Loaded model:",
-        "Inference output:",
+        "Inference output: local-backend:STREAM_OK",
         "Upserted document:",
         "Documents:",
         "Document present: True",
@@ -244,7 +245,7 @@ try {
 
     foreach ($needle in @(
         "Loaded model:",
-        "Inference output:",
+        "Inference output: local-backend:STREAM_OK",
         "Documents:",
         "Document present: True",
         "Search results:"

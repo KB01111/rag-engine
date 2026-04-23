@@ -5,7 +5,7 @@ use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
-use serde_json::json;
+use serde_json::{json, Value};
 use storage::{EngineStore, ModelRecord};
 use sysinfo::System;
 use tokio::io::AsyncReadExt;
@@ -176,7 +176,7 @@ impl RuntimeEngine {
         }
 
         let model = self.loaded_model(model_id).await?;
-        let backend_command = self.resolve_backend_command()?;
+        let backend_command = self.backend_command_for_model(&model)?;
         let args = build_backend_args(&model.path, prompt, parameters);
 
         let mut child = Command::new(&backend_command)
@@ -213,14 +213,48 @@ impl RuntimeEngine {
             });
 
             let mut buffer = [0_u8; 1024];
+            let mut carry = Vec::new();
             loop {
                 match stdout.read(&mut buffer).await {
                     Ok(0) => break,
                     Ok(read) => {
-                        let chunk = String::from_utf8_lossy(&buffer[..read]).to_string();
-                        if sender.send(Ok(chunk)).await.is_err() {
-                            let _ = child.kill().await;
-                            return;
+                        carry.extend_from_slice(&buffer[..read]);
+                        loop {
+                            match std::str::from_utf8(&carry) {
+                                Ok(text) => {
+                                    if !text.is_empty()
+                                        && sender.send(Ok(text.to_string())).await.is_err()
+                                    {
+                                        let _ = child.kill().await;
+                                        return;
+                                    }
+                                    carry.clear();
+                                    break;
+                                }
+                                Err(error) => {
+                                    let valid_up_to = error.valid_up_to();
+                                    if valid_up_to > 0 {
+                                        let chunk = std::str::from_utf8(&carry[..valid_up_to])
+                                            .expect("valid UTF-8 prefix");
+                                        if sender.send(Ok(chunk.to_string())).await.is_err() {
+                                            let _ = child.kill().await;
+                                            return;
+                                        }
+                                        carry.drain(..valid_up_to);
+                                        continue;
+                                    }
+                                    if error.error_len().is_some() {
+                                        let _ = sender
+                                            .send(Err(anyhow!(
+                                                "backend output was not valid UTF-8"
+                                            )))
+                                            .await;
+                                        let _ = child.kill().await;
+                                        return;
+                                    }
+                                    break;
+                                }
+                            }
                         }
                     }
                     Err(error) => {
@@ -228,6 +262,22 @@ impl RuntimeEngine {
                             .send(Err(anyhow!("failed to read backend output: {error}")))
                             .await;
                         let _ = child.kill().await;
+                        return;
+                    }
+                }
+            }
+
+            if !carry.is_empty() {
+                match std::str::from_utf8(&carry) {
+                    Ok(text) => {
+                        if !text.is_empty() && sender.send(Ok(text.to_string())).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = sender
+                            .send(Err(anyhow!("backend output ended with incomplete UTF-8")))
+                            .await;
                         return;
                     }
                 }
@@ -265,8 +315,8 @@ impl RuntimeEngine {
 
         RuntimeResources {
             cpu_percent: system.global_cpu_usage(),
-            memory_used_bytes: system.used_memory(),
-            memory_total_bytes: system.total_memory(),
+            memory_used_bytes: system.used_memory() * 1024,
+            memory_total_bytes: system.total_memory() * 1024,
         }
     }
 
@@ -283,7 +333,7 @@ impl RuntimeEngine {
 
     fn resolve_backend_command(&self) -> Result<PathBuf> {
         let candidate = Path::new(&self.backend_command);
-        if candidate.components().count() > 1 {
+        if has_explicit_backend_path(&self.backend_command) {
             if candidate.exists() {
                 return Ok(candidate.to_path_buf());
             }
@@ -295,6 +345,22 @@ impl RuntimeEngine {
 
         which(&self.backend_command)
             .map_err(|_| anyhow!("backend command not found: {}", self.backend_command))
+    }
+
+    fn backend_command_for_model(&self, model: &ModelRecord) -> Result<PathBuf> {
+        let stored_command = serde_json::from_str::<Value>(&model.metadata_json)
+            .ok()
+            .and_then(|metadata| {
+                metadata
+                    .get("backend_command")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+            });
+
+        stored_command
+            .map(Ok)
+            .unwrap_or_else(|| self.resolve_backend_command())
     }
 
     async fn discover_models(&self) -> Result<()> {
@@ -479,12 +545,46 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn stream_inference_preserves_utf8_across_chunk_boundaries() {
+        let tempdir = tempdir().unwrap();
+        let models_dir = tempdir.path().join("models");
+        tokio::fs::create_dir_all(&models_dir).await.unwrap();
+        tokio::fs::write(models_dir.join("demo.gguf"), b"weights")
+            .await
+            .unwrap();
+
+        let backend = create_split_utf8_backend(tempdir.path());
+        let store = EngineStore::new(tempdir.path().join("db").to_string_lossy().to_string());
+        let engine = RuntimeEngine::new(
+            store,
+            &models_dir,
+            "llama.cpp",
+            backend.to_string_lossy().to_string(),
+        );
+
+        engine.load_model("demo.gguf").await.unwrap();
+
+        let mut stream = engine
+            .stream_inference("demo.gguf", "hello", &HashMap::new())
+            .await
+            .unwrap();
+
+        let mut output = String::new();
+        while let Some(chunk) = stream.recv().await {
+            output.push_str(&chunk.unwrap());
+        }
+
+        let expected = format!("{}éb", "a".repeat(1023));
+        assert_eq!(output, expected);
+    }
+
     fn create_fake_backend(root: &Path) -> PathBuf {
         if cfg!(windows) {
             let path = root.join("fake-llama.cmd");
             fs::write(
                 &path,
-                "@echo off\r\necho backend:%~4\r\n",
+                "@echo off\r\nset \"PROMPT=\"\r\n:next\r\nif \"%~1\"==\"\" goto done\r\nif /I \"%~1\"==\"-p\" (\r\n  set \"PROMPT=%~2\"\r\n  shift\r\n)\r\nshift\r\ngoto next\r\n:done\r\necho backend:%PROMPT%\r\n",
             )
             .unwrap();
             path
@@ -506,4 +606,42 @@ mod tests {
             path
         }
     }
+
+    fn create_split_utf8_backend(root: &Path) -> PathBuf {
+        if cfg!(windows) {
+            let path = root.join("split-utf8.cmd");
+            fs::write(
+                &path,
+                "@echo off\r\npowershell -NoProfile -Command \"$bytes = New-Object byte[] 1026; for($i=0; $i -lt 1023; $i++){ $bytes[$i] = 97 }; $bytes[1023] = 0xC3; $bytes[1024] = 0xA9; $bytes[1025] = 98; [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)\"\r\n",
+            )
+            .unwrap();
+            path
+        } else {
+            let path = root.join("split-utf8.sh");
+            fs::write(
+                &path,
+                "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 1023 ]; do\n  printf 'a'\n  i=$((i + 1))\ndone\nprintf '\\303'\nprintf '\\251b'\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mut permissions = fs::metadata(&path).unwrap().permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(&path, permissions).unwrap();
+            }
+            path
+        }
+    }
+}
+
+fn has_explicit_backend_path(command: &str) -> bool {
+    let candidate = Path::new(command);
+    candidate.is_absolute()
+        || command.contains(std::path::MAIN_SEPARATOR)
+        || command.contains('/')
+        || command.contains('\\')
+        || command.starts_with("./")
+        || command.starts_with(".\\")
 }

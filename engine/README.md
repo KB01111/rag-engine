@@ -49,13 +49,6 @@ For this v1 surface:
 
 ```bash
 cd engine
-./build.sh
-```
-
-### 2. Build The Whole Stack
-
-```bash
-cd engine
 ./build.sh   # Linux/macOS
 build.bat    # Windows
 ```

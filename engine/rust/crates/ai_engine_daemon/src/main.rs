@@ -44,7 +44,7 @@ use engine::{
     UpsertRequest, UpsertResponse,
 };
 
-const MAX_TOP_K: i64 = 1000;
+const MAX_TOP_K: i32 = 1000;
 const MAX_CONTEXT_TOP_K: usize = 100;
 
 type InferenceStream =
@@ -122,8 +122,8 @@ async fn main() -> Result<()> {
         std::env::var("AI_ENGINE_MODELS_PATH").unwrap_or_else(|_| ".ai-engine/models".to_string());
     let llama_cli =
         std::env::var("AI_ENGINE_LLAMA_CLI").unwrap_or_else(|_| "llama-cli".to_string());
-    let training_dir =
-        std::env::var("AI_ENGINE_TRAINING_DIR").unwrap_or_else(|_| ".ai-engine/training".to_string());
+    let training_dir = std::env::var("AI_ENGINE_TRAINING_DIR")
+        .unwrap_or_else(|_| ".ai-engine/training".to_string());
     let backend = "llama.cpp".to_string();
 
     let store = EngineStore::new(lancedb_uri);
@@ -255,54 +255,14 @@ impl Runtime for EngineService {
             return Err(Status::invalid_argument("model_id is required"));
         }
 
-        let mut chunks = self
+        let chunks = self
             .state
             .runtime
             .stream_inference(&first.model_id, &first.prompt, &first.parameters)
             .await
             .map_err(inference_status)?;
-        let (sender, receiver) = mpsc::channel(8);
-        tokio::spawn(async move {
-            let mut sent_any = false;
-            while let Some(chunk) = chunks.recv().await {
-                match chunk {
-                    Ok(token) => {
-                        sent_any = true;
-                        if sender
-                            .send(Ok(InferenceResponse {
-                                token,
-                                complete: false,
-                                metrics: HashMap::new(),
-                            }))
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                    Err(error) => {
-                        let _ = sender.send(Err(internal_status(error))).await;
-                        return;
-                    }
-                }
-            }
 
-            if sent_any {
-                if sender
-                    .send(Ok(InferenceResponse {
-                        token: String::new(),
-                        complete: true,
-                        metrics: HashMap::new(),
-                    }))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        });
-
-        Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
+        Ok(Response::new(Box::pin(bridge_inference_chunks(chunks))))
     }
 }
 
@@ -1243,7 +1203,8 @@ fn inference_status(error: impl std::fmt::Display) -> Status {
         Status::invalid_argument(message)
     } else if message.contains("model not found") {
         Status::not_found(message)
-    } else if message.contains("model not loaded") || message.contains("backend command not found") {
+    } else if message.contains("model not loaded") || message.contains("backend command not found")
+    {
         Status::failed_precondition(message)
     } else {
         Status::internal(message)
@@ -1277,6 +1238,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use tempfile::tempdir;
+    use tokio_stream::StreamExt;
     use tonic::Code;
 
     use super::*;
@@ -1325,6 +1287,19 @@ mod tests {
         assert_eq!(err.code(), Code::InvalidArgument);
     }
 
+    #[tokio::test]
+    async fn stream_inference_emits_completion_when_backend_returns_no_tokens() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(sender);
+
+        let mut stream = bridge_inference_chunks(receiver);
+        let response = stream.next().await.unwrap().unwrap();
+
+        assert!(response.complete);
+        assert!(response.token.is_empty());
+        assert!(stream.next().await.is_none());
+    }
+
     fn test_service() -> EngineService {
         let tempdir = tempdir().unwrap();
         let models_dir = tempdir.path().join("models");
@@ -1344,7 +1319,9 @@ mod tests {
                     store.clone(),
                     models_dir,
                     "llama.cpp",
-                    create_fake_backend(tempdir.path()).to_string_lossy().to_string(),
+                    create_fake_backend(tempdir.path())
+                        .to_string_lossy()
+                        .to_string(),
                 ),
                 training: TrainingEngine::new(store.clone(), training_dir, "llama.cpp"),
                 embedding_provider_name: embedding_engine.name().to_string(),
@@ -1373,6 +1350,45 @@ mod tests {
             path
         }
     }
+}
+
+fn bridge_inference_chunks(
+    mut chunks: mpsc::Receiver<Result<String>>,
+) -> ReceiverStream<Result<InferenceResponse, Status>> {
+    let (sender, receiver) = mpsc::channel(8);
+    tokio::spawn(async move {
+        while let Some(chunk) = chunks.recv().await {
+            match chunk {
+                Ok(token) => {
+                    if sender
+                        .send(Ok(InferenceResponse {
+                            token,
+                            complete: false,
+                            metrics: HashMap::new(),
+                        }))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(internal_status(error))).await;
+                    return;
+                }
+            }
+        }
+
+        let _ = sender
+            .send(Ok(InferenceResponse {
+                token: String::new(),
+                complete: true,
+                metrics: HashMap::new(),
+            }))
+            .await;
+    });
+
+    ReceiverStream::new(receiver)
 }
 
 /// Opens and returns a `ContextEngine` configured from environment variables.
@@ -2095,7 +2111,7 @@ impl ContextRpc for ContextGrpcService {
 }
 
 #[cfg(test)]
-mod tests {
+mod grpc_service_tests {
     use super::*;
 
     // -----------------------------------------------------------------------

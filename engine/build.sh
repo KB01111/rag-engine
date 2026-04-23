@@ -24,10 +24,8 @@ mkdir -p "$CARGO_HOME"
 echo "Using GOCACHE=$GOCACHE"
 echo "Using CARGO_HOME=$CARGO_HOME"
 
-if [ -z "${PROTOC:-}" ]; then
-    PROTOC="$(bash "$PROTOC_SCRIPT")"
-    export PROTOC
-fi
+PROTOC="$(bash "$PROTOC_SCRIPT")"
+export PROTOC
 PROTOCEXE="${PROTOC}"
 
 if [ -x "$HOME/go/bin/protoc-gen-go" ]; then
