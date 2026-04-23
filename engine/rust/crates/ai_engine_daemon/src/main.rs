@@ -1,10 +1,16 @@
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use chunking::ChunkingConfig;
+use context_engine::{
+    ContextConfig, ContextEngine, DragonflyConfig, GraphFactRecord, ManagedRoot,
+    OpenVikingBridgeConfig, ResourceLayer, ResourceUpsertRequest,
+    SearchRequest as ContextSearchRequestModel, SessionEventRequest,
+};
 use embedding::{create_default_engine, EmbeddingEngine};
 use prost_types::{value, Struct, Timestamp, Value};
 use runtime_engine::RuntimeEngine;
@@ -24,6 +30,7 @@ pub mod engine {
     tonic::include_proto!("engine");
 }
 
+use engine::context_server::{Context as ContextRpc, ContextServer};
 use engine::mcp_server::{Mcp, McpServer};
 use engine::rag_server::{Rag, RagServer};
 use engine::runtime_server::{Runtime, RuntimeServer};
@@ -59,6 +66,11 @@ struct EngineService {
     state: AppState,
 }
 
+#[derive(Clone)]
+struct ContextGrpcService {
+    engine: ContextEngine,
+}
+
 #[derive(Debug, Deserialize)]
 struct StoredTool {
     name: String,
@@ -91,6 +103,9 @@ async fn main() -> Result<()> {
     let store = EngineStore::new(lancedb_uri);
     let embedding_engine = Arc::new(create_default_engine());
     let embedding_provider_name = embedding_engine.name().to_string();
+    let context_service = ContextGrpcService {
+        engine: open_context_engine_from_env().await?,
+    };
     let service = EngineService {
         state: AppState {
             store: store.clone(),
@@ -110,6 +125,9 @@ async fn main() -> Result<()> {
         .set_serving::<RagServer<EngineService>>()
         .await;
     health_reporter
+        .set_serving::<ContextServer<ContextGrpcService>>()
+        .await;
+    health_reporter
         .set_serving::<TrainingServer<EngineService>>()
         .await;
     health_reporter
@@ -120,6 +138,7 @@ async fn main() -> Result<()> {
         .add_service(health_service)
         .add_service(RuntimeServer::new(service.clone()))
         .add_service(RagServer::new(service.clone()))
+        .add_service(ContextServer::new(context_service))
         .add_service(TrainingServer::new(service.clone()))
         .add_service(McpServer::new(service))
         .serve(addr.parse()?)
@@ -679,8 +698,107 @@ fn training_run(run: storage::TrainingRunRecord) -> TrainingRun {
     }
 }
 
+fn context_resource(resource: context_engine::ResourceSummary) -> engine::ContextResource {
+    engine::ContextResource {
+        uri: resource.uri,
+        title: resource.title,
+        layer: resource.layer,
+        metadata: resource.metadata.into_iter().collect(),
+    }
+}
+
+fn context_search_result(result: context_engine::SearchHit) -> engine::ContextSearchResult {
+    engine::ContextSearchResult {
+        uri: result.uri,
+        document_id: result.document_id,
+        chunk_text: result.chunk_text,
+        score: result.score,
+        metadata: result.metadata.into_iter().collect(),
+        layer: result.layer,
+    }
+}
+
+fn context_graph_search_result(fact: GraphFactRecord, rank: usize) -> engine::ContextSearchResult {
+    let edge_id = fact.edge_id.clone();
+    let subject_name = fact.subject.name.clone();
+    let object_name = fact.object.name.clone();
+    let relation = fact.relation.as_str().to_string();
+    let mut metadata = fact.metadata;
+    metadata.insert("kind".to_string(), "graph".to_string());
+    metadata.insert("subject_id".to_string(), fact.subject.id.clone());
+    metadata.insert(
+        "subject_type".to_string(),
+        fact.subject.kind.as_str().to_string(),
+    );
+    metadata.insert("subject_name".to_string(), fact.subject.name.clone());
+    metadata.insert("relation".to_string(), fact.relation.as_str().to_string());
+    metadata.insert("object_id".to_string(), fact.object.id.clone());
+    metadata.insert(
+        "object_type".to_string(),
+        fact.object.kind.as_str().to_string(),
+    );
+    metadata.insert("object_name".to_string(), fact.object.name.clone());
+    if let Some(session_id) = &fact.session_id {
+        metadata.insert("session_id".to_string(), session_id.clone());
+    }
+
+    engine::ContextSearchResult {
+        uri: fact
+            .resource_uri
+            .unwrap_or_else(|| format!("viking://graph/{edge_id}")),
+        document_id: edge_id,
+        chunk_text: format!("{subject_name} {relation} {object_name}"),
+        score: (1.0 - (rank as f32 * 0.01)).max(0.1),
+        metadata: metadata.into_iter().collect(),
+        layer: ResourceLayer::L1.as_str().to_string(),
+    }
+}
+
+fn context_file_entry(entry: context_engine::FileEntry) -> engine::ContextFileEntry {
+    engine::ContextFileEntry {
+        name: entry.name,
+        path: entry.path,
+        is_dir: entry.is_dir,
+        size_bytes: entry.size_bytes as i64,
+        version: entry.version,
+    }
+}
+
+fn context_session_entry(entry: context_engine::SessionEntry) -> engine::ContextSessionEntry {
+    engine::ContextSessionEntry {
+        session_id: entry.session_id,
+        role: entry.role,
+        content: entry.content,
+        metadata: entry.metadata.into_iter().collect(),
+        created_at: Some(timestamp_millis(entry.created_at)),
+    }
+}
+
+fn resource_layer_from_proto(layer: i32) -> ResourceLayer {
+    match layer {
+        1 => ResourceLayer::L0,
+        2 => ResourceLayer::L1,
+        _ => ResourceLayer::L2,
+    }
+}
+
+fn context_search_layer(layer: i32) -> Option<ResourceLayer> {
+    match layer {
+        1 => Some(ResourceLayer::L0),
+        2 => Some(ResourceLayer::L1),
+        3 => Some(ResourceLayer::L2),
+        _ => None,
+    }
+}
+
 fn timestamp(seconds: i64) -> Timestamp {
     Timestamp { seconds, nanos: 0 }
+}
+
+fn timestamp_millis(millis: i64) -> Timestamp {
+    let seconds = millis.div_euclid(1000);
+    let nanos = (millis.rem_euclid(1000) * 1_000_000) as i32;
+    Timestamp { seconds, nanos }
 }
 
 fn default_tools() -> Vec<Tool> {
@@ -761,4 +879,380 @@ fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+async fn open_context_engine_from_env() -> Result<ContextEngine> {
+    let data_dir =
+        std::env::var("CONTEXT_DATA_DIR").unwrap_or_else(|_| "./context-data".to_string());
+    let roots_env = std::env::var("CONTEXT_ROOTS").unwrap_or_else(|_| "workspace=.".to_string());
+    let roots = parse_context_roots(&roots_env)?;
+    let bridge = std::env::var("CONTEXT_OPENVIKING_URL")
+        .ok()
+        .map(|base_url| {
+            let mut bridge = OpenVikingBridgeConfig::new(base_url);
+            bridge.token = std::env::var("CONTEXT_OPENVIKING_API_KEY").ok();
+            if let Ok(import_path) = std::env::var("CONTEXT_OPENVIKING_IMPORT_PATH") {
+                bridge.import_path = import_path;
+            }
+            if let Ok(sync_path) = std::env::var("CONTEXT_OPENVIKING_SYNC_PATH") {
+                bridge.sync_path = sync_path;
+            }
+            if let Ok(find_path) = std::env::var("CONTEXT_OPENVIKING_FIND_PATH") {
+                bridge.find_path = find_path;
+            }
+            if let Ok(read_path) = std::env::var("CONTEXT_OPENVIKING_READ_PATH") {
+                bridge.read_path = read_path;
+            }
+            bridge
+        });
+
+    ContextEngine::open(ContextConfig {
+        data_dir: PathBuf::from(data_dir),
+        roots,
+        bridge,
+        dragonfly: dragonfly_config_from_env(),
+    })
+    .await
+    .map_err(Into::into)
+}
+
+fn dragonfly_config_from_env() -> Option<DragonflyConfig> {
+    let enabled = std::env::var("CONTEXT_DRAGONFLY_ENABLED")
+        .ok()
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false"
+            )
+        })
+        .unwrap_or(false);
+    let addr = std::env::var("CONTEXT_DRAGONFLY_ADDR").ok();
+    let key_prefix = std::env::var("CONTEXT_DRAGONFLY_KEY_PREFIX").ok();
+    let recent_window = std::env::var("CONTEXT_DRAGONFLY_RECENT_WINDOW")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
+
+    if !(enabled || addr.is_some() || key_prefix.is_some() || recent_window.is_some()) {
+        return None;
+    }
+
+    let defaults = DragonflyConfig::default();
+    Some(DragonflyConfig {
+        addr: addr.unwrap_or(defaults.addr),
+        key_prefix: key_prefix.unwrap_or(defaults.key_prefix),
+        recent_window: recent_window.unwrap_or(defaults.recent_window).max(1),
+    })
+}
+
+fn parse_context_roots(value: &str) -> Result<Vec<ManagedRoot>> {
+    let mut roots = Vec::new();
+    for entry in value.split(';').filter(|entry| !entry.trim().is_empty()) {
+        if let Some((name, path)) = entry.split_once('=') {
+            roots.push(ManagedRoot::new(name.trim(), PathBuf::from(path.trim()))?);
+            continue;
+        }
+
+        let default_name = if roots.is_empty() {
+            "workspace".to_string()
+        } else {
+            format!("root-{}", roots.len() + 1)
+        };
+        roots.push(ManagedRoot::new(default_name, PathBuf::from(entry.trim()))?);
+    }
+    Ok(roots)
+}
+
+#[tonic::async_trait]
+impl ContextRpc for ContextGrpcService {
+    async fn get_context_status(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<engine::ContextStatus>, Status> {
+        let status = self.engine.status().await.map_err(internal_status)?;
+        Ok(Response::new(engine::ContextStatus {
+            document_count: status.document_count,
+            chunk_count: status.chunk_count,
+            index_size_bytes: status.index_size_bytes,
+            embedding_model: status.embedding_model,
+            ready: status.ready,
+            managed_roots: status.managed_roots,
+        }))
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<engine::ContextResourceList>, Status> {
+        let resources = self
+            .engine
+            .list_resources()
+            .await
+            .map_err(internal_status)?;
+        Ok(Response::new(engine::ContextResourceList {
+            resources: resources.into_iter().map(context_resource).collect(),
+        }))
+    }
+
+    async fn upsert_resource(
+        &self,
+        request: Request<engine::ContextUpsertResourceRequest>,
+    ) -> Result<Response<engine::ContextUpsertResourceResponse>, Status> {
+        let request = request.into_inner();
+        let outcome = self
+            .engine
+            .upsert_resource(ResourceUpsertRequest {
+                uri: request.uri,
+                title: if request.title.is_empty() {
+                    None
+                } else {
+                    Some(request.title)
+                },
+                content: request.content,
+                layer: resource_layer_from_proto(request.layer),
+                metadata: request.metadata.into_iter().collect(),
+                previous_uri: if request.previous_uri.is_empty() {
+                    None
+                } else {
+                    Some(request.previous_uri)
+                },
+            })
+            .await
+            .map_err(internal_status)?;
+
+        Ok(Response::new(engine::ContextUpsertResourceResponse {
+            resource: Some(context_resource(outcome.resource)),
+            chunks_indexed: outcome.chunks_indexed,
+        }))
+    }
+
+    async fn delete_resource(
+        &self,
+        request: Request<engine::ContextDeleteResourceRequest>,
+    ) -> Result<Response<()>, Status> {
+        self.engine
+            .delete_resource(&request.into_inner().uri)
+            .await
+            .map_err(internal_status)?;
+        Ok(Response::new(()))
+    }
+
+    async fn search_context(
+        &self,
+        request: Request<engine::ContextSearchRequest>,
+    ) -> Result<Response<engine::ContextSearchResponse>, Status> {
+        let started_at = Instant::now();
+        let request = request.into_inner();
+        if request
+            .filters
+            .get("kind")
+            .map(|value| value.eq_ignore_ascii_case("graph"))
+            .unwrap_or(false)
+        {
+            let top_k = if request.top_k > 0 {
+                request.top_k as usize
+            } else {
+                10
+            };
+            let results = self
+                .engine
+                .graph_facts(&request.query, top_k)
+                .await
+                .map_err(internal_status)?;
+
+            return Ok(Response::new(engine::ContextSearchResponse {
+                results: results
+                    .into_iter()
+                    .enumerate()
+                    .map(|(rank, fact)| context_graph_search_result(fact, rank))
+                    .collect(),
+                query_time_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+            }));
+        }
+
+        let results = self
+            .engine
+            .search_context(ContextSearchRequestModel {
+                query: request.query,
+                scope_uri: if request.scope_uri.is_empty() {
+                    None
+                } else {
+                    Some(request.scope_uri)
+                },
+                top_k: (request.top_k > 0).then_some(request.top_k as usize),
+                filters: (!request.filters.is_empty())
+                    .then_some(request.filters.into_iter().collect()),
+                layer: context_search_layer(request.layer),
+                rerank: request.rerank,
+            })
+            .await
+            .map_err(internal_status)?;
+
+        Ok(Response::new(engine::ContextSearchResponse {
+            results: results.into_iter().map(context_search_result).collect(),
+            query_time_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+        }))
+    }
+
+    async fn sync_workspace(
+        &self,
+        request: Request<engine::ContextWorkspaceSyncRequest>,
+    ) -> Result<Response<engine::ContextWorkspaceSyncResponse>, Status> {
+        let request = request.into_inner();
+        let outcome = self
+            .engine
+            .sync_workspace(
+                &request.root,
+                (!request.path.is_empty()).then(|| PathBuf::from(request.path)),
+            )
+            .await
+            .map_err(internal_status)?;
+
+        Ok(Response::new(engine::ContextWorkspaceSyncResponse {
+            root: outcome.root,
+            prefix: outcome.prefix,
+            indexed_resources: outcome.indexed_resources,
+            reindexed_resources: outcome.reindexed_resources,
+            deleted_resources: outcome.deleted_resources,
+            skipped_files: outcome.skipped_files,
+        }))
+    }
+
+    async fn list_files(
+        &self,
+        request: Request<engine::ContextFileListRequest>,
+    ) -> Result<Response<engine::ContextFileListResponse>, Status> {
+        let request = request.into_inner();
+        let entries = self
+            .engine
+            .list_files(&request.root, PathBuf::from(request.path))
+            .await
+            .map_err(internal_status)?;
+        Ok(Response::new(engine::ContextFileListResponse {
+            entries: entries.into_iter().map(context_file_entry).collect(),
+        }))
+    }
+
+    async fn read_file(
+        &self,
+        request: Request<engine::ContextFileReadRequest>,
+    ) -> Result<Response<engine::ContextFileReadResponse>, Status> {
+        let request = request.into_inner();
+        let path = PathBuf::from(&request.path);
+        let content = self
+            .engine
+            .read_file(&request.root, path.clone())
+            .await
+            .map_err(internal_status)?;
+        let version = self
+            .engine
+            .file_version(&request.root, path)
+            .await
+            .unwrap_or(0);
+        Ok(Response::new(engine::ContextFileReadResponse {
+            path: request.path,
+            content,
+            version,
+        }))
+    }
+
+    async fn write_file(
+        &self,
+        request: Request<engine::ContextFileWriteRequest>,
+    ) -> Result<Response<engine::ContextFileWriteResponse>, Status> {
+        let request = request.into_inner();
+        let version = self
+            .engine
+            .write_file(
+                &request.root,
+                PathBuf::from(&request.path),
+                &request.content,
+                request.version,
+            )
+            .await
+            .map_err(internal_status)?;
+        Ok(Response::new(engine::ContextFileWriteResponse {
+            path: request.path,
+            version,
+        }))
+    }
+
+    async fn delete_file(
+        &self,
+        request: Request<engine::ContextFileDeleteRequest>,
+    ) -> Result<Response<engine::ContextFileDeleteResponse>, Status> {
+        let request = request.into_inner();
+        let deleted = self
+            .engine
+            .delete_file(&request.root, PathBuf::from(&request.path), request.version)
+            .await
+            .map_err(internal_status)?;
+        Ok(Response::new(engine::ContextFileDeleteResponse {
+            path: request.path,
+            deleted,
+        }))
+    }
+
+    async fn move_file(
+        &self,
+        request: Request<engine::ContextFileMoveRequest>,
+    ) -> Result<Response<engine::ContextFileMoveResponse>, Status> {
+        let request = request.into_inner();
+        let version = self
+            .engine
+            .move_file(
+                &request.root,
+                PathBuf::from(&request.from_path),
+                PathBuf::from(&request.to_path),
+                request.version,
+            )
+            .await
+            .map_err(internal_status)?;
+        Ok(Response::new(engine::ContextFileMoveResponse {
+            from_path: request.from_path,
+            to_path: request.to_path,
+            version,
+        }))
+    }
+
+    async fn append_session(
+        &self,
+        request: Request<engine::ContextSessionAppendRequest>,
+    ) -> Result<Response<engine::ContextSessionHistory>, Status> {
+        let request = request.into_inner();
+        let session_id = request.session_id.clone();
+        self.engine
+            .append_session(SessionEventRequest {
+                session_id: session_id.clone(),
+                role: request.role,
+                content: request.content,
+                metadata: request.metadata.into_iter().collect(),
+            })
+            .await
+            .map_err(internal_status)?;
+        let entries = self
+            .engine
+            .list_sessions(&session_id)
+            .await
+            .map_err(internal_status)?;
+        Ok(Response::new(engine::ContextSessionHistory {
+            session_id,
+            entries: entries.into_iter().map(context_session_entry).collect(),
+        }))
+    }
+
+    async fn get_session(
+        &self,
+        request: Request<engine::ContextSessionGetRequest>,
+    ) -> Result<Response<engine::ContextSessionHistory>, Status> {
+        let request = request.into_inner();
+        let entries = self
+            .engine
+            .list_sessions(&request.session_id)
+            .await
+            .map_err(internal_status)?;
+        Ok(Response::new(engine::ContextSessionHistory {
+            session_id: request.session_id,
+            entries: entries.into_iter().map(context_session_entry).collect(),
+        }))
+    }
 }

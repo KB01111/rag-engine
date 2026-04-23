@@ -22,6 +22,8 @@ use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
 use crate::bridge::{BridgeError, OpenVikingBridgeClient, OpenVikingBridgeConfig};
+use crate::graph::{GraphFactRecord, GraphNode, GraphNodeKind, GraphRelationKind, GraphStore};
+use crate::memory::{DragonflyConfig, WorkingMemoryProvider};
 use crate::model::{
     DeleteOutcome, FileEntry, LayeredContent, ResourceLayer, ResourceSummary,
     ResourceUpsertRequest, SearchHit, SearchRequest, SessionEntry, SessionEventRequest,
@@ -93,6 +95,7 @@ pub struct ContextConfig {
     pub data_dir: PathBuf,
     pub roots: Vec<ManagedRoot>,
     pub bridge: Option<OpenVikingBridgeConfig>,
+    pub dragonfly: Option<DragonflyConfig>,
 }
 
 impl ContextConfig {
@@ -101,6 +104,7 @@ impl ContextConfig {
             data_dir: dir.into(),
             roots,
             bridge: None,
+            dragonfly: None,
         }
     }
 }
@@ -111,6 +115,7 @@ impl Default for ContextConfig {
             data_dir: PathBuf::from("./context-data"),
             roots: Vec::new(),
             bridge: None,
+            dragonfly: None,
         }
     }
 }
@@ -280,6 +285,38 @@ impl ContextEngine {
                 content TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS graph_nodes (
+                node_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS graph_edges (
+                edge_id TEXT PRIMARY KEY,
+                subject_id TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                object_id TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                resource_uri TEXT,
+                session_id TEXT,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(subject_id, relation, object_id)
             )
             "#,
         )
@@ -947,6 +984,13 @@ impl ContextEngine {
 
         self.sync_vector_table(resource_row.clone(), &chunks, &deleted_ids, &added_chunks)
             .await?;
+        self.persist_graph_from_metadata(
+            &request.metadata,
+            &request.uri,
+            request.previous_uri.as_deref(),
+            now,
+        )
+        .await?;
 
         let chunks_indexed = chunks.len() as i32;
         let reused_chunks = reused_ids.len() as i32;
@@ -1223,6 +1267,10 @@ impl ContextEngine {
             .bind(&resource.resource_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM graph_edges WHERE resource_uri = ?1")
+            .bind(uri)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
 
         self.inner
@@ -1443,6 +1491,9 @@ impl ContextEngine {
         .execute(&self.inner.pool)
         .await?;
 
+        self.refresh_working_memory_cache(&request.session_id)
+            .await?;
+
         Ok(SessionEntry {
             session_id: request.session_id,
             role: request.role,
@@ -1450,6 +1501,368 @@ impl ContextEngine {
             metadata: request.metadata,
             created_at,
         })
+    }
+
+    pub async fn recent_session_entries(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionEntry>, ContextError> {
+        let limit = limit.max(1);
+        if let Some(window) = self
+            .inner
+            .config
+            .dragonfly
+            .as_ref()
+            .map(|config| config.recent_window.max(1))
+        {
+            if limit <= window {
+                if let Some(mut entries) = self.load_working_memory_cache(session_id).await? {
+                    if entries.len() > limit {
+                        entries = entries.split_off(entries.len() - limit);
+                    }
+                    return Ok(entries);
+                }
+            }
+        }
+        self.load_recent_session_entries_from_sql(session_id, limit)
+            .await
+    }
+
+    pub async fn graph_facts(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<GraphFactRecord>, ContextError> {
+        let like = format!("%{}%", query.trim());
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                e.edge_id,
+                e.subject_id,
+                e.relation,
+                e.object_id,
+                e.metadata_json,
+                e.resource_uri,
+                e.session_id,
+                e.updated_at,
+                s.kind AS subject_kind,
+                s.name AS subject_name,
+                s.metadata_json AS subject_metadata_json,
+                o.kind AS object_kind,
+                o.name AS object_name,
+                o.metadata_json AS object_metadata_json
+            FROM graph_edges e
+            JOIN graph_nodes s ON s.node_id = e.subject_id
+            JOIN graph_nodes o ON o.node_id = e.object_id
+            WHERE
+                s.node_id LIKE ?1 OR
+                s.name LIKE ?1 OR
+                o.node_id LIKE ?1 OR
+                o.name LIKE ?1 OR
+                e.relation LIKE ?1 OR
+                e.metadata_json LIKE ?1
+            ORDER BY e.updated_at DESC
+            LIMIT ?2
+            "#,
+        )
+        .bind(&like)
+        .bind(top_k as i64)
+        .fetch_all(&self.inner.pool)
+        .await?;
+
+        let mut facts = Vec::with_capacity(rows.len());
+        for row in rows {
+            let metadata_json = row.get::<String, _>("metadata_json");
+            let subject_metadata_json = row.get::<String, _>("subject_metadata_json");
+            let object_metadata_json = row.get::<String, _>("object_metadata_json");
+            facts.push(GraphFactRecord {
+                edge_id: row.get("edge_id"),
+                subject: GraphNode {
+                    id: row.get("subject_id"),
+                    name: row.get("subject_name"),
+                    kind: GraphNodeKind::from_metadata(&row.get::<String, _>("subject_kind")),
+                    metadata: serde_json::from_str(&subject_metadata_json)?,
+                },
+                relation: GraphRelationKind::from_metadata(&row.get::<String, _>("relation")),
+                object: GraphNode {
+                    id: row.get("object_id"),
+                    name: row.get("object_name"),
+                    kind: GraphNodeKind::from_metadata(&row.get::<String, _>("object_kind")),
+                    metadata: serde_json::from_str(&object_metadata_json)?,
+                },
+                metadata: serde_json::from_str(&metadata_json)?,
+                resource_uri: row.get("resource_uri"),
+                session_id: row.get("session_id"),
+                updated_at: row.get("updated_at"),
+            });
+        }
+        Ok(facts)
+    }
+
+    async fn load_recent_session_entries_from_sql(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionEntry>, ContextError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT session_id, role, content, metadata_json, created_at
+            FROM sessions
+            WHERE session_id = ?1
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?2
+            "#,
+        )
+        .bind(session_id)
+        .bind(limit as i64)
+        .fetch_all(&self.inner.pool)
+        .await?;
+
+        let mut entries = rows
+            .into_iter()
+            .map(|row| SessionEntry {
+                session_id: row.get("session_id"),
+                role: row.get("role"),
+                content: row.get("content"),
+                metadata: serde_json::from_str(&row.get::<String, _>("metadata_json"))
+                    .unwrap_or_default(),
+                created_at: row.get::<i64, _>("created_at"),
+            })
+            .collect::<Vec<_>>();
+        entries.reverse();
+        Ok(entries)
+    }
+
+    async fn refresh_working_memory_cache(&self, session_id: &str) -> Result<(), ContextError> {
+        let Some(config) = self.inner.config.dragonfly.as_ref() else {
+            return Ok(());
+        };
+
+        let entries = self
+            .load_recent_session_entries_from_sql(session_id, config.recent_window.max(1))
+            .await?;
+        let uri = working_memory_cache_uri(session_id)?;
+        let metadata_json = serde_json::to_string(&BTreeMap::from([
+            ("provider".to_string(), "dragonfly".to_string()),
+            ("session_id".to_string(), session_id.to_string()),
+            (
+                "recent_window".to_string(),
+                config.recent_window.max(1).to_string(),
+            ),
+        ]))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO memories (uri, namespace, content, metadata_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(uri) DO UPDATE SET
+                namespace = excluded.namespace,
+                content = excluded.content,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&uri)
+        .bind(&config.key_prefix)
+        .bind(serde_json::to_string(&entries)?)
+        .bind(metadata_json)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.inner.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn load_working_memory_cache(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Vec<SessionEntry>>, ContextError> {
+        let Some(config) = self.inner.config.dragonfly.as_ref() else {
+            return Ok(None);
+        };
+        let uri = working_memory_cache_uri(session_id)?;
+        let row = sqlx::query(
+            r#"
+            SELECT content
+            FROM memories
+            WHERE uri = ?1 AND namespace = ?2
+            "#,
+        )
+        .bind(uri)
+        .bind(&config.key_prefix)
+        .fetch_optional(&self.inner.pool)
+        .await?;
+
+        row.map(|row| serde_json::from_str(&row.get::<String, _>("content")))
+            .transpose()
+            .map_err(ContextError::from)
+    }
+
+    async fn persist_graph_from_metadata(
+        &self,
+        metadata: &BTreeMap<String, String>,
+        resource_uri: &str,
+        previous_uri: Option<&str>,
+        updated_at: i64,
+    ) -> Result<(), ContextError> {
+        let delete_current = sqlx::query("DELETE FROM graph_edges WHERE resource_uri = ?1")
+            .bind(resource_uri)
+            .execute(&self.inner.pool);
+        let delete_previous = async {
+            if let Some(previous_uri) = previous_uri.filter(|uri| *uri != resource_uri) {
+                sqlx::query("DELETE FROM graph_edges WHERE resource_uri = ?1")
+                    .bind(previous_uri)
+                    .execute(&self.inner.pool)
+                    .await?;
+            }
+            Ok::<(), sqlx::Error>(())
+        };
+        let (current_delete, previous_delete) = tokio::join!(delete_current, delete_previous);
+        current_delete?;
+        previous_delete?;
+
+        if metadata
+            .get("kind")
+            .map(|value| !value.eq_ignore_ascii_case("graph"))
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+
+        let Some(subject_id) = metadata
+            .get("subject_id")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(());
+        };
+        let Some(object_id) = metadata
+            .get("object_id")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(());
+        };
+
+        let relation = GraphRelationKind::from_metadata(
+            metadata
+                .get("relation")
+                .map(String::as_str)
+                .unwrap_or("RELATED_TO"),
+        );
+        let subject = GraphNode {
+            id: subject_id.to_string(),
+            name: metadata
+                .get("subject_name")
+                .cloned()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| subject_id.to_string()),
+            kind: GraphNodeKind::from_metadata(
+                metadata
+                    .get("subject_type")
+                    .map(String::as_str)
+                    .unwrap_or("generic"),
+            ),
+            metadata: collect_graph_node_metadata(metadata, "subject_"),
+        };
+        let object = GraphNode {
+            id: object_id.to_string(),
+            name: metadata
+                .get("object_name")
+                .cloned()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| object_id.to_string()),
+            kind: GraphNodeKind::from_metadata(
+                metadata
+                    .get("object_type")
+                    .map(String::as_str)
+                    .unwrap_or("generic"),
+            ),
+            metadata: collect_graph_node_metadata(metadata, "object_"),
+        };
+
+        self.upsert_graph_node(&subject, updated_at).await?;
+        self.upsert_graph_node(&object, updated_at).await?;
+
+        let mut edge_metadata = metadata.clone();
+        edge_metadata.insert("kind".to_string(), "graph".to_string());
+        edge_metadata
+            .entry("resource_uri".to_string())
+            .or_insert_with(|| resource_uri.to_string());
+        if let Some(previous_uri) = previous_uri {
+            edge_metadata
+                .entry("previous_resource_uri".to_string())
+                .or_insert_with(|| previous_uri.to_string());
+        }
+
+        self.upsert_graph_edge(&GraphEdgeRow {
+            edge_id: graph_edge_id(&subject.id, relation.as_str(), &object.id),
+            subject_id: subject.id,
+            relation: relation.as_str().to_string(),
+            object_id: object.id,
+            metadata_json: serde_json::to_string(&edge_metadata)?,
+            resource_uri: Some(resource_uri.to_string()),
+            session_id: metadata.get("session_id").cloned(),
+            updated_at,
+        })
+        .await
+    }
+
+    async fn upsert_graph_node(
+        &self,
+        node: &GraphNode,
+        updated_at: i64,
+    ) -> Result<(), ContextError> {
+        sqlx::query(
+            r#"
+            INSERT INTO graph_nodes (node_id, kind, name, metadata_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(node_id) DO UPDATE SET
+                kind = excluded.kind,
+                name = excluded.name,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&node.id)
+        .bind(node.kind.as_str())
+        .bind(&node.name)
+        .bind(serde_json::to_string(&node.metadata)?)
+        .bind(updated_at)
+        .execute(&self.inner.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn upsert_graph_edge(&self, edge: &GraphEdgeRow) -> Result<(), ContextError> {
+        sqlx::query(
+            r#"
+            INSERT INTO graph_edges (edge_id, subject_id, relation, object_id, metadata_json, resource_uri, session_id, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(edge_id) DO UPDATE SET
+                subject_id = excluded.subject_id,
+                relation = excluded.relation,
+                object_id = excluded.object_id,
+                metadata_json = excluded.metadata_json,
+                resource_uri = excluded.resource_uri,
+                session_id = excluded.session_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&edge.edge_id)
+        .bind(&edge.subject_id)
+        .bind(&edge.relation)
+        .bind(&edge.object_id)
+        .bind(&edge.metadata_json)
+        .bind(&edge.resource_uri)
+        .bind(&edge.session_id)
+        .bind(edge.updated_at)
+        .execute(&self.inner.pool)
+        .await?;
+
+        Ok(())
     }
 
     pub async fn status(&self) -> Result<StatusResponse, ContextError> {
@@ -1493,6 +1906,65 @@ impl ContextEngine {
             let _ = self.inner.bridge.set(bridge);
         }
         Ok(self.inner.bridge.get().cloned().flatten())
+    }
+}
+
+impl GraphStore for ContextEngine {
+    fn upsert_fact<'a>(
+        &'a self,
+        fact: GraphFactRecord,
+    ) -> crate::graph::ProviderFuture<'a, Result<(), ContextError>> {
+        Box::pin(async move {
+            self.upsert_graph_node(&fact.subject, fact.updated_at)
+                .await?;
+            self.upsert_graph_node(&fact.object, fact.updated_at)
+                .await?;
+            self.upsert_graph_edge(&GraphEdgeRow {
+                edge_id: fact.edge_id,
+                subject_id: fact.subject.id,
+                relation: fact.relation.as_str().to_string(),
+                object_id: fact.object.id,
+                metadata_json: serde_json::to_string(&fact.metadata)?,
+                resource_uri: fact.resource_uri,
+                session_id: fact.session_id,
+                updated_at: fact.updated_at,
+            })
+            .await
+        })
+    }
+
+    fn related_facts<'a>(
+        &'a self,
+        query: &'a str,
+        limit: usize,
+    ) -> crate::graph::ProviderFuture<'a, Result<Vec<GraphFactRecord>, ContextError>> {
+        Box::pin(async move { self.graph_facts(query, limit).await })
+    }
+}
+
+impl WorkingMemoryProvider for ContextEngine {
+    fn append_session_entry<'a>(
+        &'a self,
+        entry: SessionEntry,
+    ) -> crate::memory::ProviderFuture<'a, Result<(), ContextError>> {
+        Box::pin(async move {
+            self.append_session(SessionEventRequest {
+                session_id: entry.session_id,
+                role: entry.role,
+                content: entry.content,
+                metadata: entry.metadata,
+            })
+            .await?;
+            Ok(())
+        })
+    }
+
+    fn recent_entries<'a>(
+        &'a self,
+        session_id: &'a str,
+        limit: usize,
+    ) -> crate::memory::ProviderFuture<'a, Result<Vec<SessionEntry>, ContextError>> {
+        Box::pin(async move { self.recent_session_entries(session_id, limit).await })
     }
 }
 
@@ -1573,6 +2045,24 @@ fn merge_metadata(
     Ok(merged)
 }
 
+fn collect_graph_node_metadata(
+    metadata: &BTreeMap<String, String>,
+    prefix: &str,
+) -> BTreeMap<String, String> {
+    metadata
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix(prefix).and_then(|stripped| {
+                if matches!(stripped, "id" | "name" | "type") {
+                    None
+                } else {
+                    Some((stripped.to_string(), value.clone()))
+                }
+            })
+        })
+        .collect()
+}
+
 fn normalize_search_query(query: &str) -> String {
     query
         .split_whitespace()
@@ -1635,6 +2125,16 @@ fn escape_sql(value: &str) -> String {
     value.replace('\'', "''")
 }
 
+fn graph_edge_id(subject_id: &str, relation: &str, object_id: &str) -> String {
+    hash_text(&format!("{subject_id}|{relation}|{object_id}"))
+}
+
+fn working_memory_cache_uri(session_id: &str) -> Result<String, ContextError> {
+    VikingUri::user_memory(format!("working-memory/{session_id}"))
+        .map(|uri| uri.to_string())
+        .map_err(ContextError::from)
+}
+
 fn embed_text(text: &str) -> Vec<f32> {
     let mut vector = vec![0.0f32; EMBEDDING_DIM];
     for token in tokenize(text) {
@@ -1666,4 +2166,16 @@ fn hash_token(token: &str) -> u64 {
     hasher.update(token.as_bytes());
     let digest = hasher.finalize();
     u64::from_le_bytes(digest[0..8].try_into().unwrap())
+}
+
+#[derive(Debug, Clone)]
+struct GraphEdgeRow {
+    edge_id: String,
+    subject_id: String,
+    relation: String,
+    object_id: String,
+    metadata_json: String,
+    resource_uri: Option<String>,
+    session_id: Option<String>,
+    updated_at: i64,
 }

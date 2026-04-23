@@ -82,10 +82,7 @@ impl OpenVikingBridgeClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self {
-            client,
-            config,
-        }
+        Self { client, config }
     }
 
     fn base_url(&self) -> Result<Url, BridgeError> {
@@ -179,10 +176,7 @@ impl OpenVikingBridgeClient {
             request = request.bearer_auth(token);
         }
 
-        let response = request
-            .send()
-            .await?
-            .error_for_status()?;
+        let response = request.send().await?.error_for_status()?;
         let body = response.json::<RemoteResourcePayload>().await?;
         Ok(body)
     }

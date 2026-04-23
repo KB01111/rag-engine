@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use context_engine::{
-    ContextConfig, ContextEngine, ManagedRoot, ResourceLayer, ResourceUpsertRequest, SearchRequest,
-    VikingUri,
+    ContextConfig, ContextEngine, DragonflyConfig, ManagedRoot, ResourceLayer,
+    ResourceUpsertRequest, SearchRequest, SessionEventRequest, VikingUri,
 };
 use tempfile::tempdir;
 
@@ -44,6 +44,7 @@ async fn managed_root_rejects_path_escape() {
         data_dir: dir.path().join("data"),
         roots: vec![root],
         bridge: None,
+        dragonfly: None,
     })
     .await
     .unwrap();
@@ -69,6 +70,7 @@ async fn incremental_upsert_reuses_unchanged_chunks() {
             path: root_dir.clone(),
         }],
         bridge: None,
+        dragonfly: None,
     })
     .await
     .unwrap();
@@ -119,6 +121,7 @@ async fn lexical_search_finds_indexed_resource() {
             path: root_dir,
         }],
         bridge: None,
+        dragonfly: None,
     })
     .await
     .unwrap();
@@ -164,6 +167,7 @@ async fn file_operations_keep_index_in_sync() {
             path: root_dir,
         }],
         bridge: None,
+        dragonfly: None,
     })
     .await
     .unwrap();
@@ -260,6 +264,7 @@ async fn workspace_sync_indexes_files_and_prunes_missing_resources() {
             path: root_dir.clone(),
         }],
         bridge: None,
+        dragonfly: None,
     })
     .await
     .unwrap();
@@ -285,4 +290,122 @@ async fn workspace_sync_indexes_files_and_prunes_missing_resources() {
     assert!(!resources
         .iter()
         .any(|resource| resource.uri.ends_with("/docs/beta.md")));
+}
+
+#[tokio::test]
+async fn graph_resources_materialize_facts_with_provenance_and_recent_window() {
+    let dir = tempdir().unwrap();
+    let root_dir = dir.path().join("workspace");
+    std::fs::create_dir_all(&root_dir).unwrap();
+
+    let engine = ContextEngine::open(ContextConfig {
+        data_dir: dir.path().join("data"),
+        roots: vec![ManagedRoot {
+            name: "workspace".to_string(),
+            path: root_dir,
+        }],
+        bridge: None,
+        dragonfly: Some(DragonflyConfig {
+            addr: "memory://dragonfly".to_string(),
+            key_prefix: "test:sessions".to_string(),
+            recent_window: 2,
+        }),
+    })
+    .await
+    .unwrap();
+
+    let graph_metadata = BTreeMap::from([
+        ("kind".to_string(), "graph".to_string()),
+        ("subject_id".to_string(), "project-x".to_string()),
+        ("subject_type".to_string(), "project".to_string()),
+        ("subject_name".to_string(), "Project X".to_string()),
+        ("relation".to_string(), "USES".to_string()),
+        ("object_id".to_string(), "dragonfly".to_string()),
+        ("object_type".to_string(), "concept".to_string()),
+        ("object_name".to_string(), "Dragonfly".to_string()),
+        ("session_id".to_string(), "sess-graph".to_string()),
+        ("source".to_string(), "test".to_string()),
+    ]);
+
+    engine
+        .upsert_resource(ResourceUpsertRequest {
+            uri: "viking://resources/workspace/graph/project-x.md".to_string(),
+            title: Some("Project X Graph".to_string()),
+            content: "Project X uses Dragonfly for hot memory.".to_string(),
+            layer: ResourceLayer::L1,
+            metadata: graph_metadata,
+            previous_uri: None,
+        })
+        .await
+        .unwrap();
+
+    let facts = engine.graph_facts("Project X", 5).await.unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].subject.id, "project-x");
+    assert_eq!(facts[0].subject.kind.as_str(), "project");
+    assert_eq!(facts[0].relation.as_str(), "USES");
+    assert_eq!(facts[0].object.id, "dragonfly");
+    assert_eq!(facts[0].object.kind.as_str(), "concept");
+    assert_eq!(
+        facts[0].resource_uri.as_deref(),
+        Some("viking://resources/workspace/graph/project-x.md")
+    );
+    assert_eq!(
+        facts[0].metadata.get("session_id").map(String::as_str),
+        Some("sess-graph")
+    );
+
+    let search = engine
+        .search_context(SearchRequest {
+            query: "Project X Dragonfly".to_string(),
+            scope_uri: None,
+            top_k: Some(5),
+            filters: Some(BTreeMap::from([("kind".to_string(), "graph".to_string())])),
+            layer: Some(ResourceLayer::L1),
+            rerank: Some(true),
+        })
+        .await
+        .unwrap();
+    assert!(search
+        .iter()
+        .any(|hit| hit.uri.ends_with("/graph/project-x.md")));
+
+    engine
+        .append_session(SessionEventRequest {
+            session_id: "sess-graph".to_string(),
+            role: "user".to_string(),
+            content: "We moved off Redis.".to_string(),
+            metadata: BTreeMap::new(),
+        })
+        .await
+        .unwrap();
+    engine
+        .append_session(SessionEventRequest {
+            session_id: "sess-graph".to_string(),
+            role: "assistant".to_string(),
+            content: "Dragonfly works well.".to_string(),
+            metadata: BTreeMap::new(),
+        })
+        .await
+        .unwrap();
+    engine
+        .append_session(SessionEventRequest {
+            session_id: "sess-graph".to_string(),
+            role: "user".to_string(),
+            content: "Keep that preference.".to_string(),
+            metadata: BTreeMap::new(),
+        })
+        .await
+        .unwrap();
+
+    let recent = engine
+        .recent_session_entries("sess-graph", 2)
+        .await
+        .unwrap();
+    assert_eq!(recent.len(), 2);
+    assert_eq!(recent[0].content, "Dragonfly works well.");
+    assert_eq!(recent[1].content, "Keep that preference.");
+
+    let full_history = engine.list_sessions("sess-graph").await.unwrap();
+    assert_eq!(full_history.len(), 3);
 }

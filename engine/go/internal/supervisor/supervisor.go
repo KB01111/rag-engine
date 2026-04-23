@@ -73,22 +73,19 @@ func (s *Supervisor) Start() error {
 	if err := s.config.EnsureDirs(); err != nil {
 		return fmt.Errorf("failed to ensure directories: %w", err)
 	}
-	if err := s.Context.Start(s.ctx); err != nil {
-		if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
-			log.Printf("failed to stop context backend after startup error: %v", stopErr)
-		}
-		return fmt.Errorf("failed to start context backend: %w", err)
-	}
 
 	if s.config.Daemon.Command != "" {
 		if err := s.launchDaemonLocked(); err != nil {
 			s.initLocalServicesLocked()
-			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
-				log.Printf("failed to stop context backend after daemon startup error: %v", stopErr)
-			}
 			return fmt.Errorf("failed to launch daemon: %w", err)
 		}
 	} else {
+		if err := s.Context.Start(s.ctx); err != nil {
+			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
+				log.Printf("failed to stop context backend after startup error: %v", stopErr)
+			}
+			return fmt.Errorf("failed to start context backend: %w", err)
+		}
 		s.initLocalServicesLocked()
 	}
 
@@ -195,7 +192,7 @@ func (s *Supervisor) Health() map[string]interface{} {
 }
 
 func (s *Supervisor) initLocalServicesLocked() {
-	s.Runtime = runtime.NewManager(s.config)
+	s.Runtime = s.wrapRuntimeService(runtime.NewManager(s.config))
 	s.RAG = rag.NewManager(s.config, s.Context)
 	s.Training = training.NewManager(s.config)
 	s.MCP = mcp.NewManager(s.config)
@@ -228,7 +225,8 @@ func (s *Supervisor) launchDaemonLocked() error {
 	}
 	s.daemonClient = client
 	s.daemonCmd = cmd
-	s.Runtime = client
+	s.Context.SetDaemonContextClient(client)
+	s.Runtime = s.wrapRuntimeService(client)
 	s.RAG = rag.NewManager(s.config, s.Context)
 	s.Training = client
 	s.MCP = client
@@ -272,6 +270,13 @@ func (s *Supervisor) daemonEnv() []string {
 		fmt.Sprintf("AI_ENGINE_LLAMA_CLI=%s", s.config.Daemon.LlamaCLI),
 		fmt.Sprintf("AI_ENGINE_TRAINING_CLI=%s", s.config.Daemon.TrainingCLI),
 	}
+}
+
+func (s *Supervisor) wrapRuntimeService(service runtime.Service) runtime.Service {
+	if service == nil || s.Context == nil || !s.Context.Enabled() {
+		return service
+	}
+	return runtime.NewContextAwareService(service, s.Context)
 }
 
 func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {

@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use context_engine::OpenVikingBridgeConfig;
 use context_engine::{
-    ContextConfig, ContextEngine, ContextError, FileEntry, ManagedRoot, ResourceLayer,
-    ResourceSummary, ResourceUpsertRequest, SearchHit, SearchRequest, SessionEntry,
+    ContextConfig, ContextEngine, ContextError, DragonflyConfig, FileEntry, ManagedRoot,
+    ResourceLayer, ResourceSummary, ResourceUpsertRequest, SearchHit, SearchRequest, SessionEntry,
     SessionEventRequest, StatusResponse, UpsertOutcome, WorkspaceSyncOutcome,
 };
 
@@ -192,7 +192,11 @@ pub async fn serve(addr: SocketAddr, engine: ContextEngine) -> anyhow::Result<()
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let ready = state.engine.status().await.is_ok();
     Json(HealthResponse {
-        status: if ready { "ok".to_string() } else { "degraded".to_string() },
+        status: if ready {
+            "ok".to_string()
+        } else {
+            "degraded".to_string()
+        },
         ready,
         message: if ready {
             None
@@ -431,8 +435,37 @@ pub async fn engine_from_env() -> anyhow::Result<ContextEngine> {
         data_dir: PathBuf::from(data_dir),
         roots,
         bridge,
+        dragonfly: dragonfly_config_from_env(),
     };
     Ok(ContextEngine::open(config).await?)
+}
+
+fn dragonfly_config_from_env() -> Option<DragonflyConfig> {
+    let enabled = std::env::var("CONTEXT_DRAGONFLY_ENABLED")
+        .ok()
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false"
+            )
+        })
+        .unwrap_or(false);
+    let addr = std::env::var("CONTEXT_DRAGONFLY_ADDR").ok();
+    let key_prefix = std::env::var("CONTEXT_DRAGONFLY_KEY_PREFIX").ok();
+    let recent_window = std::env::var("CONTEXT_DRAGONFLY_RECENT_WINDOW")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
+
+    if !(enabled || addr.is_some() || key_prefix.is_some() || recent_window.is_some()) {
+        return None;
+    }
+
+    let defaults = DragonflyConfig::default();
+    Some(DragonflyConfig {
+        addr: addr.unwrap_or(defaults.addr),
+        key_prefix: key_prefix.unwrap_or(defaults.key_prefix),
+        recent_window: recent_window.unwrap_or(defaults.recent_window).max(1),
+    })
 }
 
 fn parse_roots(value: &str) -> anyhow::Result<Vec<ManagedRoot>> {
