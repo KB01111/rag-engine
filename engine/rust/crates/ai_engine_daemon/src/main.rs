@@ -45,6 +45,7 @@ use engine::{
 };
 
 const MAX_TOP_K: i64 = 1000;
+const MAX_CONTEXT_TOP_K: usize = 100;
 
 type InferenceStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<InferenceResponse, Status>> + Send>>;
@@ -1349,7 +1350,7 @@ fn parse_context_roots(value: &str) -> Result<Vec<ManagedRoot>> {
         let default_name = if roots.is_empty() {
             "workspace".to_string()
         } else {
-            format!("root-{}", roots.len() + 1)
+            format!("workspace{}", roots.len() + 1)
         };
         roots.push(ManagedRoot::new(default_name, PathBuf::from(entry.trim()))?);
     }
@@ -1550,20 +1551,20 @@ impl ContextRpc for ContextGrpcService {
     ) -> Result<Response<engine::ContextSearchResponse>, Status> {
         let started_at = Instant::now();
         let request = request.into_inner();
+        let bounded_top_k = if request.top_k > 0 {
+            std::cmp::min(request.top_k as usize, MAX_CONTEXT_TOP_K)
+        } else {
+            10
+        };
         if request
             .filters
             .get("kind")
             .map(|value| value.eq_ignore_ascii_case("graph"))
             .unwrap_or(false)
         {
-            let top_k = if request.top_k > 0 {
-                request.top_k as usize
-            } else {
-                10
-            };
             let results = self
                 .engine
-                .graph_facts(&request.query, top_k)
+                .graph_facts(&request.query, bounded_top_k)
                 .await
                 .map_err(internal_status)?;
 
@@ -1586,7 +1587,7 @@ impl ContextRpc for ContextGrpcService {
                 } else {
                     Some(request.scope_uri)
                 },
-                top_k: (request.top_k > 0).then_some(request.top_k as usize),
+                top_k: (bounded_top_k > 0).then_some(bounded_top_k),
                 filters: (!request.filters.is_empty())
                     .then_some(request.filters.into_iter().collect()),
                 layer: context_search_layer(request.layer),

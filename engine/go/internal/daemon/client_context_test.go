@@ -7,6 +7,7 @@ import (
 
 	pb "github.com/ai-engine/proto/go"
 	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -99,43 +100,75 @@ func dialBufConn(t *testing.T, server *grpc.Server) *grpc.ClientConn {
 	return conn
 }
 
-func TestClientContextRPCs(t *testing.T) {
-	server := grpc.NewServer()
-	pb.RegisterContextServer(server, &contextServerStub{})
+type clientContextSuite struct {
+	suite.Suite
+	server *grpc.Server
+	conn   *grpc.ClientConn
+	client *Client
+}
 
-	conn := dialBufConn(t, server)
-	client := &Client{
+func (s *clientContextSuite) SetupTest() {
+	s.server = grpc.NewServer()
+	pb.RegisterContextServer(s.server, &contextServerStub{})
+
+	listener := bufconn.Listen(bufConnSize)
+	go func() {
+		_ = s.server.Serve(listener)
+	}()
+
+	conn, err := grpc.DialContext(
+		context.Background(),
+		"passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	s.Require().NoError(err)
+	s.conn = conn
+	s.client = &Client{
 		conn:           conn,
 		context:        pb.NewContextClient(conn),
 		mcpConnections: make(map[string]struct{}),
 	}
 
+	s.T().Cleanup(func() {
+		_ = s.conn.Close()
+		s.server.Stop()
+	})
+}
+
+func (s *clientContextSuite) TestClientContextRPCs() {
 	ctx := context.Background()
 
-	status, err := client.GetContextStatus(ctx, &emptypb.Empty{})
-	require.NoError(t, err)
-	require.True(t, status.Ready)
-	require.EqualValues(t, 3, status.DocumentCount)
+	status, err := s.client.GetContextStatus(ctx, &emptypb.Empty{})
+	s.Require().NoError(err)
+	s.Require().True(status.Ready)
+	s.Require().EqualValues(3, status.DocumentCount)
 
-	search, err := client.SearchContext(ctx, &pb.ContextSearchRequest{
+	search, err := s.client.SearchContext(ctx, &pb.ContextSearchRequest{
 		Query: "Dragonfly",
 		TopK:  3,
 	})
-	require.NoError(t, err)
-	require.Len(t, search.Results, 1)
-	require.Contains(t, search.Results[0].ChunkText, "Dragonfly")
+	s.Require().NoError(err)
+	s.Require().Len(search.Results, 1)
+	s.Require().Contains(search.Results[0].ChunkText, "Dragonfly")
 
-	history, err := client.AppendSession(ctx, &pb.ContextSessionAppendRequest{
+	history, err := s.client.AppendSession(ctx, &pb.ContextSessionAppendRequest{
 		SessionId: "sess-42",
 		Role:      "user",
 		Content:   "I prefer Dragonfly over Redis.",
 	})
-	require.NoError(t, err)
-	require.Len(t, history.Entries, 1)
-	require.Equal(t, "sess-42", history.SessionId)
+	s.Require().NoError(err)
+	s.Require().Len(history.Entries, 1)
+	s.Require().Equal("sess-42", history.SessionId)
 
-	session, err := client.GetSession(ctx, &pb.ContextSessionGetRequest{SessionId: "sess-42"})
-	require.NoError(t, err)
-	require.Len(t, session.Entries, 1)
-	require.Contains(t, session.Entries[0].Content, "Dragonfly")
+	session, err := s.client.GetSession(ctx, &pb.ContextSessionGetRequest{SessionId: "sess-42"})
+	s.Require().NoError(err)
+	s.Require().Len(session.Entries, 1)
+	s.Require().Contains(session.Entries[0].Content, "Dragonfly")
+}
+
+func TestClientContextSuite(t *testing.T) {
+	suite.Run(t, new(clientContextSuite))
 }

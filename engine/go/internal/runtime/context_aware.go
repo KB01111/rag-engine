@@ -10,8 +10,10 @@ import (
 
 	"github.com/ai-engine/go/internal/contextsvc"
 	pb "github.com/ai-engine/proto/go"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -116,7 +118,7 @@ func (s *ContextAwareService) StreamInference(ctx context.Context, stream pb.Run
 			if sessionID != "" {
 				lastSessionID = sessionID
 				lastPrompt = assembled.GetPrompt()
-				_, _ = s.context.AppendSession(groupCtx, contextsvc.SessionAppendRequest{
+				_, err := s.context.AppendSession(groupCtx, contextsvc.SessionAppendRequest{
 					SessionID: sessionID,
 					Role:      "user",
 					Content:   req.GetPrompt(),
@@ -124,6 +126,13 @@ func (s *ContextAwareService) StreamInference(ctx context.Context, stream pb.Run
 						"source": "runtime.context-aware",
 					},
 				})
+				if err != nil {
+					log.Warn().
+						Err(err).
+						Str("operation", "AppendSession").
+						Str("session_id", sessionID).
+						Msg("failed to append user turn to context")
+				}
 			}
 
 			select {
@@ -143,7 +152,10 @@ func (s *ContextAwareService) StreamInference(ctx context.Context, stream pb.Run
 		responseMu.Lock()
 		assistantReply := responseText.String()
 		responseMu.Unlock()
-		_, _ = s.context.AppendSession(context.Background(), contextsvc.SessionAppendRequest{
+		timeout := 5 * time.Second
+		persistCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		_, appendErr := s.context.AppendSession(persistCtx, contextsvc.SessionAppendRequest{
 			SessionID: lastSessionID,
 			Role:      "assistant",
 			Content:   assistantReply,
@@ -151,7 +163,14 @@ func (s *ContextAwareService) StreamInference(ctx context.Context, stream pb.Run
 				"source": "runtime.context-aware",
 			},
 		})
-		s.learnFromTurn(context.Background(), lastSessionID, lastPrompt, assistantReply)
+		if appendErr != nil {
+			log.Warn().
+				Err(appendErr).
+				Str("operation", "AppendSession").
+				Str("session_id", lastSessionID).
+				Msg("failed to append assistant turn to context")
+		}
+		s.learnFromTurn(persistCtx, lastSessionID, lastPrompt, assistantReply)
 	}
 	return err
 }
@@ -178,7 +197,7 @@ func (s *ContextAwareService) assembleRequest(ctx context.Context, req *pb.Infer
 	group, groupCtx := errgroup.WithContext(assemblyCtx)
 	group.Go(func() error {
 		sessionResp, sessionErr = s.context.GetSession(groupCtx, sessionID)
-		return nil
+		return sessionErr
 	})
 	group.Go(func() error {
 		graphResp, graphErr = s.context.Search(groupCtx, contextsvc.SearchRequest{
@@ -189,7 +208,7 @@ func (s *ContextAwareService) assembleRequest(ctx context.Context, req *pb.Infer
 			},
 			Layer: contextsvc.LayerL1,
 		})
-		return nil
+		return graphErr
 	})
 	group.Go(func() error {
 		docResp, docErr = s.context.Search(groupCtx, contextsvc.SearchRequest{
@@ -200,7 +219,7 @@ func (s *ContextAwareService) assembleRequest(ctx context.Context, req *pb.Infer
 			},
 			Layer: contextsvc.LayerL2,
 		})
-		return nil
+		return docErr
 	})
 
 	if err := group.Wait(); err != nil {
@@ -304,29 +323,14 @@ func mergeContextRefs(existing []string, responses ...*contextsvc.SearchResponse
 	return merged
 }
 
-// cloneInferenceRequest creates a shallow clone of the provided InferenceRequest.
-// If req is nil, it returns an empty InferenceRequest. The returned request has
-// newly allocated copies of the Parameters map and ContextRefs slice to avoid
-// cloneInferenceRequest returns a copy of the provided *pb.InferenceRequest that is safe to modify.
-// If req is nil it returns an empty InferenceRequest. The returned request contains copied scalar
-// fields, a newly allocated Parameters map with the same entries, and a newly allocated ContextRefs
-// slice so the caller does not share mutable containers with the original.
+// cloneInferenceRequest creates a deep clone of the provided InferenceRequest using protobuf.
+// If req is nil, it returns an empty InferenceRequest. The returned request is a complete
+// deep copy that can be safely modified without affecting the original.
 func cloneInferenceRequest(req *pb.InferenceRequest) *pb.InferenceRequest {
 	if req == nil {
 		return &pb.InferenceRequest{}
 	}
-	parameters := make(map[string]string, len(req.GetParameters()))
-	for key, value := range req.GetParameters() {
-		parameters[key] = value
-	}
-	contextRefs := append([]string(nil), req.GetContextRefs()...)
-	return &pb.InferenceRequest{
-		ModelId:     req.GetModelId(),
-		Prompt:      req.GetPrompt(),
-		Parameters:  parameters,
-		Provider:    req.GetProvider(),
-		ContextRefs: contextRefs,
-	}
+	return proto.Clone(req).(*pb.InferenceRequest)
 }
 
 func (s *ContextAwareService) learnFromTurn(ctx context.Context, sessionID, prompt, assistantReply string) {
@@ -341,18 +345,19 @@ func (s *ContextAwareService) learnFromTurn(ctx context.Context, sessionID, prom
 		if preferred != "" {
 			fact = buildPreferenceFact(sessionID, preferred)
 		}
-	} else if strings.Contains(combined, "dragonfly") &&
-		strings.Contains(combined, "prefer") {
-		fact = buildPreferenceFact(sessionID, "dragonfly")
-	} else if strings.Contains(combined, "dragonfly") &&
-		strings.Contains(combined, "working memory") {
-		fact = buildPreferenceFact(sessionID, "dragonfly")
 	}
 
 	if fact == nil {
 		return
 	}
-	_, _ = s.context.UpsertResource(ctx, *fact)
+	_, err := s.context.UpsertResource(ctx, *fact)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("operation", "UpsertResource").
+			Str("session_id", sessionID).
+			Msg("failed to upsert learned fact to context")
+	}
 }
 
 // buildPreferenceFact constructs an UpsertResourceRequest representing a user preference

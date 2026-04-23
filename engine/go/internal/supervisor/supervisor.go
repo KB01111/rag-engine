@@ -17,7 +17,8 @@ import (
 	"github.com/ai-engine/go/internal/rag"
 	"github.com/ai-engine/go/internal/runtime"
 	"github.com/ai-engine/go/internal/training"
-	"log"
+	"github.com/rs/zerolog/log"
+	stdlog "log"
 )
 
 type Supervisor struct {
@@ -83,7 +84,7 @@ func (s *Supervisor) Start() error {
 	} else {
 		if err := s.Context.Start(s.ctx); err != nil {
 			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
-				log.Printf("failed to stop context backend after startup error: %v", stopErr)
+				log.Error().Err(stopErr).Msg("failed to stop context backend after startup error")
 			}
 			return fmt.Errorf("failed to start context backend: %w", err)
 		}
@@ -92,7 +93,7 @@ func (s *Supervisor) Start() error {
 
 	s.running = true
 
-	log.Printf("AI Engine supervisor started")
+	stdlog.Printf("AI Engine supervisor started")
 
 	s.wg.Add(1)
 	go s.handleSignals()
@@ -114,7 +115,7 @@ func (s *Supervisor) Stop() error {
 	}
 	s.mu.Unlock()
 	if err := s.Context.Stop(context.Background()); err != nil {
-		log.Printf("failed to stop context backend: %v", err)
+		stdlog.Printf("failed to stop context backend: %v", err)
 	}
 	s.wg.Wait()
 
@@ -122,7 +123,7 @@ func (s *Supervisor) Stop() error {
 	defer s.mu.Unlock()
 	s.running = false
 
-	log.Printf("AI Engine supervisor stopped")
+	stdlog.Printf("AI Engine supervisor stopped")
 	return nil
 }
 
@@ -140,7 +141,7 @@ func (s *Supervisor) handleSignals() {
 
 	select {
 	case sig := <-sigCh:
-		log.Printf("Received signal: %v", sig)
+		stdlog.Printf("Received signal: %v", sig)
 		s.cancel()
 	case <-s.ctx.Done():
 	}
@@ -322,7 +323,7 @@ func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {
 	defer s.wg.Done()
 
 	if err := cmd.Wait(); err != nil && s.ctx.Err() == nil {
-		log.Printf("AI Engine daemon exited: %v", err)
+		stdlog.Printf("AI Engine daemon exited: %v", err)
 	}
 
 	if s.ctx.Err() != nil {
@@ -348,14 +349,14 @@ func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {
 
 		restartCount++
 		if restartCount > maxRestarts {
-			log.Printf("AI Engine daemon exceeded max restart attempts (%d)", maxRestarts)
+			stdlog.Printf("AI Engine daemon exceeded max restart attempts (%d)", maxRestarts)
 			s.mu.Unlock()
 			return
 		}
 
-		log.Printf("Restarting AI Engine daemon (attempt %d/%d)...", restartCount, maxRestarts)
+		stdlog.Printf("Restarting AI Engine daemon (attempt %d/%d)...", restartCount, maxRestarts)
 		if err := s.launchDaemonLocked(); err != nil {
-			log.Printf("AI Engine daemon restart failed: %v", err)
+			stdlog.Printf("AI Engine daemon restart failed: %v", err)
 			backoff = backoff * 2
 			if backoff > 30*time.Second {
 				backoff = 30 * time.Second

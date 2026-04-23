@@ -404,8 +404,12 @@ func (m *Manager) Readiness(ctx context.Context) (*HealthStatus, error) {
 		if err != nil {
 			return nil, err
 		}
+		healthStatus := "ok"
+		if !status.GetReady() {
+			healthStatus = "degraded"
+		}
 		return &HealthStatus{
-			Status:  "ok",
+			Status:  healthStatus,
 			Ready:   status.GetReady(),
 			Message: "",
 		}, nil

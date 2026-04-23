@@ -1423,6 +1423,11 @@ impl ContextEngine {
             .bind(uri)
             .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "DELETE FROM graph_nodes WHERE NOT EXISTS (SELECT 1 FROM graph_edges WHERE graph_edges.subject_id = graph_nodes.node_id OR graph_edges.object_id = graph_nodes.node_id)"
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
 
         self.inner
@@ -1770,7 +1775,15 @@ impl ContextEngine {
         query: &str,
         top_k: usize,
     ) -> Result<Vec<GraphFactRecord>, ContextError> {
-        let like = format!("%{}%", query.trim());
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let escaped = trimmed
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let like = format!("%{}%", escaped);
         let rows = sqlx::query(
             r#"
             SELECT
@@ -1792,12 +1805,12 @@ impl ContextEngine {
             JOIN graph_nodes s ON s.node_id = e.subject_id
             JOIN graph_nodes o ON o.node_id = e.object_id
             WHERE
-                s.node_id LIKE ?1 OR
-                s.name LIKE ?1 OR
-                o.node_id LIKE ?1 OR
-                o.name LIKE ?1 OR
-                e.relation LIKE ?1 OR
-                e.metadata_json LIKE ?1
+                s.node_id LIKE ?1 ESCAPE '\' OR
+                s.name LIKE ?1 ESCAPE '\' OR
+                o.node_id LIKE ?1 ESCAPE '\' OR
+                o.name LIKE ?1 ESCAPE '\' OR
+                e.relation LIKE ?1 ESCAPE '\' OR
+                e.metadata_json LIKE ?1 ESCAPE '\'
             ORDER BY e.updated_at DESC
             LIMIT ?2
             "#,
@@ -2033,27 +2046,30 @@ impl ContextEngine {
         previous_uri: Option<&str>,
         updated_at: i64,
     ) -> Result<(), ContextError> {
-        let delete_current = sqlx::query("DELETE FROM graph_edges WHERE resource_uri = ?1")
+        let mut tx = self.inner.pool.begin().await?;
+
+        sqlx::query("DELETE FROM graph_edges WHERE resource_uri = ?1")
             .bind(resource_uri)
-            .execute(&self.inner.pool);
-        let delete_previous = async {
-            if let Some(previous_uri) = previous_uri.filter(|uri| *uri != resource_uri) {
-                sqlx::query("DELETE FROM graph_edges WHERE resource_uri = ?1")
-                    .bind(previous_uri)
-                    .execute(&self.inner.pool)
-                    .await?;
-            }
-            Ok::<(), sqlx::Error>(())
-        };
-        let (current_delete, previous_delete) = tokio::join!(delete_current, delete_previous);
-        current_delete?;
-        previous_delete?;
+            .execute(&mut *tx)
+            .await?;
+        if let Some(previous_uri) = previous_uri.filter(|uri| *uri != resource_uri) {
+            sqlx::query("DELETE FROM graph_edges WHERE resource_uri = ?1")
+                .bind(previous_uri)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "DELETE FROM graph_nodes WHERE NOT EXISTS (SELECT 1 FROM graph_edges WHERE graph_edges.subject_id = graph_nodes.node_id OR graph_edges.object_id = graph_nodes.node_id)"
+        )
+        .execute(&mut *tx)
+        .await?;
 
         if metadata
             .get("kind")
             .map(|value| !value.eq_ignore_ascii_case("graph"))
             .unwrap_or(true)
         {
+            tx.commit().await?;
             return Ok(());
         }
 
@@ -2062,6 +2078,7 @@ impl ContextEngine {
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
         else {
+            tx.commit().await?;
             return Ok(());
         };
         let Some(object_id) = metadata
@@ -2069,6 +2086,7 @@ impl ContextEngine {
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
         else {
+            tx.commit().await?;
             return Ok(());
         };
 
@@ -2109,8 +2127,43 @@ impl ContextEngine {
             metadata: collect_graph_node_metadata(metadata, "object_"),
         };
 
-        self.upsert_graph_node(&subject, updated_at).await?;
-        self.upsert_graph_node(&object, updated_at).await?;
+        sqlx::query(
+            r#"
+            INSERT INTO graph_nodes (node_id, kind, name, metadata_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(node_id) DO UPDATE SET
+                kind = excluded.kind,
+                name = excluded.name,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&subject.id)
+        .bind(subject.kind.as_str())
+        .bind(&subject.name)
+        .bind(serde_json::to_string(&subject.metadata)?)
+        .bind(updated_at)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO graph_nodes (node_id, kind, name, metadata_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(node_id) DO UPDATE SET
+                kind = excluded.kind,
+                name = excluded.name,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&object.id)
+        .bind(object.kind.as_str())
+        .bind(&object.name)
+        .bind(serde_json::to_string(&object.metadata)?)
+        .bind(updated_at)
+        .execute(&mut *tx)
+        .await?;
 
         let mut edge_metadata = metadata.clone();
         edge_metadata.insert("kind".to_string(), "graph".to_string());
@@ -2123,7 +2176,7 @@ impl ContextEngine {
                 .or_insert_with(|| previous_uri.to_string());
         }
 
-        self.upsert_graph_edge(&GraphEdgeRow {
+        let edge = GraphEdgeRow {
             edge_id: graph_edge_id(&subject.id, relation.as_str(), &object.id),
             subject_id: subject.id,
             relation: relation.as_str().to_string(),
@@ -2132,8 +2185,35 @@ impl ContextEngine {
             resource_uri: Some(resource_uri.to_string()),
             session_id: metadata.get("session_id").cloned(),
             updated_at,
-        })
-        .await
+        };
+
+        sqlx::query(
+            r#"
+            INSERT INTO graph_edges (edge_id, subject_id, relation, object_id, metadata_json, resource_uri, session_id, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(edge_id) DO UPDATE SET
+                subject_id = excluded.subject_id,
+                relation = excluded.relation,
+                object_id = excluded.object_id,
+                metadata_json = excluded.metadata_json,
+                resource_uri = excluded.resource_uri,
+                session_id = excluded.session_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&edge.edge_id)
+        .bind(&edge.subject_id)
+        .bind(&edge.relation)
+        .bind(&edge.object_id)
+        .bind(&edge.metadata_json)
+        .bind(&edge.resource_uri)
+        .bind(&edge.session_id)
+        .bind(updated_at)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Insert or update a graph node row keyed by the node's id.

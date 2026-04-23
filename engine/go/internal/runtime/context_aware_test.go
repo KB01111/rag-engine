@@ -248,6 +248,7 @@ func TestContextAwareServiceFallsBackWhenContextLookupsFail(t *testing.T) {
 	require.Len(t, inner.seen, 1)
 	require.Equal(t, "Answer directly.", inner.seen[0].GetPrompt())
 	require.Empty(t, inner.seen[0].GetContextRefs())
+	require.Empty(t, contextBackend.upsertRequests)
 	require.Len(t, contextBackend.appendRequests, 2)
 }
 
