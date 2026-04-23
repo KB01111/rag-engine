@@ -28,6 +28,7 @@ func (s *ServerSuite) SetupSuite() {
 
 	cfg, err := config.Load("")
 	s.NoError(err)
+	cfg.Daemon.Required = false
 	s.cfg = cfg
 
 	s.sup = supervisor.NewSupervisor(cfg)

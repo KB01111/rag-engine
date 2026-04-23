@@ -5,8 +5,15 @@ echo Building AI Engine...
 set "ROOT=%~dp0"
 set "GO_DIR=%ROOT%go"
 set "RUST_DIR=%ROOT%rust"
+set "PROTOC_SCRIPT=%ROOT%scripts\ensure_protoc.ps1"
 
-REM PROTOC can be set via environment variable or must be in PATH
+REM Ensure protoc is available locally for both Go codegen and Rust builds.
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PROTOC_SCRIPT%"`) do set "PROTOC=%%i"
+if not exist "%PROTOC%" (
+    echo Failed to provision protoc
+    exit /b 1
+)
+set "PATH=%~dp0;%PATH%"
 
 REM Setup Go modules
 cd /d "%GO_DIR%"
@@ -34,20 +41,23 @@ REM Generate proto files (requires protoc)
 if exist "..\proto\engine.proto" (
     echo Generating proto files...
     pushd "%ROOT%proto"
-    if defined PROTOC (
-        "%PROTOC%" -I . ^
-                  --go_out=. --go_opt=paths=source_relative ^
-                  --go-grpc_out=. --go-grpc_opt=paths=source_relative ^
-                  engine.proto
-    ) else (
-        protoc -I . ^
-               --go_out=. --go_opt=paths=source_relative ^
-               --go-grpc_out=. --go-grpc_opt=paths=source_relative ^
-               engine.proto
+    "%PROTOC%" -I . ^
+              --go_out=. --go_opt=paths=source_relative ^
+              --go-grpc_out=. --go-grpc_opt=paths=source_relative ^
+              engine.proto
+    if errorlevel 1 (
+        popd
+        echo Failed to generate root proto files
+        exit /b 1
     )
+    "%PROTOC%" -I . ^
+              --go_out=go --go_opt=paths=source_relative ^
+              --go-grpc_out=go --go-grpc_opt=paths=source_relative ^
+              engine.proto
     popd
     if errorlevel 1 (
-        echo Warning: protoc not found or failed. Install protoc and run manually.
+        echo Failed to generate go module proto files
+        exit /b 1
     )
 )
 

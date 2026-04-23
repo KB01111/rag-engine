@@ -62,10 +62,16 @@ func (s *Supervisor) Start() error {
 
 	if s.config.Daemon.Command != "" {
 		if err := s.launchDaemonLocked(); err != nil {
+			if s.config.Daemon.Required {
+				return fmt.Errorf("failed to launch required daemon: %w", err)
+			}
 			s.initLocalServicesLocked()
 			return fmt.Errorf("failed to launch daemon: %w", err)
 		}
 	} else {
+		if s.config.Daemon.Required {
+			return fmt.Errorf("daemon is required but no command or binary was found")
+		}
 		s.initLocalServicesLocked()
 	}
 

@@ -6,12 +6,12 @@ echo "Building AI Engine..."
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GO_DIR="$ROOT_DIR/go"
 RUST_DIR="$ROOT_DIR/rust"
+PROTOC_SCRIPT="$ROOT_DIR/scripts/ensure_protoc.sh"
 
-if [ -z "${PROTOC:-}" ] && command -v protoc >/dev/null 2>&1; then
-    PROTOC_PATH="$(command -v protoc)"
-    export PROTOC="$PROTOC_PATH"
+if [ -z "${PROTOC:-}" ]; then
+    PROTOC="$(bash "$PROTOC_SCRIPT")"
+    export PROTOC
 fi
-PROTOC_BIN="${PROTOC:-protoc}"
 
 # Setup Go modules
 cd "$GO_DIR"
@@ -27,9 +27,12 @@ go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 if [ -f "../proto/engine.proto" ]; then
     echo "Generating proto files..."
     cd ../proto
-    "$PROTOC_BIN" --go_out=. --go_opt=paths=source_relative \
-                  --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-                  engine.proto
+    "$PROTOC" --go_out=. --go_opt=paths=source_relative \
+              --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+              engine.proto
+    "$PROTOC" --go_out=go --go_opt=paths=source_relative \
+              --go-grpc_out=go --go-grpc_opt=paths=source_relative \
+              engine.proto
     cd ../go
 fi
 
