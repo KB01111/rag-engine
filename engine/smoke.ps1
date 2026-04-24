@@ -100,6 +100,9 @@ daemon:
 context:
   enabled: true
   service_url: "http://127.0.0.1:$contextPort"
+  # The following fields (binary_path, data_dir, auto_start, managed_roots) are present for
+  # bundle validation only and are not used when daemon.required is true, as the daemon
+  # acts as context client rather than launching the context service directly.
   binary_path: "$($contextServerBin -replace '\\','/')"
   data_dir: "$((Join-Path $workspace 'context') -replace '\\','/')"
   auto_start: true

@@ -2,6 +2,7 @@
 param()
 
 $ErrorActionPreference = "Stop"
+# Version referenced in engine/README.md
 $version = "34.1"
 
 function Get-MatchingProtocPath {

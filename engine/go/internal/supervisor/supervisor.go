@@ -97,18 +97,22 @@ func (s *Supervisor) Start() error {
 			daemonLaunched = true
 		}
 	} else {
-		if s.config.Daemon.Required || s.config.IsProduction() {
+		if s.config.Daemon.Required {
 			return fmt.Errorf("daemon is required but no command or binary was found")
 		}
 		s.initLocalServicesLocked()
 	}
 
-	if s.config.Context.Enabled && !daemonLaunched {
-		if err := s.Context.Start(s.ctx); err != nil {
-			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
-				log.Error().Err(stopErr).Msg("failed to stop context backend after startup error")
+	if s.config.Context.Enabled {
+		if daemonLaunched {
+			log.Info().Msg("context backend startup skipped; daemon is acting as context client")
+		} else {
+			if err := s.Context.Start(s.ctx); err != nil {
+				if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
+					log.Error().Err(stopErr).Msg("failed to stop context backend after startup error")
+				}
+				return fmt.Errorf("failed to start context backend: %w", err)
 			}
-			return fmt.Errorf("failed to start context backend: %w", err)
 		}
 	}
 
@@ -336,7 +340,7 @@ func (s *Supervisor) daemonEnv() []string {
 	if s.config.Context.Enabled {
 		env = append(env, fmt.Sprintf("CONTEXT_DATA_DIR=%s", s.config.Context.DataDir))
 		if len(s.config.Context.ManagedRoots) > 0 {
-			env = append(env, fmt.Sprintf("CONTEXT_ROOTS=%s", strings.Join(s.config.Context.ManagedRoots, ";")))
+			env = append(env, fmt.Sprintf("CONTEXT_ROOTS=%s", strings.Join(s.config.Context.ManagedRoots, string(os.PathListSeparator))))
 		}
 		if s.config.Context.OpenViking.URL != "" {
 			env = append(env, fmt.Sprintf("CONTEXT_OPENVIKING_URL=%s", s.config.Context.OpenViking.URL))

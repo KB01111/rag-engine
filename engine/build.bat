@@ -145,7 +145,13 @@ echo Run: %BUNDLE_BIN%\server.exe --config %BUNDLE_DIR%\config.example.yaml
 exit /b 0
 
 :prepare_bundle
-if exist "%BUNDLE_DIR%" rmdir /s /q "%BUNDLE_DIR%"
+if defined BUNDLE_DIR (
+    if not "%BUNDLE_DIR:~1,2%"==":\" (
+        if exist "%BUNDLE_DIR%" rmdir /s /q "%BUNDLE_DIR%"
+    ) else if not "%BUNDLE_DIR%"=="%BUNDLE_DIR:~0,3%" (
+        if exist "%BUNDLE_DIR%" rmdir /s /q "%BUNDLE_DIR%"
+    )
+)
 mkdir "%BUNDLE_BIN%"
 if errorlevel 1 (
     echo Failed to create bundle directory
@@ -153,17 +159,38 @@ if errorlevel 1 (
 )
 
 copy /Y "%GO_DIR%\bin\server.exe" "%BUNDLE_BIN%\server.exe" >nul
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo Failed to copy server.exe from %GO_DIR%\bin to %BUNDLE_BIN%
+    exit /b 1
+)
 copy /Y "%GO_DIR%\bin\client.exe" "%BUNDLE_BIN%\client.exe" >nul
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo Failed to copy client.exe from %GO_DIR%\bin to %BUNDLE_BIN%
+    exit /b 1
+)
 copy /Y "%GO_DIR%\bin\ai_engine_daemon.exe" "%BUNDLE_BIN%\ai_engine_daemon.exe" >nul
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo Failed to copy ai_engine_daemon.exe from %GO_DIR%\bin to %BUNDLE_BIN%
+    exit /b 1
+)
 copy /Y "%GO_DIR%\bin\context_server.exe" "%BUNDLE_BIN%\context_server.exe" >nul
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo Failed to copy context_server.exe from %GO_DIR%\bin to %BUNDLE_BIN%
+    exit /b 1
+)
 copy /Y "%ROOT%config.example.yaml" "%BUNDLE_DIR%\config.example.yaml" >nul
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo Failed to copy config.example.yaml from %ROOT% to %BUNDLE_DIR%
+    exit /b 1
+)
 copy /Y "%ROOT%smoke.ps1" "%BUNDLE_DIR%\smoke.ps1" >nul
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo Failed to copy smoke.ps1 from %ROOT% to %BUNDLE_DIR%
+    exit /b 1
+)
 copy /Y "%ROOT%README.md" "%BUNDLE_DIR%\README.md" >nul
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo Failed to copy README.md from %ROOT% to %BUNDLE_DIR%
+    exit /b 1
+)
 goto :eof

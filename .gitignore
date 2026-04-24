@@ -6,8 +6,7 @@ engine/dist/
 engine/.tools/
 .cache/
 engine/.cache/
-.tools/include/
-.tools/readme.txt
+# .tools/include/ and .tools/readme.txt already covered by engine/.tools/ above
 
 # Rust build output
 engine/rust/target/

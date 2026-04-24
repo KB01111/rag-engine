@@ -181,7 +181,7 @@ func documentURI(documentID string) string {
 }
 
 func ragDocumentScopeURI() string {
-	return strings.TrimSuffix(ragDocumentURIPrefix, "/")
+	return ragDocumentURIPrefix
 }
 
 func documentIDFromResource(uri string, metadata map[string]string, fallback string) string {

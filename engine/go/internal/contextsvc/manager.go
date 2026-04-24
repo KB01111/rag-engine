@@ -362,6 +362,12 @@ func (m *Manager) resolveBinaryPath() string {
 	return resolveBinaryPathFromRoots(m.cfg.BinaryPath, binarySearchRoots()...)
 }
 
+// candidateExists checks if a file exists at the given path.
+func candidateExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func resolveBinaryPathFromRoots(binaryPath string, roots ...string) string {
 	cleaned := filepath.Clean(binaryPath)
 	candidates := []string{cleaned}
@@ -370,7 +376,7 @@ func resolveBinaryPathFromRoots(binaryPath string, roots ...string) string {
 	}
 
 	for _, candidate := range candidates {
-		if _, err := os.Stat(candidate); err == nil {
+		if candidateExists(candidate) {
 			return candidate
 		}
 	}
@@ -381,7 +387,7 @@ func resolveBinaryPathFromRoots(binaryPath string, roots ...string) string {
 		}
 		for _, candidate := range candidates {
 			resolved := filepath.Join(root, candidate)
-			if _, err := os.Stat(resolved); err == nil {
+			if candidateExists(resolved) {
 				return resolved
 			}
 		}
@@ -394,9 +400,12 @@ func resolveBinaryPathFromRoots(binaryPath string, roots ...string) string {
 }
 
 func binarySearchRoots() []string {
-	roots := make([]string, 0, 2)
+	roots := make([]string, 0, 3)
 	if exe, err := os.Executable(); err == nil {
-		roots = append(roots, filepath.Dir(exe))
+		exeDir := filepath.Dir(exe)
+		roots = append(roots, exeDir)
+		// Add grandparent directory
+		roots = append(roots, filepath.Dir(exeDir))
 	}
 	if wd, err := os.Getwd(); err == nil {
 		roots = append(roots, wd)

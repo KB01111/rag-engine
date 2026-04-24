@@ -93,7 +93,7 @@ func (s *ServerSuite) TestHealthEndpoint() {
 	s.router.ServeHTTP(w, req)
 
 	s.Equal(http.StatusOK, w.Code)
-	s.Contains(w.Body.String(), "ok")
+	s.Contains(w.Body.String(), `"status":"ok"`)
 	s.Contains(w.Body.String(), "execution_mode")
 }
 

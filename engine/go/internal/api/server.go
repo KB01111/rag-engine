@@ -424,23 +424,29 @@ func (s *Server) RegisterHTTP(router *gin.Engine) {
 	router.GET("/api/v1/context/sessions/:id", s.handleGetContextSession)
 }
 
+// handleLiveness returns 200 OK as long as the HTTP server process is alive.
+// Does not check IsRunning() - that's a readiness concern, not liveness.
 func (s *Server) handleLiveness(c *gin.Context) {
-	alive := s.supervisor.IsRunning()
-	statusCode := http.StatusOK
-	if !alive {
-		statusCode = http.StatusServiceUnavailable
-	}
-
-	c.JSON(statusCode, gin.H{
-		"alive": alive,
+	c.JSON(http.StatusOK, gin.H{
+		"alive": true,
 	})
 }
 
+// handleReadiness checks if the supervisor is running and ready to serve requests.
+// Returns 503 if not ready (e.g., during graceful shutdown when IsRunning() is false).
 func (s *Server) handleReadiness(c *gin.Context) {
+	if !s.supervisor.IsRunning() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"ready":  false,
+			"status": "not_running",
+		})
+		return
+	}
 	response, statusCode := s.healthResponse(c.Request.Context())
 	c.JSON(statusCode, response)
 }
 
+// handleHealth provides detailed health information including context backend status.
 func (s *Server) handleHealth(c *gin.Context) {
 	response, statusCode := s.healthResponse(c.Request.Context())
 	c.JSON(statusCode, response)
