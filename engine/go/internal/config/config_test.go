@@ -18,6 +18,45 @@ func TestDefaultConfigSetsLanceDBStorage(t *testing.T) {
 	if cfg.Daemon.Addr() == "" {
 		t.Fatal("expected daemon address to be derived from config")
 	}
+	if !cfg.Server.CORS.Enabled {
+		t.Fatal("expected frontend CORS defaults to be enabled")
+	}
+	if len(cfg.Server.CORS.AllowedOrigins) == 0 {
+		t.Fatal("expected default frontend CORS origins")
+	}
+}
+
+func TestLoadParsesServerCORSConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+server:
+  cors:
+    enabled: true
+    allowed_origins:
+      - "http://localhost:*"
+      - "app://ai-engine"
+    allowed_headers:
+      - "Content-Type"
+      - "Authorization"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if !cfg.Server.CORS.Enabled {
+		t.Fatal("expected CORS to be enabled")
+	}
+	if got, want := cfg.Server.CORS.AllowedOrigins[1], "app://ai-engine"; got != want {
+		t.Fatalf("expected origin %q, got %q", want, got)
+	}
+	if got, want := cfg.Server.CORS.AllowedHeaders[0], "Content-Type"; got != want {
+		t.Fatalf("expected header %q, got %q", want, got)
+	}
 }
 
 func TestLoadMapsLegacyRagStoragePathToLanceDBURI(t *testing.T) {

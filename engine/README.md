@@ -75,6 +75,10 @@ go run ./cmd/client/main.go
 
 ## API Services
 
+Frontend clients should use the local HTTP/SSE gateway documented in
+[`docs/frontend-api.md`](docs/frontend-api.md). gRPC remains the canonical
+internal service contract.
+
 ### Runtime Service
 - `GetStatus` - Get runtime status and system resources
 - `ListModels` - List available models

@@ -4,6 +4,15 @@ server:
   grpc:
     host: "127.0.0.1"
     port: 50051
+  cors:
+    enabled: true
+    allowed_origins:
+      - "http://localhost:*"
+      - "http://127.0.0.1:*"
+      - "app://ai-engine"
+    allowed_headers:
+      - "Content-Type"
+      - "Authorization"
 
 daemon:
   host: "127.0.0.1"
