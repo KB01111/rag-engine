@@ -44,7 +44,7 @@ use engine::{
     UpsertRequest, UpsertResponse,
 };
 
-const MAX_TOP_K: i64 = 1000;
+const MAX_TOP_K: i32 = 1000;
 const MAX_CONTEXT_TOP_K: usize = 100;
 
 type InferenceStream =

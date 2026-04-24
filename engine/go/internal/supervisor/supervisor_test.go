@@ -94,15 +94,47 @@ func TestHealthReportsFallbackModeWithoutDaemon(t *testing.T) {
 	cfg.Daemon.Command = ""
 
 	sup := NewSupervisor(cfg)
+	require.NoError(t, sup.Start())
+	t.Cleanup(func() {
+		require.NoError(t, sup.Stop())
+	})
 
 	require.Equal(t, "local-fallback", sup.ExecutionMode())
 
 	health := sup.Health()
 	require.Equal(t, "local-fallback", health["execution_mode"])
-	require.Equal(t, true, health["degraded"])
+	require.Equal(t, false, health["degraded"])
+	require.Equal(t, true, health["ready"])
+	require.Equal(t, "ok", health["status"])
 
 	daemon, ok := health["daemon"].(map[string]interface{})
 	require.True(t, ok)
 	require.Equal(t, false, daemon["configured"])
 	require.Equal(t, false, daemon["connected"])
+}
+
+func TestStartFailsInProductionWithoutDaemon(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Server.Mode = "production"
+	cfg.Context.Enabled = true
+	cfg.Context.AutoStart = false
+	cfg.Context.ServiceURL = "http://127.0.0.1:9"
+	cfg.Daemon.Command = ""
+
+	sup := NewSupervisor(cfg)
+	err := sup.Start()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "daemon")
+}
+
+func TestStartFailsInProductionWhenContextDisabled(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Server.Mode = "production"
+	cfg.Context.Enabled = false
+	cfg.Daemon.Command = "ai_engine_daemon.exe"
+
+	sup := NewSupervisor(cfg)
+	err := sup.Start()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context")
 }

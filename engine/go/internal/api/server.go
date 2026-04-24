@@ -375,6 +375,8 @@ func (s *Server) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.Cal
 
 func (s *Server) RegisterHTTP(router *gin.Engine) {
 	router.Use(gin.Recovery())
+	router.GET("/livez", s.handleLiveness)
+	router.GET("/readyz", s.handleReadiness)
 	router.GET("/health", s.handleHealth)
 	router.GET("/api/v1/status", s.handleStatus)
 	router.GET("/api/v1/runtime/models", s.handleListModels)
@@ -393,8 +395,30 @@ func (s *Server) RegisterHTTP(router *gin.Engine) {
 	router.GET("/api/v1/context/sessions/:id", s.handleGetContextSession)
 }
 
+func (s *Server) handleLiveness(c *gin.Context) {
+	alive := s.supervisor.IsRunning()
+	statusCode := http.StatusOK
+	if !alive {
+		statusCode = http.StatusServiceUnavailable
+	}
+
+	c.JSON(statusCode, gin.H{
+		"alive": alive,
+	})
+}
+
+func (s *Server) handleReadiness(c *gin.Context) {
+	response, statusCode := s.healthResponse(c.Request.Context())
+	c.JSON(statusCode, response)
+}
+
 func (s *Server) handleHealth(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	response, statusCode := s.healthResponse(c.Request.Context())
+	c.JSON(statusCode, response)
+}
+
+func (s *Server) healthResponse(reqCtx context.Context) (gin.H, int) {
+	ctx, cancel := context.WithTimeout(reqCtx, 3*time.Second)
 	defer cancel()
 
 	ready := true
@@ -417,18 +441,24 @@ func (s *Server) handleHealth(c *gin.Context) {
 	if degraded, ok := supervisorHealth["degraded"].(bool); ok && degraded {
 		status = "degraded"
 	}
+	if running, ok := supervisorHealth["running"].(bool); ok && !running {
+		ready = false
+	}
+	if status != "ok" {
+		ready = false
+	}
 
 	statusCode := http.StatusOK
 	if !ready || status == "degraded" {
 		statusCode = http.StatusServiceUnavailable
 	}
 
-	c.JSON(statusCode, gin.H{
+	return gin.H{
 		"status":         status,
 		"ready":          ready,
 		"execution_mode": s.supervisor.ExecutionMode(),
 		"supervisor":     supervisorHealth,
-	})
+	}, statusCode
 }
 
 func (s *Server) handleStatus(c *gin.Context) {

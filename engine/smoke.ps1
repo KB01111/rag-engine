@@ -16,12 +16,11 @@ function Get-FreePort {
 }
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$goDir = Join-Path $root "go"
-$rustDaemonBin = Join-Path $root "rust" | Join-Path -ChildPath "target" | Join-Path -ChildPath "release" | Join-Path -ChildPath "ai_engine_daemon.exe"
+$bundleRoot = Join-Path $root "dist" | Join-Path -ChildPath "windows-backend"
+$bundleBin = Join-Path $bundleRoot "bin"
 $buildScript = Join-Path $root "build.bat"
-$serverBin = Join-Path $goDir "bin" | Join-Path -ChildPath "server.exe"
-$clientBin = Join-Path $goDir "bin" | Join-Path -ChildPath "client.exe"
-$daemonBin = Join-Path $goDir "bin" | Join-Path -ChildPath "ai_engine_daemon.exe"
+$serverBin = Join-Path $bundleBin "server.exe"
+$clientBin = Join-Path $bundleBin "client.exe"
 
 # Only stop ai_engine_daemon processes if -Force is specified
 $runningDaemons = Get-Process ai_engine_daemon -ErrorAction SilentlyContinue
@@ -50,10 +49,8 @@ if (-not $SkipBuild) {
 
 if (-not (Test-Path $serverBin)) { throw "missing server binary: $serverBin" }
 if (-not (Test-Path $clientBin)) { throw "missing client binary: $clientBin" }
-if (-not (Test-Path $daemonBin)) {
-    $daemonBin = $rustDaemonBin
-}
-if (-not (Test-Path $daemonBin)) { throw "missing daemon binary: $daemonBin" }
+if (-not (Test-Path (Join-Path $bundleBin "ai_engine_daemon.exe"))) { throw "missing daemon binary in bundle: $bundleBin" }
+if (-not (Test-Path (Join-Path $bundleBin "context_server.exe"))) { throw "missing context_server binary in bundle: $bundleBin" }
 
 $workspace = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-engine-smoke-" + [guid]::NewGuid().ToString("N"))
 $null = New-Item -ItemType Directory -Path $workspace -Force
@@ -74,6 +71,7 @@ $serverStderr = Join-Path $workspace "server.stderr.log"
 server:
   host: "127.0.0.1"
   port: $httpPort
+  mode: "production"
   grpc:
     host: "127.0.0.1"
     port: $grpcPort
@@ -81,13 +79,26 @@ server:
 daemon:
   host: "127.0.0.1"
   port: $daemonPort
-  command: "$($daemonBin -replace '\\','/')"
+  command: ""
   args: []
   startup_timeout: 15s
   restart_backoff: 3s
   ready_timeout: 10s
   llama_cli: "llama-cli"
   training_cli: "llama-train"
+
+context:
+  enabled: true
+  service_url: "http://127.0.0.1:9191"
+  binary_path: "context_server"
+  data_dir: "$((Join-Path $workspace 'context') -replace '\\','/')"
+  auto_start: true
+  startup_timeout: 20s
+  managed_roots:
+    - "workspace=$($workspace -replace '\\','/')"
+  openviking:
+    url: ""
+    api_key: ""
 
 storage:
   lancedb_uri: "$($lancedbDir -replace '\\','/')"
@@ -109,7 +120,6 @@ rag:
 training:
   working_dir: "$($trainingDir -replace '\\','/')"
   max_concurrent_jobs: 2
-
 mcp:
   timeout: 30s
   retries: 3
@@ -122,19 +132,19 @@ logging:
 Write-Host "Starting server..."
 $proc = Start-Process -FilePath $serverBin `
     -ArgumentList @("--config", $configPath) `
-    -WorkingDirectory $goDir `
+    -WorkingDirectory $workspace `
     -RedirectStandardOutput $serverStdout `
     -RedirectStandardError $serverStderr `
     -PassThru
 
 try {
-    $healthUrl = "http://127.0.0.1:$httpPort/health"
+    $healthUrl = "http://127.0.0.1:$httpPort/readyz"
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
         Start-Sleep -Milliseconds 500
         try {
             $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2
-            if ($health.status -eq "ok") {
+            if ($health.ready -and $health.status -eq "ok") {
                 $ready = $true
                 break
             }

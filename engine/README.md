@@ -54,9 +54,11 @@ build.bat    # Windows
 ### 3. Run Server
 
 ```bash
-./go/bin/server
-# Or with custom config
+# Development binary
 ./go/bin/server --config ./config.example.yaml
+
+# Windows bundle output from build.bat
+dist/windows-backend/bin/server.exe --config dist/windows-backend/config.example.yaml
 ```
 
 ### 4. Build Rust Crates
@@ -173,5 +175,6 @@ Full API definitions are in `proto/engine.proto`. Key services:
 ## Verification Notes
 
 - `build.bat` / `build.sh` set workspace-local `GOCACHE` and `CARGO_HOME` under `engine/.cache` so local builds do not depend on machine-global cache configuration.
+- `build.bat` bootstraps `protoc` from the repo-owned `.tools/protoc-34.1-win64.zip` when the extracted binary is missing, then emits a runnable Windows backend bundle under `engine/dist/windows-backend/`.
 - If Cargo cannot resolve `crates.io`, that indicates a machine/network problem rather than an engine contract failure.
 - The Go tests use IPv4-only local servers to avoid Windows environments where IPv6 loopback is unavailable.

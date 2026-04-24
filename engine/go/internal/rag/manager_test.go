@@ -54,12 +54,14 @@ func (s *stubBackend) Search(_ context.Context, req contextsvc.SearchRequest) (*
 	return &contextsvc.SearchResponse{
 		Results: []contextsvc.SearchHit{
 			{
-				URI:        "viking://resources/doc-1",
+				URI:        "viking://resources/workspace/rag/doc-1.md",
 				DocumentID: "doc-1",
 				ChunkText:  "hello world",
 				Score:      0.88,
 				Metadata: map[string]string{
-					"title": "Doc 1",
+					"title":           "Doc 1",
+					"kind":            "rag-document",
+					"rag_document_id": "doc-1",
 				},
 			},
 		},
@@ -71,8 +73,19 @@ func (s *stubBackend) ListResources(context.Context) (*contextsvc.ListResourcesR
 	return &contextsvc.ListResourcesResponse{
 		Resources: []contextsvc.Resource{
 			{
-				URI:   "viking://resources/doc-1",
+				URI:   "viking://resources/workspace/rag/doc-1.md",
 				Title: "Doc 1",
+				Metadata: map[string]string{
+					"kind":            "rag-document",
+					"rag_document_id": "doc-1",
+				},
+			},
+			{
+				URI:   "viking://resources/workspace/notes.md",
+				Title: "Workspace Note",
+				Metadata: map[string]string{
+					"kind": "file",
+				},
 			},
 		},
 	}, nil
@@ -102,9 +115,11 @@ func (s *ManagerTestSuite) TestManagerUpsertDocumentDelegatesToContextBackend() 
 
 	s.Require().NoError(err)
 	s.Equal(int32(4), resp.ChunksIndexed)
-	s.Equal("viking://resources/doc-1", s.backend.upsertReq.URI)
+	s.Equal("viking://resources/workspace/rag/doc-1.md", s.backend.upsertReq.URI)
 	s.Equal("hello world", s.backend.upsertReq.Content)
 	s.Equal("Doc 1", s.backend.upsertReq.Title)
+	s.Equal("rag-document", s.backend.upsertReq.Metadata["kind"])
+	s.Equal("doc-1", s.backend.upsertReq.Metadata["rag_document_id"])
 }
 
 func (s *ManagerTestSuite) TestManagerSearchDelegatesToContextBackend() {
@@ -121,14 +136,15 @@ func (s *ManagerTestSuite) TestManagerSearchDelegatesToContextBackend() {
 	s.Equal("doc-1", resp.Results[0].DocumentId)
 	s.Equal("hello world", s.backend.searchReq.Query)
 	s.Equal(3, s.backend.searchReq.TopK)
-	s.Equal("viking://resources/", s.backend.searchReq.ScopeURI)
+	s.Equal("viking://resources/workspace/rag", s.backend.searchReq.ScopeURI)
+	s.Equal("rag-document", s.backend.searchReq.Filters["kind"])
 	s.InDelta(1.25, resp.QueryTimeMs, 0.001)
 }
 
 func (s *ManagerTestSuite) TestManagerDeleteAndStatusUseContextBackend() {
 	_, err := s.manager.DeleteDocument(context.Background(), &pb.DeleteRequest{DocumentId: "doc-1"})
 	s.Require().NoError(err)
-	s.Equal("viking://resources/doc-1", s.backend.deleteURI)
+	s.Equal("viking://resources/workspace/rag/doc-1.md", s.backend.deleteURI)
 
 	status, err := s.manager.GetRagStatus(context.Background(), &emptypb.Empty{})
 	s.Require().NoError(err)

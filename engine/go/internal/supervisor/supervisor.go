@@ -71,23 +71,40 @@ func (s *Supervisor) Start() error {
 	if s.running {
 		return fmt.Errorf("supervisor already running")
 	}
+	if s.config.IsProduction() {
+		if !s.config.Context.Enabled {
+			return fmt.Errorf("context backend is required in production mode")
+		}
+		if s.config.Daemon.Command == "" {
+			return fmt.Errorf("daemon backend is required in production mode")
+		}
+	}
 
 	if err := s.config.EnsureDirs(); err != nil {
 		return fmt.Errorf("failed to ensure directories: %w", err)
 	}
 
-	if s.config.Daemon.Command != "" {
-		if err := s.launchDaemonLocked(); err != nil {
-			s.initLocalServicesLocked()
-			return fmt.Errorf("failed to launch daemon: %w", err)
-		}
-	} else {
+	if s.config.Context.Enabled {
 		if err := s.Context.Start(s.ctx); err != nil {
 			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
 				log.Error().Err(stopErr).Msg("failed to stop context backend after startup error")
 			}
 			return fmt.Errorf("failed to start context backend: %w", err)
 		}
+	}
+
+	if s.config.Daemon.Command != "" {
+		if err := s.launchDaemonLocked(); err != nil {
+			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
+				log.Error().Err(stopErr).Msg("failed to stop context backend after daemon startup error")
+			}
+			if s.config.IsProduction() {
+				return fmt.Errorf("failed to launch daemon: %w", err)
+			}
+			s.initLocalServicesLocked()
+			log.Error().Err(err).Msg("daemon unavailable, continuing with local fallback")
+		}
+	} else {
 		s.initLocalServicesLocked()
 	}
 
@@ -180,7 +197,7 @@ func (s *Supervisor) Health() map[string]interface{} {
 		}
 	}
 
-	degraded := mode != "daemon"
+	degraded := false
 	status := "ok"
 	if !running {
 		status = "stopped"
@@ -197,11 +214,13 @@ func (s *Supervisor) Health() map[string]interface{} {
 
 	return map[string]interface{}{
 		"running":        running,
+		"ready":          running && !degraded,
 		"status":         status,
 		"execution_mode": mode,
 		"degraded":       degraded,
 		"daemon": map[string]interface{}{
 			"configured": daemonConfigured,
+			"required":   s.config.IsProduction(),
 			"connected":  daemonConnected,
 			"addr":       daemonAddr,
 			"command":    daemonCommand,
@@ -264,7 +283,6 @@ func (s *Supervisor) launchDaemonLocked() error {
 	}
 	s.daemonClient = client
 	s.daemonCmd = cmd
-	s.Context.SetDaemonContextClient(client)
 	s.Runtime = s.wrapRuntimeService(client)
 	s.RAG = rag.NewManager(s.config, s.Context)
 	s.Training = client

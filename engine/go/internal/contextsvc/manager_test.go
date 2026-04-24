@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -361,6 +363,18 @@ func (s *ManagerTestSuite) TestManagerUsesDaemonContextClientWhenAttached() {
 	s.Contains(sessionResp.Entries[0].Content, "Dragonfly")
 
 	s.Equal(0, s.httpCalls)
+}
+
+func (s *ManagerTestSuite) TestResolveBinaryPathFromRootsFindsBundleBinary() {
+	root := s.T().TempDir()
+	binDir := filepath.Join(root, "bin")
+	s.Require().NoError(os.MkdirAll(binDir, 0755))
+
+	expected := filepath.Join(binDir, "context_server.exe")
+	s.Require().NoError(os.WriteFile(expected, []byte("stub"), 0644))
+
+	actual := resolveBinaryPathFromRoots("context_server", root, binDir)
+	s.Equal(expected, actual)
 }
 
 func TestManagerTestSuite(t *testing.T) {

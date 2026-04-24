@@ -9,7 +9,6 @@ import (
 
 	"github.com/ai-engine/go/internal/contextsvc"
 	pb "github.com/ai-engine/proto/go"
-	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"

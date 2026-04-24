@@ -359,17 +359,49 @@ func (m *Manager) startProcess() error {
 }
 
 func (m *Manager) resolveBinaryPath() string {
-	cleaned := filepath.Clean(m.cfg.BinaryPath)
-	if _, err := os.Stat(cleaned); err == nil {
-		return cleaned
+	return resolveBinaryPathFromRoots(m.cfg.BinaryPath, binarySearchRoots()...)
+}
+
+func resolveBinaryPathFromRoots(binaryPath string, roots ...string) string {
+	cleaned := filepath.Clean(binaryPath)
+	candidates := []string{cleaned}
+	if runtime.GOOS == "windows" && filepath.Ext(cleaned) == "" {
+		candidates = append(candidates, cleaned+".exe")
 	}
-	if runtime.GOOS == "windows" {
-		withExt := cleaned + ".exe"
-		if _, err := os.Stat(withExt); err == nil {
-			return withExt
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
 		}
 	}
+
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		for _, candidate := range candidates {
+			resolved := filepath.Join(root, candidate)
+			if _, err := os.Stat(resolved); err == nil {
+				return resolved
+			}
+		}
+	}
+
+	if len(candidates) > 1 {
+		return candidates[1]
+	}
 	return cleaned
+}
+
+func binarySearchRoots() []string {
+	roots := make([]string, 0, 2)
+	if exe, err := os.Executable(); err == nil {
+		roots = append(roots, filepath.Dir(exe))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		roots = append(roots, wd)
+	}
+	return roots
 }
 
 func (m *Manager) Stop(ctx context.Context) error {
