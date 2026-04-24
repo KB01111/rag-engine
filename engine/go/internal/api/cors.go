@@ -103,5 +103,5 @@ func originMatchesPattern(origin, pattern string) bool {
 	if err != nil || originURL.Scheme == "" || originURL.Host == "" {
 		return false
 	}
-	return originURL.Scheme == allowedURL.Scheme && originURL.Hostname() == allowedURL.Hostname() && originURL.Port() != ""
+	return originURL.Scheme == allowedURL.Scheme && originURL.Hostname() == allowedURL.Hostname()
 }
