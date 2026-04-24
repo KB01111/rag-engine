@@ -42,5 +42,5 @@ func backendError(c *gin.Context, err error) {
 		writeAPIError(c, http.StatusInternalServerError, apiErrorInternal, "internal server error")
 		return
 	}
-	writeAPIError(c, http.StatusBadGateway, apiErrorBackendUnavailable, err.Error())
+	writeAPIError(c, http.StatusBadGateway, apiErrorBackendUnavailable, "backend service error")
 }
