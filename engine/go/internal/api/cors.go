@@ -70,7 +70,10 @@ func (s *Server) corsMiddleware() gin.HandlerFunc {
 }
 
 func originAllowed(origin string, allowed []string) bool {
-	if len(allowed) == 0 {
+	// When allowed is nil (field omitted), fall back to defaults.
+	// When allowed is a non-nil empty slice (explicitly configured as []),
+	// treat it as "no origins allowed".
+	if allowed == nil {
 		allowed = defaultAllowedOrigins
 	}
 	for _, pattern := range allowed {
