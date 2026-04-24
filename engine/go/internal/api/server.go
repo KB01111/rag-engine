@@ -404,6 +404,8 @@ func (s *Server) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.Cal
 
 func (s *Server) RegisterHTTP(router *gin.Engine) {
 	router.Use(gin.Recovery())
+	router.GET("/livez", s.handleLiveness)
+	router.GET("/readyz", s.handleReadiness)
 	router.GET("/health", s.handleHealth)
 	router.GET("/api/v1/status", s.handleStatus)
 	router.GET("/api/v1/runtime/models", s.handleListModels)
@@ -422,8 +424,36 @@ func (s *Server) RegisterHTTP(router *gin.Engine) {
 	router.GET("/api/v1/context/sessions/:id", s.handleGetContextSession)
 }
 
+// handleLiveness returns 200 OK as long as the HTTP server process is alive.
+// Does not check IsRunning() - that's a readiness concern, not liveness.
+func (s *Server) handleLiveness(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"alive": true,
+	})
+}
+
+// handleReadiness checks if the supervisor is running and ready to serve requests.
+// Returns 503 if not ready (e.g., during graceful shutdown when IsRunning() is false).
+func (s *Server) handleReadiness(c *gin.Context) {
+	if !s.supervisor.IsRunning() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"ready":  false,
+			"status": "not_running",
+		})
+		return
+	}
+	response, statusCode := s.healthResponse(c.Request.Context())
+	c.JSON(statusCode, response)
+}
+
+// handleHealth provides detailed health information including context backend status.
 func (s *Server) handleHealth(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	response, statusCode := s.healthResponse(c.Request.Context())
+	c.JSON(statusCode, response)
+}
+
+func (s *Server) healthResponse(reqCtx context.Context) (gin.H, int) {
+	ctx, cancel := context.WithTimeout(reqCtx, 3*time.Second)
 	defer cancel()
 
 	ready := true
@@ -446,18 +476,24 @@ func (s *Server) handleHealth(c *gin.Context) {
 	if degraded, ok := supervisorHealth["degraded"].(bool); ok && degraded {
 		status = "degraded"
 	}
+	if running, ok := supervisorHealth["running"].(bool); ok && !running {
+		ready = false
+	}
+	if status != "ok" {
+		ready = false
+	}
 
 	statusCode := http.StatusOK
 	if !ready || status == "degraded" {
 		statusCode = http.StatusServiceUnavailable
 	}
 
-	c.JSON(statusCode, gin.H{
+	return gin.H{
 		"status":         status,
 		"ready":          ready,
 		"execution_mode": s.supervisor.ExecutionMode(),
 		"supervisor":     supervisorHealth,
-	})
+	}, statusCode
 }
 
 func (s *Server) handleStatus(c *gin.Context) {

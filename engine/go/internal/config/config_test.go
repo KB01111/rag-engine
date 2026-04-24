@@ -18,6 +18,9 @@ func TestDefaultConfigSetsLanceDBStorage(t *testing.T) {
 	if cfg.Daemon.Addr() == "" {
 		t.Fatal("expected daemon address to be derived from config")
 	}
+	if cfg.Server.Mode != "development" {
+		t.Fatalf("expected default server mode to be development, got %q", cfg.Server.Mode)
+	}
 }
 
 func TestLoadMapsLegacyRagStoragePathToLanceDBURI(t *testing.T) {
@@ -76,5 +79,25 @@ func TestDetectDaemonCommandFindsLocalBinary(t *testing.T) {
 
 	if actual := detectDaemonCommand(dir); actual != expected {
 		t.Fatalf("expected daemon command %q, got %q", expected, actual)
+	}
+}
+
+func TestLoadParsesServerMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+server:
+  mode: "production"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.Server.Mode != "production" {
+		t.Fatalf("expected server mode production, got %q", cfg.Server.Mode)
 	}
 }

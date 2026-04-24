@@ -347,6 +347,11 @@ func (s *ContextAwareService) learnFromTurn(ctx context.Context, sessionID, prom
 			fact = buildPreferenceFact(sessionID, preferred)
 		}
 	}
+	if fact == nil && strings.Contains(combined, "dragonfly") {
+		if strings.Contains(combined, "prefer") || strings.Contains(combined, "working memory") {
+			fact = buildPreferenceFact(sessionID, "dragonfly")
+		}
+	}
 
 	if fact == nil {
 		return

@@ -92,9 +92,28 @@ func (s *ServerSuite) TestHealthEndpoint() {
 	w := httptest.NewRecorder()
 	s.router.ServeHTTP(w, req)
 
-	s.Equal(http.StatusServiceUnavailable, w.Code)
-	s.Contains(w.Body.String(), "degraded")
+	s.Equal(http.StatusOK, w.Code)
+	s.Contains(w.Body.String(), `"status":"ok"`)
 	s.Contains(w.Body.String(), "execution_mode")
+}
+
+func (s *ServerSuite) TestLivenessEndpoint() {
+	req := httptest.NewRequest(http.MethodGet, "/livez", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	s.Equal(http.StatusOK, w.Code)
+	s.Contains(w.Body.String(), "\"alive\":true")
+}
+
+func (s *ServerSuite) TestReadinessEndpoint() {
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	s.Equal(http.StatusOK, w.Code)
+	s.Contains(w.Body.String(), "\"ready\":true")
+	s.Contains(w.Body.String(), "\"status\":\"ok\"")
 }
 
 func (s *ServerSuite) TestStatusEndpoint() {

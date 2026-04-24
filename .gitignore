@@ -1,10 +1,12 @@
 # Build artifacts
 engine/go/bin/
 engine/go/bin
+engine/dist/
 *.exe
 engine/.tools/
 .cache/
 engine/.cache/
+# .tools/include/ and .tools/readme.txt already covered by engine/.tools/ above
 
 # Rust build output
 engine/rust/target/

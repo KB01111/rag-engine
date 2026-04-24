@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -26,6 +27,7 @@ type Config struct {
 type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
+	Mode string `yaml:"mode"`
 	GRPC struct {
 		Host string `yaml:"host"`
 		Port int    `yaml:"port"`
@@ -116,6 +118,7 @@ func DefaultConfig() *Config {
 		Server: ServerConfig{
 			Host: "127.0.0.1",
 			Port: 8080,
+			Mode: "development",
 			GRPC: struct {
 				Host string `yaml:"host"`
 				Port int    `yaml:"port"`
@@ -186,6 +189,10 @@ func (c *Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port)
 }
 
+func (c *Config) IsProduction() bool {
+	return normalizeServerMode(c.Server.Mode) == "production"
+}
+
 func (c *Config) GRPCAddr() string {
 	return fmt.Sprintf("%s:%d", c.Server.GRPC.Host, c.Server.GRPC.Port)
 }
@@ -240,6 +247,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Daemon.Command == "" {
 		cfg.Daemon.Command = defaultDaemonCommand()
 	}
+	cfg.Server.Mode = normalizeServerMode(cfg.Server.Mode)
 	if source.Storage.LanceDBURI == "" && source.RAG.StoragePath != "" {
 		cfg.Storage.LanceDBURI = source.RAG.StoragePath
 	}
@@ -302,27 +310,29 @@ func containsScheme(value string) bool {
 }
 
 func defaultDaemonCommand() string {
-	wd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	return detectDaemonCommand(wd)
+	return detectDaemonCommand(searchRoots()...)
 }
 
-func detectDaemonCommand(root string) string {
-	candidates := []string{
-		filepath.Join(root, "bin", daemonBinaryName()),
-		filepath.Join(root, "go", "bin", daemonBinaryName()),
-		filepath.Join(root, "rust", "target", "debug", daemonBinaryName()),
-		filepath.Join(root, "rust", "target", "release", daemonBinaryName()),
-		filepath.Join(root, "..", "rust", "target", "debug", daemonBinaryName()),
-		filepath.Join(root, "..", "rust", "target", "release", daemonBinaryName()),
-	}
+func detectDaemonCommand(roots ...string) string {
+	binary := daemonBinaryName()
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
 
-	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err == nil && !info.IsDir() {
-			return candidate
+		for _, candidate := range []string{
+			filepath.Join(root, binary),
+			filepath.Join(root, "bin", binary),
+			filepath.Join(root, "go", "bin", binary),
+			filepath.Join(root, "rust", "target", "debug", binary),
+			filepath.Join(root, "rust", "target", "release", binary),
+			filepath.Join(root, "..", "rust", "target", "debug", binary),
+			filepath.Join(root, "..", "rust", "target", "release", binary),
+		} {
+			info, err := os.Stat(candidate)
+			if err == nil && !info.IsDir() {
+				return candidate
+			}
 		}
 	}
 
@@ -351,4 +361,24 @@ func expandPath(path string) string {
 		}
 	}
 	return path
+}
+
+func normalizeServerMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "production":
+		return "production"
+	default:
+		return "development"
+	}
+}
+
+func searchRoots() []string {
+	roots := make([]string, 0, 2)
+	if exe, err := os.Executable(); err == nil {
+		roots = append(roots, filepath.Dir(exe))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		roots = append(roots, wd)
+	}
+	return roots
 }

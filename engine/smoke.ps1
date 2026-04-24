@@ -16,12 +16,13 @@ function Get-FreePort {
 }
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$goDir = Join-Path $root "go"
-$rustDaemonBin = Join-Path $root "rust" | Join-Path -ChildPath "target" | Join-Path -ChildPath "release" | Join-Path -ChildPath "ai_engine_daemon.exe"
+$bundleRoot = Join-Path $root "dist" | Join-Path -ChildPath "windows-backend"
+$bundleBin = Join-Path $bundleRoot "bin"
 $buildScript = Join-Path $root "build.bat"
-$serverBin = Join-Path $goDir "bin" | Join-Path -ChildPath "server.exe"
-$clientBin = Join-Path $goDir "bin" | Join-Path -ChildPath "client.exe"
-$daemonBin = Join-Path $goDir "bin" | Join-Path -ChildPath "ai_engine_daemon.exe"
+$serverBin = Join-Path $bundleBin "server.exe"
+$clientBin = Join-Path $bundleBin "client.exe"
+$daemonBin = Join-Path $bundleBin "ai_engine_daemon.exe"
+$contextServerBin = Join-Path $bundleBin "context_server.exe"
 
 # Only stop ai_engine_daemon processes if -Force is specified
 $runningDaemons = Get-Process ai_engine_daemon -ErrorAction SilentlyContinue
@@ -50,10 +51,8 @@ if (-not $SkipBuild) {
 
 if (-not (Test-Path $serverBin)) { throw "missing server binary: $serverBin" }
 if (-not (Test-Path $clientBin)) { throw "missing client binary: $clientBin" }
-if (-not (Test-Path $daemonBin)) {
-    $daemonBin = $rustDaemonBin
-}
 if (-not (Test-Path $daemonBin)) { throw "missing daemon binary: $daemonBin" }
+if (-not (Test-Path $contextServerBin)) { throw "missing context_server binary: $contextServerBin" }
 
 $workspace = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-engine-smoke-" + [guid]::NewGuid().ToString("N"))
 $null = New-Item -ItemType Directory -Path $workspace -Force
@@ -66,6 +65,7 @@ $null = Set-Content -Path (Join-Path $modelsDir "demo.gguf") -Value "demo-model"
 $httpPort = Get-FreePort
 $grpcPort = Get-FreePort
 $daemonPort = Get-FreePort
+$contextPort = Get-FreePort
 $configPath = Join-Path $workspace "config.yaml"
 $serverStdout = Join-Path $workspace "server.stdout.log"
 $serverStderr = Join-Path $workspace "server.stderr.log"
@@ -80,6 +80,7 @@ echo local-backend:STREAM_OK
 server:
   host: "127.0.0.1"
   port: $httpPort
+  mode: "production"
   grpc:
     host: "127.0.0.1"
     port: $grpcPort
@@ -95,6 +96,22 @@ daemon:
   ready_timeout: 10s
   llama_cli: "$($fakeLlamaCli -replace '\\','/')"
   training_cli: "llama-train"
+
+context:
+  enabled: true
+  service_url: "http://127.0.0.1:$contextPort"
+  # The following fields (binary_path, data_dir, auto_start, managed_roots) are present for
+  # bundle validation only and are not used when daemon.required is true, as the daemon
+  # acts as context client rather than launching the context service directly.
+  binary_path: "$($contextServerBin -replace '\\','/')"
+  data_dir: "$((Join-Path $workspace 'context') -replace '\\','/')"
+  auto_start: true
+  startup_timeout: 20s
+  managed_roots:
+    - "workspace=$($workspace -replace '\\','/')"
+  openviking:
+    url: ""
+    api_key: ""
 
 services:
   enable_training: false
@@ -120,7 +137,6 @@ rag:
 training:
   working_dir: "$($trainingDir -replace '\\','/')"
   max_concurrent_jobs: 2
-
 mcp:
   timeout: 30s
   retries: 3
@@ -157,7 +173,7 @@ function Wait-ForEngine {
         Start-Sleep -Milliseconds 500
         try {
             $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
-            if ($health.status -eq "ok") {
+            if ($health.ready -and $health.status -eq "ok") {
                 return
             }
         } catch {
@@ -191,7 +207,7 @@ function Stop-Engine {
 }
 
 Write-Host "Starting server..."
-$proc = Start-EngineServer -Binary $serverBin -Config $configPath -WorkingDirectory $goDir -StdoutPath $serverStdout -StderrPath $serverStderr
+$proc = Start-EngineServer -Binary $serverBin -Config $configPath -WorkingDirectory $bundleRoot -StdoutPath $serverStdout -StderrPath $serverStderr
 
 try {
     $healthUrl = "http://127.0.0.1:$httpPort/health"
@@ -231,7 +247,7 @@ try {
     Write-Host "Restarting server to verify persistence..."
     Stop-Engine -Process $proc
     Start-Sleep -Seconds 1
-    $proc = Start-EngineServer -Binary $serverBin -Config $configPath -WorkingDirectory $goDir -StdoutPath $serverStdout -StderrPath $serverStderr
+    $proc = Start-EngineServer -Binary $serverBin -Config $configPath -WorkingDirectory $bundleRoot -StdoutPath $serverStdout -StderrPath $serverStderr
     Wait-ForEngine -HealthUrl $healthUrl -Process $proc
 
     $restartOutput = & $clientBin `

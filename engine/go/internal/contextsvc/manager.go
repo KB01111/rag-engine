@@ -359,17 +359,58 @@ func (m *Manager) startProcess() error {
 }
 
 func (m *Manager) resolveBinaryPath() string {
-	cleaned := filepath.Clean(m.cfg.BinaryPath)
-	if _, err := os.Stat(cleaned); err == nil {
-		return cleaned
+	return resolveBinaryPathFromRoots(m.cfg.BinaryPath, binarySearchRoots()...)
+}
+
+// candidateExists checks if a file exists at the given path.
+func candidateExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func resolveBinaryPathFromRoots(binaryPath string, roots ...string) string {
+	cleaned := filepath.Clean(binaryPath)
+	candidates := []string{cleaned}
+	if runtime.GOOS == "windows" && filepath.Ext(cleaned) == "" {
+		candidates = append(candidates, cleaned+".exe")
 	}
-	if runtime.GOOS == "windows" {
-		withExt := cleaned + ".exe"
-		if _, err := os.Stat(withExt); err == nil {
-			return withExt
+
+	for _, candidate := range candidates {
+		if candidateExists(candidate) {
+			return candidate
 		}
 	}
+
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		for _, candidate := range candidates {
+			resolved := filepath.Join(root, candidate)
+			if candidateExists(resolved) {
+				return resolved
+			}
+		}
+	}
+
+	if len(candidates) > 1 {
+		return candidates[1]
+	}
 	return cleaned
+}
+
+func binarySearchRoots() []string {
+	roots := make([]string, 0, 3)
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		roots = append(roots, exeDir)
+		// Add grandparent directory
+		roots = append(roots, filepath.Dir(exeDir))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		roots = append(roots, wd)
+	}
+	return roots
 }
 
 func (m *Manager) Stop(ctx context.Context) error {
@@ -745,7 +786,7 @@ func statusFromProto(status *pb.ContextStatus) *StatusResponse {
 // listResourcesFromProto converts a protobuf ContextResourceList into a ListResourcesResponse.
 // If resp is nil, it returns an empty ListResourcesResponse. Each proto resource is mapped to a
 // listResourcesFromProto converts a protobuf ContextResourceList into a ListResourcesResponse.
-// 
+//
 // If the input is nil, an empty ListResourcesResponse is returned. Each protobuf resource is
 // mapped to a Resource with URI, Title, Layer (cast from the proto enum), and Metadata.
 func listResourcesFromProto(resp *pb.ContextResourceList) *ListResourcesResponse {
