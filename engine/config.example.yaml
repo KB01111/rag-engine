@@ -1,6 +1,7 @@
 server:
   host: "127.0.0.1"
   port: 8080
+  mode: "production"
   grpc:
     host: "127.0.0.1"
     port: 50051
@@ -17,6 +18,7 @@ server:
 daemon:
   host: "127.0.0.1"
   port: 50061
+  required: true
   # If blank, the server auto-detects a locally built daemon in ./go/bin or ./rust/target/*.
   command: ""
   args: []
@@ -25,6 +27,10 @@ daemon:
   ready_timeout: 10s
   llama_cli: "llama-cli"
   training_cli: "llama-train"
+
+services:
+  enable_training: false
+  enable_mcp: false
 
 storage:
   lancedb_uri: "~/ai-engine/lancedb"
@@ -43,8 +49,8 @@ runtime:
 context:
   enabled: true
   service_url: "http://127.0.0.1:9191"
-  # Context remains a separate Rust service; the Go server proxies its contracts.
-  binary_path: "rust/target/release/context_server"
+  # Resolved relative to the installed server bundle, not the caller's working directory.
+  binary_path: "context_server"
   data_dir: "~/ai-engine/context"
   auto_start: true
   startup_timeout: 20s

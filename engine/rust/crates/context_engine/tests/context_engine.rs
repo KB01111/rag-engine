@@ -57,10 +57,10 @@ async fn managed_root_rejects_path_escape() {
     assert!(message.contains("outside managed root") || message.contains("escape"));
 }
 
-/// Verifies that incremental upserts reuse unchanged content chunks and only reindex modified chunks.
+/// Verifies that incremental upserts reuse unchanged persisted chunk rows and only reindex the modified rows.
 ///
 /// This test upserts a multi-paragraph resource, then upserts it again with a single paragraph changed
-/// and asserts that the engine reports two reused chunks and one reindexed chunk.
+/// and asserts that the engine reports reuse and reindex counts across all generated layers (`L0`, `L1`, and `L2`).
 ///
 /// # Examples
 ///
@@ -110,8 +110,9 @@ async fn incremental_upsert_reuses_unchanged_chunks() {
         .await
         .unwrap();
 
-    assert_eq!(updated.reused_chunks, 2);
-    assert_eq!(updated.reindexed_chunks, 1);
+    assert_eq!(updated.chunks_indexed, 7);
+    assert_eq!(updated.reused_chunks, 5);
+    assert_eq!(updated.reindexed_chunks, 2);
 }
 
 /// Verifies that a text resource indexed into the engine is discoverable via lexical search.

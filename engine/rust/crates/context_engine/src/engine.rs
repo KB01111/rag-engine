@@ -904,7 +904,10 @@ impl ContextEngine {
     ///
     /// # Returns
     ///
-    /// `UpsertOutcome` describing the stored resource summary and counts of indexed, reused, and reindexed chunks.
+    /// `UpsertOutcome` describing the stored resource summary and counts of indexed, reused, and reindexed persisted chunk rows.
+    ///
+    /// Chunk counts reflect all generated layers (`L0`, `L1`, and `L2`) that are stored for the resource, not only
+    /// the source layer supplied on the request.
     ///
     /// # Examples
     ///

@@ -1,11 +1,24 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use serde_json::{json, Value};
 use storage::{EngineStore, ModelRecord};
+use sysinfo::System;
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
+use tokio::sync::mpsc;
+use which::which;
+
+#[derive(Debug, Clone)]
+pub struct RuntimeResources {
+    pub cpu_percent: f32,
+    pub memory_used_bytes: u64,
+    pub memory_total_bytes: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InferenceChunk {
@@ -97,36 +110,22 @@ impl InferenceBackend for WhitespaceInferenceBackend {
 pub struct RuntimeEngine {
     store: EngineStore,
     models_path: PathBuf,
-    backend: String,
-    inference_backend: Arc<dyn InferenceBackend>,
+    backend_name: String,
+    backend_command: String,
 }
 
 impl RuntimeEngine {
     pub fn new(
         store: EngineStore,
         models_path: impl Into<PathBuf>,
-        backend: impl Into<String>,
-    ) -> Self {
-        let backend = backend.into();
-        Self {
-            store,
-            models_path: models_path.into(),
-            inference_backend: Arc::new(WhitespaceInferenceBackend::new(backend.clone())),
-            backend,
-        }
-    }
-
-    pub fn with_inference_backend(
-        store: EngineStore,
-        models_path: impl Into<PathBuf>,
-        backend: impl Into<String>,
-        inference_backend: Arc<dyn InferenceBackend>,
+        backend_name: impl Into<String>,
+        backend_command: impl Into<String>,
     ) -> Self {
         Self {
             store,
             models_path: models_path.into(),
-            backend: backend.into(),
-            inference_backend,
+            backend_name: backend_name.into(),
+            backend_command: backend_command.into(),
         }
     }
 
@@ -140,8 +139,14 @@ impl RuntimeEngine {
         let Some(model) = models.iter_mut().find(|model| model.id == model_id) else {
             return Err(anyhow!("model not found: {model_id}"));
         };
+        let backend_command = self.resolve_backend_command()?;
 
         model.status = "loaded".to_string();
+        model.metadata_json = json!({
+            "backend_command": backend_command.to_string_lossy(),
+            "loaded_at": now(),
+        })
+        .to_string();
         model.updated_at = now();
         self.store.upsert_model(model.clone()).await?;
         Ok(model.clone())
@@ -154,6 +159,7 @@ impl RuntimeEngine {
         };
 
         model.status = "discovered".to_string();
+        model.metadata_json = "{}".to_string();
         model.updated_at = now();
         self.store.upsert_model(model.clone()).await?;
         Ok(())
@@ -163,24 +169,211 @@ impl RuntimeEngine {
         &self,
         model_id: &str,
         prompt: &str,
-    ) -> Result<Vec<InferenceChunk>> {
-        let model = self.require_loaded_model(model_id).await?;
-        self.inference_backend.infer(&model, prompt)
+        parameters: &HashMap<String, String>,
+    ) -> Result<mpsc::Receiver<Result<String>>> {
+        if prompt.trim().is_empty() {
+            return Err(anyhow!("prompt is required"));
+        }
+
+        let model = self.loaded_model(model_id).await?;
+        let backend_command = self.backend_command_for_model(&model)?;
+        let args = build_backend_args(&model.path, prompt, parameters);
+
+        let mut child = Command::new(&backend_command)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "failed to start backend command {} for model {}",
+                    backend_command.display(),
+                    model_id
+                )
+            })?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("backend command stdout was not piped"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("backend command stderr was not piped"))?;
+
+        let (sender, receiver) = mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut stdout = tokio::io::BufReader::new(stdout);
+            let stderr_task = tokio::spawn(async move {
+                let mut stderr = tokio::io::BufReader::new(stderr);
+                let mut error_output = String::new();
+                let _ = stderr.read_to_string(&mut error_output).await;
+                error_output
+            });
+
+            let mut buffer = [0_u8; 1024];
+            let mut carry = Vec::new();
+            loop {
+                match stdout.read(&mut buffer).await {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        carry.extend_from_slice(&buffer[..read]);
+                        loop {
+                            match std::str::from_utf8(&carry) {
+                                Ok(text) => {
+                                    if !text.is_empty()
+                                        && sender.send(Ok(text.to_string())).await.is_err()
+                                    {
+                                        let _ = child.kill().await;
+                                        return;
+                                    }
+                                    carry.clear();
+                                    break;
+                                }
+                                Err(error) => {
+                                    let valid_up_to = error.valid_up_to();
+                                    if valid_up_to > 0 {
+                                        let chunk = std::str::from_utf8(&carry[..valid_up_to])
+                                            .expect("valid UTF-8 prefix");
+                                        if sender.send(Ok(chunk.to_string())).await.is_err() {
+                                            let _ = child.kill().await;
+                                            return;
+                                        }
+                                        carry.drain(..valid_up_to);
+                                        continue;
+                                    }
+                                    if error.error_len().is_some() {
+                                        let _ = sender
+                                            .send(Err(anyhow!(
+                                                "backend output was not valid UTF-8"
+                                            )))
+                                            .await;
+                                        let _ = child.kill().await;
+                                        return;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender
+                            .send(Err(anyhow!("failed to read backend output: {error}")))
+                            .await;
+                        let _ = child.kill().await;
+                        return;
+                    }
+                }
+            }
+
+            if !carry.is_empty() {
+                match std::str::from_utf8(&carry) {
+                    Ok(text) => {
+                        if !text.is_empty() && sender.send(Ok(text.to_string())).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = sender
+                            .send(Err(anyhow!("backend output ended with incomplete UTF-8")))
+                            .await;
+                        return;
+                    }
+                }
+            }
+
+            let status = match child.wait().await {
+                Ok(status) => status,
+                Err(error) => {
+                    let _ = sender
+                        .send(Err(anyhow!("failed to wait for backend command: {error}")))
+                        .await;
+                    return;
+                }
+            };
+
+            let stderr_output = stderr_task.await.unwrap_or_default();
+            if !status.success() {
+                let detail = stderr_output.trim();
+                let message = if detail.is_empty() {
+                    format!("backend command exited with status {status}")
+                } else {
+                    format!("backend command exited with status {status}: {detail}")
+                };
+                let _ = sender.send(Err(anyhow!(message))).await;
+            }
+        });
+
+        Ok(receiver)
+    }
+
+    pub fn system_resources(&self) -> RuntimeResources {
+        let mut system = System::new_all();
+        system.refresh_cpu_usage();
+        system.refresh_memory();
+
+        RuntimeResources {
+            cpu_percent: system.global_cpu_usage(),
+            memory_used_bytes: system.used_memory() * 1024,
+            memory_total_bytes: system.total_memory() * 1024,
+        }
+    }
+
+    async fn loaded_model(&self, model_id: &str) -> Result<ModelRecord> {
+        let mut models = self.list_models().await?;
+        let Some(model) = models.iter_mut().find(|model| model.id == model_id) else {
+            return Err(anyhow!("model not found: {model_id}"));
+        };
+        if model.status != "loaded" {
+            return Err(anyhow!("model not loaded: {model_id}"));
+        }
+        Ok(model.clone())
+    }
+
+    fn resolve_backend_command(&self) -> Result<PathBuf> {
+        let candidate = Path::new(&self.backend_command);
+        if has_explicit_backend_path(&self.backend_command) {
+            if candidate.exists() {
+                return Ok(candidate.to_path_buf());
+            }
+            return Err(anyhow!(
+                "backend command not found at {}",
+                candidate.to_string_lossy()
+            ));
+        }
+
+        which(&self.backend_command)
+            .map_err(|_| anyhow!("backend command not found: {}", self.backend_command))
+    }
+
+    fn backend_command_for_model(&self, model: &ModelRecord) -> Result<PathBuf> {
+        let stored_command = serde_json::from_str::<Value>(&model.metadata_json)
+            .ok()
+            .and_then(|metadata| {
+                metadata
+                    .get("backend_command")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+            });
+
+        stored_command
+            .map(Ok)
+            .unwrap_or_else(|| self.resolve_backend_command())
     }
 
     async fn discover_models(&self) -> Result<()> {
         tokio::fs::create_dir_all(&self.models_path).await?;
 
-        // Load existing models to preserve their status
         let existing_models = self.store.list_models().await.unwrap_or_default();
-        let mut existing_map: std::collections::HashMap<String, ModelRecord> = existing_models
+        let mut existing_map: HashMap<String, ModelRecord> = existing_models
             .into_iter()
             .map(|model| (model.id.clone(), model))
             .collect();
 
-        // Discover models on filesystem using blocking task
         let models_path = self.models_path.clone();
-        let backend = self.backend.clone();
+        let backend_name = self.backend_name.clone();
         let discovered = tokio::task::spawn_blocking(move || {
             let mut models = Vec::new();
             if let Ok(entries) = fs::read_dir(&models_path) {
@@ -191,7 +384,7 @@ impl RuntimeEngine {
                     }
                     if let Ok(metadata) = entry.metadata() {
                         let name = entry.file_name().to_string_lossy().to_string();
-                        models.push((name, path, metadata.len()));
+                        models.push((name, path, metadata.len(), backend_name.clone()));
                     }
                 }
             }
@@ -199,16 +392,15 @@ impl RuntimeEngine {
         })
         .await?;
 
-        // Upsert discovered models, preserving existing status
-        for (name, path, size_bytes) in discovered {
+        for (name, path, size_bytes, backend_name) in discovered {
             let existing = existing_map.remove(&name);
             let status = existing
                 .as_ref()
-                .map(|m| m.status.clone())
+                .map(|model| model.status.clone())
                 .unwrap_or_else(|| "discovered".to_string());
             let metadata_json = existing
                 .as_ref()
-                .map(|m| m.metadata_json.clone())
+                .map(|model| model.metadata_json.clone())
                 .unwrap_or_else(|| "{}".to_string());
 
             self.store
@@ -216,7 +408,7 @@ impl RuntimeEngine {
                     id: name.clone(),
                     name: name.clone(),
                     path: path.to_string_lossy().to_string(),
-                    backend: self.backend.clone(),
+                    backend: backend_name,
                     status,
                     metadata_json,
                     size_bytes: size_bytes as i64,
@@ -228,18 +420,45 @@ impl RuntimeEngine {
     }
 }
 
-impl RuntimeEngine {
-    async fn require_loaded_model(&self, model_id: &str) -> Result<ModelRecord> {
-        let models = self.list_models().await?;
-        let model = models
-            .into_iter()
-            .find(|candidate| candidate.id == model_id)
-            .ok_or_else(|| anyhow!("model not found: {model_id}"))?;
-        if model.status != "loaded" {
-            return Err(anyhow!("model not loaded: {model_id}"));
-        }
-        Ok(model)
+fn build_backend_args(
+    model_path: &str,
+    prompt: &str,
+    parameters: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut args = vec![
+        "-m".to_string(),
+        model_path.to_string(),
+        "-p".to_string(),
+        prompt.to_string(),
+        "-n".to_string(),
+        parameters
+            .get("n_predict")
+            .cloned()
+            .unwrap_or_else(|| "128".to_string()),
+    ];
+
+    if let Some(value) = parameters.get("temperature") {
+        args.push("--temp".to_string());
+        args.push(value.clone());
     }
+    if let Some(value) = parameters.get("threads") {
+        args.push("-t".to_string());
+        args.push(value.clone());
+    }
+    if let Some(value) = parameters.get("ctx_size") {
+        args.push("-c".to_string());
+        args.push(value.clone());
+    }
+    if let Some(value) = parameters.get("top_k") {
+        args.push("--top-k".to_string());
+        args.push(value.clone());
+    }
+    if let Some(value) = parameters.get("top_p") {
+        args.push("--top-p".to_string());
+        args.push(value.clone());
+    }
+
+    args
 }
 
 fn is_model_file(path: &Path) -> bool {
@@ -258,54 +477,171 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
     use tempfile::tempdir;
 
-    #[tokio::test]
-    async fn load_model_then_stream_inference_emits_backend_metrics() -> Result<()> {
-        let tempdir = tempdir()?;
-        let db_path = tempdir.path().join("lancedb");
-        let models_path = tempdir.path().join("models");
-        tokio::fs::create_dir_all(&models_path).await?;
-        tokio::fs::write(models_path.join("demo.gguf"), b"weights").await?;
-
-        let store = EngineStore::new(db_path.to_string_lossy().as_ref());
-        let engine = RuntimeEngine::new(store, &models_path, "llama.cpp");
-
-        engine.load_model("demo.gguf").await?;
-        let chunks = engine
-            .stream_inference("demo.gguf", "hello runtime")
-            .await?;
-
-        assert!(!chunks.is_empty());
-        assert_eq!(chunks.last().unwrap().complete, true);
-        assert_eq!(
-            chunks.last().unwrap().metrics.get("backend"),
-            Some(&"llama.cpp".to_string())
-        );
-        assert_eq!(
-            chunks.last().unwrap().metrics.get("status"),
-            Some(&"complete".to_string())
-        );
-        Ok(())
-    }
+    use super::*;
 
     #[tokio::test]
-    async fn stream_inference_requires_loaded_model() -> Result<()> {
-        let tempdir = tempdir()?;
-        let db_path = tempdir.path().join("lancedb");
-        let models_path = tempdir.path().join("models");
-        tokio::fs::create_dir_all(&models_path).await?;
-        tokio::fs::write(models_path.join("demo.gguf"), b"weights").await?;
-
-        let store = EngineStore::new(db_path.to_string_lossy().as_ref());
-        let engine = RuntimeEngine::new(store, &models_path, "llama.cpp");
-
-        let err = engine
-            .stream_inference("demo.gguf", "hello runtime")
+    async fn load_model_requires_an_available_backend_command() {
+        let tempdir = tempdir().unwrap();
+        let models_dir = tempdir.path().join("models");
+        tokio::fs::create_dir_all(&models_dir).await.unwrap();
+        tokio::fs::write(models_dir.join("demo.gguf"), b"weights")
             .await
-            .expect_err("inference should require an explicitly loaded model");
-        assert!(err.to_string().contains("model not loaded"));
-        Ok(())
+            .unwrap();
+
+        let store = EngineStore::new(tempdir.path().join("db").to_string_lossy().to_string());
+        let engine = RuntimeEngine::new(
+            store,
+            &models_dir,
+            "llama.cpp",
+            "__missing_backend_command__",
+        );
+
+        let err = engine.load_model("demo.gguf").await.unwrap_err();
+        assert!(
+            err.to_string().contains("backend command"),
+            "expected backend command validation error, got {err:?}"
+        );
     }
+
+    #[tokio::test]
+    async fn stream_inference_reads_output_from_the_backend_command() {
+        let tempdir = tempdir().unwrap();
+        let models_dir = tempdir.path().join("models");
+        tokio::fs::create_dir_all(&models_dir).await.unwrap();
+        tokio::fs::write(models_dir.join("demo.gguf"), b"weights")
+            .await
+            .unwrap();
+
+        let backend = create_fake_backend(tempdir.path());
+        let store = EngineStore::new(tempdir.path().join("db").to_string_lossy().to_string());
+        let engine = RuntimeEngine::new(
+            store,
+            &models_dir,
+            "llama.cpp",
+            backend.to_string_lossy().to_string(),
+        );
+
+        engine.load_model("demo.gguf").await.unwrap();
+
+        let mut stream = engine
+            .stream_inference("demo.gguf", "hello from runtime", &HashMap::new())
+            .await
+            .unwrap();
+
+        let mut output = String::new();
+        while let Some(chunk) = stream.recv().await {
+            output.push_str(&chunk.unwrap());
+        }
+
+        assert!(
+            output.contains("backend:hello from runtime"),
+            "expected backend output, got {output:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_inference_preserves_utf8_across_chunk_boundaries() {
+        let tempdir = tempdir().unwrap();
+        let models_dir = tempdir.path().join("models");
+        tokio::fs::create_dir_all(&models_dir).await.unwrap();
+        tokio::fs::write(models_dir.join("demo.gguf"), b"weights")
+            .await
+            .unwrap();
+
+        let backend = create_split_utf8_backend(tempdir.path());
+        let store = EngineStore::new(tempdir.path().join("db").to_string_lossy().to_string());
+        let engine = RuntimeEngine::new(
+            store,
+            &models_dir,
+            "llama.cpp",
+            backend.to_string_lossy().to_string(),
+        );
+
+        engine.load_model("demo.gguf").await.unwrap();
+
+        let mut stream = engine
+            .stream_inference("demo.gguf", "hello", &HashMap::new())
+            .await
+            .unwrap();
+
+        let mut output = String::new();
+        while let Some(chunk) = stream.recv().await {
+            output.push_str(&chunk.unwrap());
+        }
+
+        let expected = format!("{}éb", "a".repeat(1023));
+        assert_eq!(output, expected);
+    }
+
+    fn create_fake_backend(root: &Path) -> PathBuf {
+        if cfg!(windows) {
+            let path = root.join("fake-llama.cmd");
+            fs::write(
+                &path,
+                "@echo off\r\nset \"PROMPT=\"\r\n:next\r\nif \"%~1\"==\"\" goto done\r\nif /I \"%~1\"==\"-p\" (\r\n  set \"PROMPT=%~2\"\r\n  shift\r\n)\r\nshift\r\ngoto next\r\n:done\r\necho backend:%PROMPT%\r\n",
+            )
+            .unwrap();
+            path
+        } else {
+            let path = root.join("fake-llama.sh");
+            fs::write(
+                &path,
+                "#!/bin/sh\nPROMPT=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"-p\" ]; then\n    shift\n    PROMPT=\"$1\"\n  fi\n  shift\ndone\nprintf 'backend:%s\\n' \"$PROMPT\"\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mut permissions = fs::metadata(&path).unwrap().permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(&path, permissions).unwrap();
+            }
+            path
+        }
+    }
+
+    fn create_split_utf8_backend(root: &Path) -> PathBuf {
+        if cfg!(windows) {
+            let path = root.join("split-utf8.cmd");
+            fs::write(
+                &path,
+                "@echo off\r\npowershell -NoProfile -Command \"$bytes = New-Object byte[] 1026; for($i=0; $i -lt 1023; $i++){ $bytes[$i] = 97 }; $bytes[1023] = 0xC3; $bytes[1024] = 0xA9; $bytes[1025] = 98; [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)\"\r\n",
+            )
+            .unwrap();
+            path
+        } else {
+            let path = root.join("split-utf8.sh");
+            fs::write(
+                &path,
+                "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 1023 ]; do\n  printf 'a'\n  i=$((i + 1))\ndone\nprintf '\\303'\nprintf '\\251b'\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mut permissions = fs::metadata(&path).unwrap().permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(&path, permissions).unwrap();
+            }
+            path
+        }
+    }
+}
+
+fn has_explicit_backend_path(command: &str) -> bool {
+    let candidate = Path::new(command);
+    candidate.is_absolute()
+        || command.contains(std::path::MAIN_SEPARATOR)
+        || command.contains('/')
+        || command.contains('\\')
+        || command.starts_with("./")
+        || command.starts_with(".\\")
 }

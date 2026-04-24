@@ -8,10 +8,10 @@ GO_DIR="$ROOT_DIR/go"
 RUST_DIR="$ROOT_DIR/rust"
 PROTO_DIR="$ROOT_DIR/proto"
 CACHE_DIR="$ROOT_DIR/.cache"
+PROTOC_SCRIPT="$ROOT_DIR/scripts/ensure_protoc.sh"
 
 GOEXE="${GOEXE:-go}"
 CARGOEXE="${CARGOEXE:-cargo}"
-PROTOCEXE="${PROTOCEXE:-${PROTOC:-protoc}}"
 PROTOC_GEN_GO="${PROTOC_GEN_GO:-protoc-gen-go}"
 PROTOC_GEN_GO_GRPC="${PROTOC_GEN_GO_GRPC:-protoc-gen-go-grpc}"
 
@@ -23,6 +23,10 @@ mkdir -p "$CARGO_HOME"
 
 echo "Using GOCACHE=$GOCACHE"
 echo "Using CARGO_HOME=$CARGO_HOME"
+
+PROTOC="$(bash "$PROTOC_SCRIPT")"
+export PROTOC
+PROTOCEXE="${PROTOC}"
 
 if [ -x "$HOME/go/bin/protoc-gen-go" ]; then
     PROTOC_GEN_GO="$HOME/go/bin/protoc-gen-go"

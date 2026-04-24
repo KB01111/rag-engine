@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -71,24 +72,48 @@ func (s *Supervisor) Start() error {
 	if s.running {
 		return fmt.Errorf("supervisor already running")
 	}
+	if s.config.IsProduction() {
+		if !s.config.Context.Enabled {
+			return fmt.Errorf("context backend is required in production mode")
+		}
+		if s.config.Daemon.Command == "" {
+			return fmt.Errorf("daemon backend is required in production mode")
+		}
+	}
 
 	if err := s.config.EnsureDirs(); err != nil {
 		return fmt.Errorf("failed to ensure directories: %w", err)
 	}
 
+	daemonLaunched := false
 	if s.config.Daemon.Command != "" {
 		if err := s.launchDaemonLocked(); err != nil {
+			if s.config.Daemon.Required || s.config.IsProduction() {
+				return fmt.Errorf("failed to launch required daemon: %w", err)
+			}
+			log.Error().Err(err).Msg("failed to launch optional daemon, falling back to local services")
 			s.initLocalServicesLocked()
-			return fmt.Errorf("failed to launch daemon: %w", err)
+		} else {
+			daemonLaunched = true
 		}
 	} else {
-		if err := s.Context.Start(s.ctx); err != nil {
-			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
-				log.Error().Err(stopErr).Msg("failed to stop context backend after startup error")
-			}
-			return fmt.Errorf("failed to start context backend: %w", err)
+		if s.config.Daemon.Required {
+			return fmt.Errorf("daemon is required but no command or binary was found")
 		}
 		s.initLocalServicesLocked()
+	}
+
+	if s.config.Context.Enabled {
+		if daemonLaunched {
+			log.Info().Msg("context backend startup skipped; daemon is acting as context client")
+		} else {
+			if err := s.Context.Start(s.ctx); err != nil {
+				if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
+					log.Error().Err(stopErr).Msg("failed to stop context backend after startup error")
+				}
+				return fmt.Errorf("failed to start context backend: %w", err)
+			}
+		}
 	}
 
 	s.running = true
@@ -180,7 +205,7 @@ func (s *Supervisor) Health() map[string]interface{} {
 		}
 	}
 
-	degraded := mode != "daemon"
+	degraded := false
 	status := "ok"
 	if !running {
 		status = "stopped"
@@ -197,11 +222,13 @@ func (s *Supervisor) Health() map[string]interface{} {
 
 	return map[string]interface{}{
 		"running":        running,
+		"ready":          running && !degraded,
 		"status":         status,
 		"execution_mode": mode,
 		"degraded":       degraded,
 		"daemon": map[string]interface{}{
 			"configured": daemonConfigured,
+			"required":   s.config.Daemon.Required || s.config.IsProduction(),
 			"connected":  daemonConnected,
 			"addr":       daemonAddr,
 			"command":    daemonCommand,
@@ -266,7 +293,7 @@ func (s *Supervisor) launchDaemonLocked() error {
 	s.daemonCmd = cmd
 	s.Context.SetDaemonContextClient(client)
 	s.Runtime = s.wrapRuntimeService(client)
-	s.RAG = rag.NewManager(s.config, s.Context)
+	s.RAG = client
 	s.Training = client
 	s.MCP = client
 	s.mode = "daemon"
@@ -302,7 +329,7 @@ func (s *Supervisor) waitForDaemonClient(addr string) (*daemon.Client, error) {
 }
 
 func (s *Supervisor) daemonEnv() []string {
-	return []string{
+	env := []string{
 		fmt.Sprintf("AI_ENGINE_DAEMON_ADDR=%s", s.config.Daemon.Addr()),
 		fmt.Sprintf("AI_ENGINE_LANCEDB_URI=%s", s.config.Storage.LanceDBURI),
 		fmt.Sprintf("AI_ENGINE_MODELS_PATH=%s", s.config.Runtime.ModelsPath),
@@ -310,6 +337,19 @@ func (s *Supervisor) daemonEnv() []string {
 		fmt.Sprintf("AI_ENGINE_LLAMA_CLI=%s", s.config.Daemon.LlamaCLI),
 		fmt.Sprintf("AI_ENGINE_TRAINING_CLI=%s", s.config.Daemon.TrainingCLI),
 	}
+	if s.config.Context.Enabled {
+		env = append(env, fmt.Sprintf("CONTEXT_DATA_DIR=%s", s.config.Context.DataDir))
+		if len(s.config.Context.ManagedRoots) > 0 {
+			env = append(env, fmt.Sprintf("CONTEXT_ROOTS=%s", strings.Join(s.config.Context.ManagedRoots, string(os.PathListSeparator))))
+		}
+		if s.config.Context.OpenViking.URL != "" {
+			env = append(env, fmt.Sprintf("CONTEXT_OPENVIKING_URL=%s", s.config.Context.OpenViking.URL))
+		}
+		if s.config.Context.OpenViking.APIKey != "" {
+			env = append(env, fmt.Sprintf("CONTEXT_OPENVIKING_API_KEY=%s", s.config.Context.OpenViking.APIKey))
+		}
+	}
+	return env
 }
 
 func (s *Supervisor) wrapRuntimeService(service runtime.Service) runtime.Service {

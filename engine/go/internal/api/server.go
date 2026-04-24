@@ -15,8 +15,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -338,38 +340,65 @@ func (s *Server) GetSession(ctx context.Context, req *pb.ContextSessionGetReques
 }
 
 func (s *Server) StartRun(ctx context.Context, req *pb.TrainingRunRequest) (*pb.TrainingRun, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.StartRun(ctx, req)
 }
 
 func (s *Server) CancelRun(ctx context.Context, req *pb.CancelRequest) (*emptypb.Empty, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.CancelRun(ctx, req)
 }
 
 func (s *Server) ListRuns(ctx context.Context, _ *emptypb.Empty) (*pb.TrainingRunList, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.ListRuns(ctx, &emptypb.Empty{})
 }
 
 func (s *Server) ListArtifacts(ctx context.Context, req *pb.ArtifactsRequest) (*pb.ArtifactList, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.ListArtifacts(ctx, req)
 }
 
 func (s *Server) StreamLogs(req *pb.LogsRequest, stream pb.Training_StreamLogsServer) error {
+	if !s.config.Services.EnableTraining {
+		return status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.StreamLogs(req, stream)
 }
 
 func (s *Server) Connect(ctx context.Context, req *pb.MCPConnectionRequest) (*pb.MCPConnection, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.Connect(ctx, req)
 }
 
 func (s *Server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*emptypb.Empty, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.Disconnect(ctx, req)
 }
 
 func (s *Server) ListTools(ctx context.Context, req *pb.MCPConnectionRequest) (*pb.ToolList, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.ListTools(ctx, req)
 }
 
 func (s *Server) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.CallToolResponse, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.CallTool(ctx, req)
 }
 
@@ -378,6 +407,8 @@ func (s *Server) RegisterHTTP(router *gin.Engine) {
 	router.OPTIONS("/api/v1/*path", func(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 	})
+	router.GET("/livez", s.handleLiveness)
+	router.GET("/readyz", s.handleReadiness)
 	router.GET("/health", s.handleHealth)
 	router.GET("/api/v1/status", s.handleStatus)
 	router.GET("/api/v1/capabilities", s.handleCapabilities)
@@ -408,8 +439,36 @@ func (s *Server) RegisterHTTP(router *gin.Engine) {
 	router.GET("/api/v1/context/sessions/:id", s.handleGetContextSession)
 }
 
+// handleLiveness returns 200 OK as long as the HTTP server process is alive.
+// Does not check IsRunning() - that's a readiness concern, not liveness.
+func (s *Server) handleLiveness(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"alive": true,
+	})
+}
+
+// handleReadiness checks if the supervisor is running and ready to serve requests.
+// Returns 503 if not ready (e.g., during graceful shutdown when IsRunning() is false).
+func (s *Server) handleReadiness(c *gin.Context) {
+	if !s.supervisor.IsRunning() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"ready":  false,
+			"status": "not_running",
+		})
+		return
+	}
+	response, statusCode := s.healthResponse(c.Request.Context())
+	c.JSON(statusCode, response)
+}
+
+// handleHealth provides detailed health information including context backend status.
 func (s *Server) handleHealth(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	response, statusCode := s.healthResponse(c.Request.Context())
+	c.JSON(statusCode, response)
+}
+
+func (s *Server) healthResponse(reqCtx context.Context) (gin.H, int) {
+	ctx, cancel := context.WithTimeout(reqCtx, 3*time.Second)
 	defer cancel()
 
 	ready := true
@@ -432,18 +491,24 @@ func (s *Server) handleHealth(c *gin.Context) {
 	if degraded, ok := supervisorHealth["degraded"].(bool); ok && degraded {
 		status = "degraded"
 	}
+	if running, ok := supervisorHealth["running"].(bool); ok && !running {
+		ready = false
+	}
+	if status != "ok" {
+		ready = false
+	}
 
 	statusCode := http.StatusOK
 	if !ready || status == "degraded" {
 		statusCode = http.StatusServiceUnavailable
 	}
 
-	c.JSON(statusCode, gin.H{
+	return gin.H{
 		"status":         status,
 		"ready":          ready,
 		"execution_mode": s.supervisor.ExecutionMode(),
 		"supervisor":     supervisorHealth,
-	})
+	}, statusCode
 }
 
 func (s *Server) handleStatus(c *gin.Context) {

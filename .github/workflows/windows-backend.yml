@@ -1,0 +1,47 @@
+name: Windows Backend
+
+on:
+  push:
+    paths:
+      - ".github/workflows/windows-backend.yml"
+      - "engine/**"
+  pull_request:
+    paths:
+      - ".github/workflows/windows-backend.yml"
+      - "engine/**"
+
+jobs:
+  verify:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go/go.mod
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Windows backend bundle
+        shell: cmd
+        run: engine\build.bat
+
+      - name: Run Go tests
+        working-directory: engine/go
+        shell: pwsh
+        run: go test ./... -v
+
+      - name: Run Rust tests
+        working-directory: engine/rust
+        shell: pwsh
+        run: |
+          $env:PROTOC = (Resolve-Path ..\..\.tools\bin\protoc.exe).Path
+          cargo test --workspace
+
+      - name: Run smoke test
+        shell: pwsh
+        run: .\engine\smoke.ps1

@@ -16,12 +16,13 @@ function Get-FreePort {
 }
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$goDir = Join-Path $root "go"
-$rustDaemonBin = Join-Path $root "rust" | Join-Path -ChildPath "target" | Join-Path -ChildPath "release" | Join-Path -ChildPath "ai_engine_daemon.exe"
+$bundleRoot = Join-Path $root "dist" | Join-Path -ChildPath "windows-backend"
+$bundleBin = Join-Path $bundleRoot "bin"
 $buildScript = Join-Path $root "build.bat"
-$serverBin = Join-Path $goDir "bin" | Join-Path -ChildPath "server.exe"
-$clientBin = Join-Path $goDir "bin" | Join-Path -ChildPath "client.exe"
-$daemonBin = Join-Path $goDir "bin" | Join-Path -ChildPath "ai_engine_daemon.exe"
+$serverBin = Join-Path $bundleBin "server.exe"
+$clientBin = Join-Path $bundleBin "client.exe"
+$daemonBin = Join-Path $bundleBin "ai_engine_daemon.exe"
+$contextServerBin = Join-Path $bundleBin "context_server.exe"
 
 # Only stop ai_engine_daemon processes if -Force is specified
 $runningDaemons = Get-Process ai_engine_daemon -ErrorAction SilentlyContinue
@@ -50,10 +51,8 @@ if (-not $SkipBuild) {
 
 if (-not (Test-Path $serverBin)) { throw "missing server binary: $serverBin" }
 if (-not (Test-Path $clientBin)) { throw "missing client binary: $clientBin" }
-if (-not (Test-Path $daemonBin)) {
-    $daemonBin = $rustDaemonBin
-}
 if (-not (Test-Path $daemonBin)) { throw "missing daemon binary: $daemonBin" }
+if (-not (Test-Path $contextServerBin)) { throw "missing context_server binary: $contextServerBin" }
 
 $workspace = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-engine-smoke-" + [guid]::NewGuid().ToString("N"))
 $null = New-Item -ItemType Directory -Path $workspace -Force
@@ -66,14 +65,22 @@ $null = Set-Content -Path (Join-Path $modelsDir "demo.gguf") -Value "demo-model"
 $httpPort = Get-FreePort
 $grpcPort = Get-FreePort
 $daemonPort = Get-FreePort
+$contextPort = Get-FreePort
 $configPath = Join-Path $workspace "config.yaml"
 $serverStdout = Join-Path $workspace "server.stdout.log"
 $serverStderr = Join-Path $workspace "server.stderr.log"
+$fakeLlamaCli = Join-Path $workspace "fake-llama.cmd"
+
+@"
+@echo off
+echo local-backend:STREAM_OK
+"@ | Set-Content -Path $fakeLlamaCli -Encoding ASCII
 
 @"
 server:
   host: "127.0.0.1"
   port: $httpPort
+  mode: "production"
   grpc:
     host: "127.0.0.1"
     port: $grpcPort
@@ -81,13 +88,34 @@ server:
 daemon:
   host: "127.0.0.1"
   port: $daemonPort
+  required: true
   command: "$($daemonBin -replace '\\','/')"
   args: []
   startup_timeout: 15s
   restart_backoff: 3s
   ready_timeout: 10s
-  llama_cli: "llama-cli"
+  llama_cli: "$($fakeLlamaCli -replace '\\','/')"
   training_cli: "llama-train"
+
+context:
+  enabled: true
+  service_url: "http://127.0.0.1:$contextPort"
+  # The following fields (binary_path, data_dir, auto_start, managed_roots) are present for
+  # bundle validation only and are not used when daemon.required is true, as the daemon
+  # acts as context client rather than launching the context service directly.
+  binary_path: "$($contextServerBin -replace '\\','/')"
+  data_dir: "$((Join-Path $workspace 'context') -replace '\\','/')"
+  auto_start: true
+  startup_timeout: 20s
+  managed_roots:
+    - "workspace=$($workspace -replace '\\','/')"
+  openviking:
+    url: ""
+    api_key: ""
+
+services:
+  enable_training: false
+  enable_mcp: false
 
 storage:
   lancedb_uri: "$($lancedbDir -replace '\\','/')"
@@ -109,7 +137,6 @@ rag:
 training:
   working_dir: "$($trainingDir -replace '\\','/')"
   max_concurrent_jobs: 2
-
 mcp:
   timeout: 30s
   retries: 3
@@ -119,50 +146,93 @@ logging:
   format: "json"
 "@ | Set-Content -Path $configPath
 
-Write-Host "Starting server..."
-$proc = Start-Process -FilePath $serverBin `
-    -ArgumentList @("--config", $configPath) `
-    -WorkingDirectory $goDir `
-    -RedirectStandardOutput $serverStdout `
-    -RedirectStandardError $serverStderr `
-    -PassThru
+function Start-EngineServer {
+    param(
+        [string]$Binary,
+        [string]$Config,
+        [string]$WorkingDirectory,
+        [string]$StdoutPath,
+        [string]$StderrPath
+    )
 
-try {
-    $healthUrl = "http://127.0.0.1:$httpPort/health"
-    $ready = $false
+    Start-Process -FilePath $Binary `
+        -ArgumentList @("--config", $Config) `
+        -WorkingDirectory $WorkingDirectory `
+        -RedirectStandardOutput $StdoutPath `
+        -RedirectStandardError $StderrPath `
+        -PassThru
+}
+
+function Wait-ForEngine {
+    param(
+        [string]$HealthUrl,
+        $Process
+    )
+
     for ($i = 0; $i -lt 60; $i++) {
         Start-Sleep -Milliseconds 500
         try {
-            $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2
-            if ($health.status -eq "ok") {
-                $ready = $true
-                break
+            $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
+            if ($health.ready -and $health.status -eq "ok") {
+                return
             }
         } catch {
             Write-Verbose "Health check attempt $i failed: $($_.Exception.Message)"
         }
-        if ($proc.HasExited) {
+        if ($Process.HasExited) {
             throw "server exited early; see $serverStdout and $serverStderr"
         }
     }
 
-    if (-not $ready) {
-        throw "server did not become healthy; see $serverStdout and $serverStderr"
+    throw "server did not become healthy; see $serverStdout and $serverStderr"
+}
+
+function Stop-Engine {
+    param(
+        $Process
+    )
+
+    $daemonChildren = @()
+    if ($Process) {
+        $daemonChildren = Get-CimInstance Win32_Process -Filter ("ParentProcessId = {0}" -f $Process.Id) -ErrorAction SilentlyContinue
     }
+    if ($Process -and -not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $Process.Id -Timeout 5 -ErrorAction SilentlyContinue
+    }
+    foreach ($child in $daemonChildren) {
+        Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $child.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
+    }
+}
+
+Write-Host "Starting server..."
+$proc = Start-EngineServer -Binary $serverBin -Config $configPath -WorkingDirectory $bundleRoot -StdoutPath $serverStdout -StderrPath $serverStderr
+
+try {
+    $healthUrl = "http://127.0.0.1:$httpPort/health"
+    Wait-ForEngine -HealthUrl $healthUrl -Process $proc
 
     Write-Host "Running gRPC smoke client..."
-    $clientOutput = & $clientBin -addr ("127.0.0.1:{0}" -f $grpcPort) 2>&1
+    $docId = "doc-smoke"
+    $clientOutput = & $clientBin `
+        -addr ("127.0.0.1:{0}" -f $grpcPort) `
+        -doc-id $docId `
+        -query "retrieval local models" `
+        -prompt "Say hello from the bundled WinUI runtime path." 2>&1
     $clientText = ($clientOutput | Out-String)
     $clientText | Write-Host
 
     foreach ($needle in @(
         "Version:",
         "Available models:",
+        "Loaded model:",
+        "Inference output: local-backend:STREAM_OK",
         "Upserted document:",
+        "Documents:",
+        "Document present: True",
         "Search results:",
-        "Started training run:",
-        "MCP connected:",
-        "Available tools:"
+        "Demo Complete"
     )) {
         if ($clientText -notmatch [regex]::Escape($needle)) {
             throw "missing smoke output marker '$needle'"
@@ -174,17 +244,34 @@ try {
         throw "expected running status from HTTP endpoint"
     }
 
+    Write-Host "Restarting server to verify persistence..."
+    Stop-Engine -Process $proc
+    Start-Sleep -Seconds 1
+    $proc = Start-EngineServer -Binary $serverBin -Config $configPath -WorkingDirectory $bundleRoot -StdoutPath $serverStdout -StderrPath $serverStderr
+    Wait-ForEngine -HealthUrl $healthUrl -Process $proc
+
+    $restartOutput = & $clientBin `
+        -addr ("127.0.0.1:{0}" -f $grpcPort) `
+        -doc-id $docId `
+        -query "retrieval local models" `
+        -prompt "Verify the restarted runtime path is alive." `
+        -skip-upsert 2>&1
+    $restartText = ($restartOutput | Out-String)
+    $restartText | Write-Host
+
+    foreach ($needle in @(
+        "Loaded model:",
+        "Inference output: local-backend:STREAM_OK",
+        "Documents:",
+        "Document present: True",
+        "Search results:"
+    )) {
+        if ($restartText -notmatch [regex]::Escape($needle)) {
+            throw "missing restart smoke output marker '$needle'"
+        }
+    }
+
     Write-Host "Smoke test passed."
 } finally {
-    $daemonChildren = @()
-    if ($proc) {
-        $daemonChildren = Get-CimInstance Win32_Process -Filter ("ParentProcessId = {0}" -f $proc.Id) -ErrorAction SilentlyContinue
-    }
-    if ($proc -and -not $proc.HasExited) {
-        Stop-Process -Id $proc.Id -Force
-    }
-    foreach ($child in $daemonChildren) {
-        Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue
-    }
-    Get-Process ai_engine_daemon -ErrorAction SilentlyContinue | Stop-Process -Force
+    Stop-Engine -Process $proc
 }
