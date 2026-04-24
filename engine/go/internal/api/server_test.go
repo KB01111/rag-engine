@@ -33,6 +33,8 @@ func (s *ServerSuite) SetupSuite() {
 
 	cfg, err := config.Load("")
 	s.NoError(err)
+	cfg.Daemon.Required = false
+	cfg.Daemon.Command = ""
 	s.cfg = cfg
 
 	s.ctxHTTP = newIPv4Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

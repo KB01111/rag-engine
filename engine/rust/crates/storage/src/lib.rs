@@ -163,7 +163,7 @@ impl EngineStore {
             )
             .await?;
             add_record_batch(&chunks_table, chunk_batch(&chunks)?).await?;
-            // self.ensure_chunk_indexes(&chunks_table).await?;
+            self.ensure_chunk_indexes(&chunks_table).await?;
         } else if let Some(chunks_table) = self.open_table(&db, "chunks").await? {
             // If chunks table exists but we have no chunks, still delete old chunks for this document
             delete_where(
@@ -485,15 +485,22 @@ impl EngineStore {
         let vector_index_result = table.create_index(&["vector"], Index::Auto).execute().await;
         if let Err(error) = vector_index_result {
             let message = error.to_string();
-            if !message.contains("Not enough rows to train PQ") {
+            if !message.contains("Not enough rows to train PQ")
+                && !message.contains("already exists")
+            {
                 return Err(StorageError::Backend(message));
             }
         }
-        table
+        let text_index_result = table
             .create_index(&["chunk_text"], Index::FTS(FtsIndexBuilder::default()))
             .execute()
-            .await
-            .map_err(|error| StorageError::Backend(error.to_string()))?;
+            .await;
+        if let Err(error) = text_index_result {
+            let message = error.to_string();
+            if !message.contains("already exists") {
+                return Err(StorageError::Backend(message));
+            }
+        }
         Ok(())
     }
 

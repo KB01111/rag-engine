@@ -4,7 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"strings"
 	"time"
 
 	pb "github.com/ai-engine/proto/go"
@@ -14,8 +16,14 @@ import (
 )
 
 var (
-	grpcAddr = flag.String("addr", "127.0.0.1:50051", "gRPC server address")
-	timeout  = flag.Duration("timeout", 20*time.Second, "dial timeout")
+	grpcAddr   = flag.String("addr", "127.0.0.1:50051", "gRPC server address")
+	timeout    = flag.Duration("timeout", 20*time.Second, "dial timeout")
+	modelID    = flag.String("model-id", "", "model to load before inference; defaults to the first discovered model")
+	prompt     = flag.String("prompt", "Summarize the local AI engine status in one sentence.", "prompt to send to runtime inference")
+	docID      = flag.String("doc-id", "doc-winui-smoke", "document id to upsert or verify")
+	docContent = flag.String("doc-content", "Artificial intelligence systems can combine retrieval, local models, and persistent storage.", "document content to upsert")
+	query      = flag.String("query", "retrieval local models", "search query to execute against RAG")
+	skipUpsert = flag.Bool("skip-upsert", false, "skip document upsert and only verify/search existing data")
 )
 
 func main() {
@@ -24,9 +32,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	conn, err := grpc.NewClient(*grpcAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	conn, err := grpc.NewClient(*grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
@@ -34,130 +40,131 @@ func main() {
 
 	runtimeClient := pb.NewRuntimeClient(conn)
 	ragClient := pb.NewRagClient(conn)
-	contextClient := pb.NewContextClient(conn)
-	trainingClient := pb.NewTrainingClient(conn)
-	mcpClient := pb.NewMCPClient(conn)
 
-	fmt.Println("=== AI Engine Client Demo ===")
+	fmt.Println("=== AI Engine Runtime + RAG Demo ===")
 
-	// Runtime
-	fmt.Println("\n--- Runtime ---")
 	status, err := runtimeClient.GetStatus(ctx, &emptypb.Empty{})
 	if err != nil {
-		log.Printf("GetStatus error: %v", err)
+		log.Fatalf("GetStatus error: %v", err)
+	}
+	fmt.Printf("Version: %s, Healthy: %v\n", status.Version, status.Healthy)
+	if status.Resources != nil {
+		fmt.Printf(
+			"Resources: cpu=%.2f%% memory=%d/%d\n",
+			status.Resources.CpuPercent,
+			status.Resources.MemoryUsedBytes,
+			status.Resources.MemoryTotalBytes,
+		)
 	} else {
-		fmt.Printf("Version: %s, Healthy: %v\n", status.Version, status.Healthy)
+		fmt.Println("Resources: unavailable")
 	}
 
 	models, err := runtimeClient.ListModels(ctx, &emptypb.Empty{})
 	if err != nil {
-		log.Printf("ListModels error: %v", err)
-	} else {
-		fmt.Printf("Available models: %d\n", len(models.Models))
+		log.Fatalf("ListModels error: %v", err)
+	}
+	fmt.Printf("Available models: %d\n", len(models.Models))
+	selectedModel := chooseModel(models.Models, *modelID)
+	if selectedModel == "" {
+		log.Fatal("No model available to load")
 	}
 
-	// RAG
-	fmt.Println("\n--- RAG ---")
-	upsertResp, err := ragClient.UpsertDocument(ctx, &pb.UpsertRequest{
-		DocumentId: "doc-001",
-		Content:    "This is a sample document about artificial intelligence and machine learning.",
-		Metadata:   map[string]string{"title": "AI Introduction", "author": "demo"},
-	})
+	loaded, err := runtimeClient.LoadModel(ctx, &pb.LoadModelRequest{ModelId: selectedModel})
 	if err != nil {
-		log.Printf("UpsertDocument error: %v", err)
-	} else {
+		log.Fatalf("LoadModel error: %v", err)
+	}
+	fmt.Printf("Loaded model: %s\n", loaded.Id)
+
+	inference, err := runtimeClient.StreamInference(ctx)
+	if err != nil {
+		log.Fatalf("StreamInference open error: %v", err)
+	}
+	if err := inference.Send(&pb.InferenceRequest{
+		ModelId:    selectedModel,
+		Prompt:     *prompt,
+		Parameters: map[string]string{"n_predict": "64"},
+	}); err != nil {
+		log.Fatalf("StreamInference send error: %v", err)
+	}
+	if err := inference.CloseSend(); err != nil {
+		log.Fatalf("StreamInference close error: %v", err)
+	}
+
+	var inferenceOutput strings.Builder
+	for {
+		resp, err := inference.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatalf("StreamInference recv error: %v", err)
+		}
+		if resp.Token != "" {
+			inferenceOutput.WriteString(resp.Token)
+		}
+		if resp.Complete {
+			break
+		}
+	}
+	fmt.Printf("Inference output: %s\n", truncate(strings.TrimSpace(inferenceOutput.String()), 160))
+
+	if !*skipUpsert {
+		upsertResp, err := ragClient.UpsertDocument(ctx, &pb.UpsertRequest{
+			DocumentId: *docID,
+			Content:    *docContent,
+			Metadata: map[string]string{
+				"title":       "WinUI Runtime Smoke Doc",
+				"source_db":   "local",
+				"external_id": *docID,
+			},
+		})
+		if err != nil {
+			log.Fatalf("UpsertDocument error: %v", err)
+		}
 		fmt.Printf("Upserted document: %s, chunks: %d\n", upsertResp.DocumentId, upsertResp.ChunksIndexed)
 	}
 
+	documents, err := ragClient.ListDocuments(ctx, &emptypb.Empty{})
+	if err != nil {
+		log.Fatalf("ListDocuments error: %v", err)
+	}
+	fmt.Printf("Documents: %d\n", len(documents.Documents))
+	present := false
+	for _, doc := range documents.Documents {
+		if doc.Id == *docID {
+			present = true
+			break
+		}
+	}
+	fmt.Printf("Document present: %v\n", present)
+	if !present {
+		log.Fatalf("Document %q is missing from ListDocuments", *docID)
+	}
+
 	searchResp, err := ragClient.Search(ctx, &pb.SearchRequest{
-		Query:   "artificial intelligence",
+		Query:   *query,
 		TopK:    5,
-		Filters: nil,
+		Filters: map[string]string{"external_id": *docID},
 	})
 	if err != nil {
-		log.Printf("Search error: %v", err)
-	} else {
-		fmt.Printf("Search results: %d, time: %.2fms\n", len(searchResp.Results), searchResp.QueryTimeMs)
-		for i, r := range searchResp.Results {
-			fmt.Printf("  [%d] Score: %.3f, Text: %s...\n", i+1, r.Score, truncate(r.ChunkText, 50))
-		}
+		log.Fatalf("Search error: %v", err)
+	}
+	fmt.Printf("Search results: %d, time: %.2fms\n", len(searchResp.Results), searchResp.QueryTimeMs)
+	if len(searchResp.Results) == 0 {
+		log.Fatalf("Search returned no results for document %q", *docID)
 	}
 
-	ragStatus, err := ragClient.GetRagStatus(ctx, &emptypb.Empty{})
-	if err != nil {
-		log.Printf("GetRagStatus error: %v", err)
-	} else {
-		fmt.Printf("RAG Status - Docs: %d, Chunks: %d\n", ragStatus.DocumentCount, ragStatus.ChunkCount)
-	}
+	fmt.Println("=== Demo Complete ===")
+}
 
-	// Context
-	fmt.Println("\n--- Context ---")
-	contextStatus, err := contextClient.GetContextStatus(ctx, &emptypb.Empty{})
-	if err != nil {
-		log.Printf("GetContextStatus error: %v", err)
-	} else {
-		fmt.Printf("Context ready: %v, docs: %d, chunks: %d\n", contextStatus.Ready, contextStatus.DocumentCount, contextStatus.ChunkCount)
+func chooseModel(models []*pb.ModelInfo, preferred string) string {
+	if preferred != "" {
+		return preferred
 	}
-
-	contextSearch, err := contextClient.SearchContext(ctx, &pb.ContextSearchRequest{
-		Query:    "artificial intelligence",
-		ScopeUri: "viking://resources/",
-		TopK:     3,
-		Layer:    pb.ContextLayer_CONTEXT_LAYER_L2,
-		Rerank:   boolPtr(true),
-	})
-	if err != nil {
-		log.Printf("Context Search error: %v", err)
-	} else {
-		fmt.Printf("Context results: %d, time: %.2fms\n", len(contextSearch.Results), contextSearch.QueryTimeMs)
+	if len(models) == 0 {
+		return ""
 	}
-
-	// Training
-	fmt.Println("\n--- Training ---")
-	run, err := trainingClient.StartRun(ctx, &pb.TrainingRunRequest{
-		Name:        "demo-training",
-		ModelId:     "llama-7b",
-		DatasetPath: "/data/train.jsonl",
-		Config:      map[string]string{"epochs": "3"},
-	})
-	if err != nil {
-		log.Printf("StartRun error: %v", err)
-	} else {
-		fmt.Printf("Started training run: %s (ID: %s)\n", run.Name, run.Id)
-	}
-
-	runs, err := trainingClient.ListRuns(ctx, &emptypb.Empty{})
-	if err != nil {
-		log.Printf("ListRuns error: %v", err)
-	} else {
-		fmt.Printf("Training runs: %d\n", len(runs.Runs))
-	}
-
-	// MCP
-	fmt.Println("\n--- MCP ---")
-	connResp, err := mcpClient.Connect(ctx, &pb.MCPConnectionRequest{
-		ServerUrl: "http://localhost:3000",
-		Auth:      map[string]string{},
-	})
-	if err != nil {
-		log.Printf("MCP Connect error: %v", err)
-	} else {
-		fmt.Printf("MCP connected: %s (ID: %s)\n", connResp.ServerName, connResp.ConnectionId)
-	}
-
-	tools, err := mcpClient.ListTools(ctx, &pb.MCPConnectionRequest{
-		ServerUrl: "http://localhost:3000",
-	})
-	if err != nil {
-		log.Printf("ListTools error: %v", err)
-	} else {
-		fmt.Printf("Available tools: %d\n", len(tools.Tools))
-		for _, t := range tools.Tools {
-			fmt.Printf("  - %s: %s\n", t.Name, t.Description)
-		}
-	}
-
-	fmt.Println("\n=== Demo Complete ===")
+	return models[0].Id
 }
 
 func truncate(s string, maxLen int) string {

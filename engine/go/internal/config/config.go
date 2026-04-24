@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Daemon   DaemonConfig   `yaml:"daemon"`
+	Services ServicesConfig `yaml:"services"`
 	Storage  StorageConfig  `yaml:"storage"`
 	Runtime  RuntimeConfig  `yaml:"runtime"`
 	Context  ContextConfig  `yaml:"context"`
@@ -42,6 +43,7 @@ type RuntimeConfig struct {
 type DaemonConfig struct {
 	Host           string        `yaml:"host"`
 	Port           int           `yaml:"port"`
+	Required       bool          `yaml:"required"`
 	Command        string        `yaml:"command"`
 	Args           []string      `yaml:"args"`
 	StartupTimeout time.Duration `yaml:"startup_timeout"`
@@ -49,6 +51,11 @@ type DaemonConfig struct {
 	ReadyTimeout   time.Duration `yaml:"ready_timeout"`
 	LlamaCLI       string        `yaml:"llama_cli"`
 	TrainingCLI    string        `yaml:"training_cli"`
+}
+
+type ServicesConfig struct {
+	EnableTraining bool `yaml:"enable_training"`
+	EnableMCP      bool `yaml:"enable_mcp"`
 }
 
 type StorageConfig struct {
@@ -123,6 +130,7 @@ func DefaultConfig() *Config {
 		Daemon: DaemonConfig{
 			Host:           "127.0.0.1",
 			Port:           50061,
+			Required:       true,
 			Command:        defaultDaemonCommand(),
 			Args:           []string{},
 			StartupTimeout: 15 * time.Second,
@@ -130,6 +138,10 @@ func DefaultConfig() *Config {
 			ReadyTimeout:   10 * time.Second,
 			LlamaCLI:       "llama-cli",
 			TrainingCLI:    "llama-train",
+		},
+		Services: ServicesConfig{
+			EnableTraining: false,
+			EnableMCP:      false,
 		},
 		Storage: StorageConfig{
 			LanceDBURI:         filepath.Join(engineDir, "lancedb"),

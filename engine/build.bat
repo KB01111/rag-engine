@@ -7,10 +7,7 @@ set "GO_DIR=%ROOT%go"
 set "RUST_DIR=%ROOT%rust"
 set "PROTO_DIR=%ROOT%proto"
 set "CACHE_DIR=%ROOT%.cache"
-set "TOOLS_DIR=%ROOT%..\.tools"
-set "PROTOC_DIR=%TOOLS_DIR%\protoc-34.1-win64"
-set "PROTOC_ZIP=%TOOLS_DIR%\protoc-34.1-win64.zip"
-set "PROTOC_BOOTSTRAP_EXE=%TOOLS_DIR%\bin\protoc.exe"
+set "PROTOC_SCRIPT=%ROOT%scripts\ensure_protoc.ps1"
 set "BUNDLE_DIR=%ROOT%dist\windows-backend"
 set "BUNDLE_BIN=%BUNDLE_DIR%\bin"
 
@@ -29,14 +26,20 @@ if exist "%ProgramFiles%\Go\bin\go.exe" set "GOEXE=%ProgramFiles%\Go\bin\go.exe"
 set "CARGOEXE=cargo"
 if exist "%USERPROFILE%\.cargo\bin\cargo.exe" set "CARGOEXE=%USERPROFILE%\.cargo\bin\cargo.exe"
 
+REM Ensure protoc is available locally for both Go codegen and Rust builds.
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PROTOC_SCRIPT%"`) do set "PROTOC=%%i"
+if not exist "%PROTOC%" (
+    echo Failed to provision protoc
+    exit /b 1
+)
+
+set "PROTOCEXE=%PROTOC%"
+
 set "PROTOC_GEN_GO=protoc-gen-go"
 if exist "%USERPROFILE%\go\bin\protoc-gen-go.exe" set "PROTOC_GEN_GO=%USERPROFILE%\go\bin\protoc-gen-go.exe"
 
 set "PROTOC_GEN_GO_GRPC=protoc-gen-go-grpc"
 if exist "%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe" set "PROTOC_GEN_GO_GRPC=%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe"
-
-call :resolve_protoc
-if errorlevel 1 exit /b 1
 
 cd /d "%GO_DIR%"
 call "%GOEXE%" mod download
@@ -140,51 +143,6 @@ echo Build complete!
 echo Bundle: %BUNDLE_DIR%
 echo Run: %BUNDLE_BIN%\server.exe --config %BUNDLE_DIR%\config.example.yaml
 exit /b 0
-
-:resolve_protoc
-if defined PROTOC (
-    if exist "%PROTOC%" (
-        set "PROTOCEXE=%PROTOC%"
-        goto :eof
-    )
-    echo PROTOC points to a missing file: %PROTOC%
-    exit /b 1
-)
-
-if exist "%PROTOC_DIR%\bin\protoc.exe" (
-    set "PROTOCEXE=%PROTOC_DIR%\bin\protoc.exe"
-    goto :eof
-)
-if exist "%PROTOC_BOOTSTRAP_EXE%" (
-    set "PROTOCEXE=%PROTOC_BOOTSTRAP_EXE%"
-    goto :eof
-)
-
-if exist "%PROTOC_ZIP%" (
-    echo Bootstrapping protoc from %PROTOC_ZIP%...
-    powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%PROTOC_ZIP%' -DestinationPath '%TOOLS_DIR%' -Force"
-    if errorlevel 1 (
-        echo Failed to extract protoc archive
-        exit /b 1
-    )
-)
-
-if exist "%PROTOC_DIR%\bin\protoc.exe" (
-    set "PROTOCEXE=%PROTOC_DIR%\bin\protoc.exe"
-    goto :eof
-)
-if exist "%PROTOC_BOOTSTRAP_EXE%" (
-    set "PROTOCEXE=%PROTOC_BOOTSTRAP_EXE%"
-    goto :eof
-)
-
-for /f "delims=" %%i in ('where protoc 2^>nul') do (
-    set "PROTOCEXE=%%i"
-    goto :eof
-)
-
-echo Unable to find protoc. Expected %PROTOC_DIR%\bin\protoc.exe, %PROTOC_BOOTSTRAP_EXE%, or a system installation.
-exit /b 1
 
 :prepare_bundle
 if exist "%BUNDLE_DIR%" rmdir /s /q "%BUNDLE_DIR%"

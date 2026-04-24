@@ -3,6 +3,7 @@ engine/go/bin/
 engine/go/bin
 engine/dist/
 *.exe
+engine/.tools/
 .cache/
 engine/.cache/
 .tools/include/

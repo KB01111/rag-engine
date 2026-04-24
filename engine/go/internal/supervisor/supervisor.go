@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -84,28 +85,31 @@ func (s *Supervisor) Start() error {
 		return fmt.Errorf("failed to ensure directories: %w", err)
 	}
 
-	if s.config.Context.Enabled {
+	daemonLaunched := false
+	if s.config.Daemon.Command != "" {
+		if err := s.launchDaemonLocked(); err != nil {
+			if s.config.Daemon.Required || s.config.IsProduction() {
+				return fmt.Errorf("failed to launch required daemon: %w", err)
+			}
+			log.Error().Err(err).Msg("failed to launch optional daemon, falling back to local services")
+			s.initLocalServicesLocked()
+		} else {
+			daemonLaunched = true
+		}
+	} else {
+		if s.config.Daemon.Required || s.config.IsProduction() {
+			return fmt.Errorf("daemon is required but no command or binary was found")
+		}
+		s.initLocalServicesLocked()
+	}
+
+	if s.config.Context.Enabled && !daemonLaunched {
 		if err := s.Context.Start(s.ctx); err != nil {
 			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
 				log.Error().Err(stopErr).Msg("failed to stop context backend after startup error")
 			}
 			return fmt.Errorf("failed to start context backend: %w", err)
 		}
-	}
-
-	if s.config.Daemon.Command != "" {
-		if err := s.launchDaemonLocked(); err != nil {
-			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
-				log.Error().Err(stopErr).Msg("failed to stop context backend after daemon startup error")
-			}
-			if s.config.IsProduction() {
-				return fmt.Errorf("failed to launch daemon: %w", err)
-			}
-			s.initLocalServicesLocked()
-			log.Error().Err(err).Msg("daemon unavailable, continuing with local fallback")
-		}
-	} else {
-		s.initLocalServicesLocked()
 	}
 
 	s.running = true
@@ -220,7 +224,7 @@ func (s *Supervisor) Health() map[string]interface{} {
 		"degraded":       degraded,
 		"daemon": map[string]interface{}{
 			"configured": daemonConfigured,
-			"required":   s.config.IsProduction(),
+			"required":   s.config.Daemon.Required || s.config.IsProduction(),
 			"connected":  daemonConnected,
 			"addr":       daemonAddr,
 			"command":    daemonCommand,
@@ -283,8 +287,9 @@ func (s *Supervisor) launchDaemonLocked() error {
 	}
 	s.daemonClient = client
 	s.daemonCmd = cmd
+	s.Context.SetDaemonContextClient(client)
 	s.Runtime = s.wrapRuntimeService(client)
-	s.RAG = rag.NewManager(s.config, s.Context)
+	s.RAG = client
 	s.Training = client
 	s.MCP = client
 	s.mode = "daemon"
@@ -320,7 +325,7 @@ func (s *Supervisor) waitForDaemonClient(addr string) (*daemon.Client, error) {
 }
 
 func (s *Supervisor) daemonEnv() []string {
-	return []string{
+	env := []string{
 		fmt.Sprintf("AI_ENGINE_DAEMON_ADDR=%s", s.config.Daemon.Addr()),
 		fmt.Sprintf("AI_ENGINE_LANCEDB_URI=%s", s.config.Storage.LanceDBURI),
 		fmt.Sprintf("AI_ENGINE_MODELS_PATH=%s", s.config.Runtime.ModelsPath),
@@ -328,6 +333,19 @@ func (s *Supervisor) daemonEnv() []string {
 		fmt.Sprintf("AI_ENGINE_LLAMA_CLI=%s", s.config.Daemon.LlamaCLI),
 		fmt.Sprintf("AI_ENGINE_TRAINING_CLI=%s", s.config.Daemon.TrainingCLI),
 	}
+	if s.config.Context.Enabled {
+		env = append(env, fmt.Sprintf("CONTEXT_DATA_DIR=%s", s.config.Context.DataDir))
+		if len(s.config.Context.ManagedRoots) > 0 {
+			env = append(env, fmt.Sprintf("CONTEXT_ROOTS=%s", strings.Join(s.config.Context.ManagedRoots, ";")))
+		}
+		if s.config.Context.OpenViking.URL != "" {
+			env = append(env, fmt.Sprintf("CONTEXT_OPENVIKING_URL=%s", s.config.Context.OpenViking.URL))
+		}
+		if s.config.Context.OpenViking.APIKey != "" {
+			env = append(env, fmt.Sprintf("CONTEXT_OPENVIKING_API_KEY=%s", s.config.Context.OpenViking.APIKey))
+		}
+	}
+	return env
 }
 
 func (s *Supervisor) wrapRuntimeService(service runtime.Service) runtime.Service {

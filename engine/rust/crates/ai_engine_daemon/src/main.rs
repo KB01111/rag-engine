@@ -120,6 +120,8 @@ async fn main() -> Result<()> {
         std::env::var("AI_ENGINE_LANCEDB_URI").unwrap_or_else(|_| ".ai-engine/lancedb".to_string());
     let models_path =
         std::env::var("AI_ENGINE_MODELS_PATH").unwrap_or_else(|_| ".ai-engine/models".to_string());
+    let llama_cli =
+        std::env::var("AI_ENGINE_LLAMA_CLI").unwrap_or_else(|_| "llama-cli".to_string());
     let training_dir = std::env::var("AI_ENGINE_TRAINING_DIR")
         .unwrap_or_else(|_| ".ai-engine/training".to_string());
     let backend = "llama.cpp".to_string();
@@ -133,7 +135,7 @@ async fn main() -> Result<()> {
     let service = EngineService {
         state: AppState {
             store: store.clone(),
-            runtime: RuntimeEngine::new(store.clone(), models_path, backend.clone()),
+            runtime: RuntimeEngine::new(store.clone(), models_path, backend.clone(), llama_cli),
             training: TrainingEngine::new(store.clone(), training_dir, backend),
             embedding: embedding_engine,
             embedding_provider_name,
@@ -183,6 +185,7 @@ impl Runtime for EngineService {
             .list_models()
             .await
             .map_err(internal_status)?;
+        let resources = self.state.runtime.system_resources();
         let loaded = models
             .into_iter()
             .filter(|model| model.status == "loaded")
@@ -193,9 +196,9 @@ impl Runtime for EngineService {
             version: "1.0.0".to_string(),
             loaded_models: loaded,
             resources: Some(SystemResources {
-                cpu_percent: 0.0,
-                memory_used_bytes: 0,
-                memory_total_bytes: 0,
+                cpu_percent: resources.cpu_percent as f64,
+                memory_used_bytes: resources.memory_used_bytes,
+                memory_total_bytes: resources.memory_total_bytes,
             }),
             healthy: true,
         }))
@@ -223,7 +226,7 @@ impl Runtime for EngineService {
             .runtime
             .load_model(&request.into_inner().model_id)
             .await
-            .map_err(not_found_status)?;
+            .map_err(load_model_status)?;
         Ok(Response::new(model_info(info)))
     }
 
@@ -235,7 +238,7 @@ impl Runtime for EngineService {
             .runtime
             .unload_model(&request.into_inner().model_id)
             .await
-            .map_err(not_found_status)?;
+            .map_err(load_model_status)?;
         Ok(Response::new(()))
     }
 
@@ -248,37 +251,18 @@ impl Runtime for EngineService {
             .message()
             .await?
             .ok_or_else(|| Status::invalid_argument("missing inference request"))?;
-
-        if first.model_id.is_empty() {
-            return Err(Status::invalid_argument(
-                "model_id is required for daemon-backed inference",
-            ));
+        if first.model_id.trim().is_empty() {
+            return Err(Status::invalid_argument("model_id is required"));
         }
 
         let chunks = self
             .state
             .runtime
-            .stream_inference(&first.model_id, &first.prompt)
+            .stream_inference(&first.model_id, &first.prompt, &first.parameters)
             .await
-            .map_err(not_found_status)?;
-        let (sender, receiver) = mpsc::channel(8);
-        tokio::spawn(async move {
-            for chunk in chunks {
-                if sender
-                    .send(Ok(InferenceResponse {
-                        token: chunk.token,
-                        complete: chunk.complete,
-                        metrics: chunk.metrics,
-                    }))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        });
+            .map_err(inference_status)?;
 
-        Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
+        Ok(Response::new(Box::pin(bridge_inference_chunks(chunks))))
     }
 }
 
@@ -289,6 +273,9 @@ impl Rag for EngineService {
         request: Request<UpsertRequest>,
     ) -> Result<Response<UpsertResponse>, Status> {
         let request = request.into_inner();
+        if request.content.trim().is_empty() {
+            return Err(Status::invalid_argument("content is required"));
+        }
         let document_id = if request.document_id.is_empty() {
             Uuid::new_v4().to_string()
         } else {
@@ -375,6 +362,9 @@ impl Rag for EngineService {
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
         let request = request.into_inner();
+        if request.query.trim().is_empty() {
+            return Err(Status::invalid_argument("query is required"));
+        }
         let started = Instant::now();
         let query_embedding = self
             .state
@@ -1196,6 +1186,31 @@ fn internal_status(error: impl std::fmt::Display) -> Status {
     Status::internal(error.to_string())
 }
 
+fn load_model_status(error: impl std::fmt::Display) -> Status {
+    let message = error.to_string();
+    if message.contains("model not found") {
+        Status::not_found(message)
+    } else if message.contains("backend command not found") {
+        Status::failed_precondition(message)
+    } else {
+        Status::internal(message)
+    }
+}
+
+fn inference_status(error: impl std::fmt::Display) -> Status {
+    let message = error.to_string();
+    if message.contains("prompt is required") {
+        Status::invalid_argument(message)
+    } else if message.contains("model not found") {
+        Status::not_found(message)
+    } else if message.contains("model not loaded") || message.contains("backend command not found")
+    {
+        Status::failed_precondition(message)
+    } else {
+        Status::internal(message)
+    }
+}
+
 fn not_found_status(error: impl std::fmt::Display) -> Status {
     Status::not_found(error.to_string())
 }
@@ -1215,6 +1230,165 @@ fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use tempfile::tempdir;
+    use tokio_stream::StreamExt;
+    use tonic::Code;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn load_model_returns_not_found_for_unknown_model() {
+        let service = test_service();
+        let err = service
+            .load_model(Request::new(LoadModelRequest {
+                model_id: "missing.gguf".to_string(),
+                options: HashMap::new(),
+            }))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code(), Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn upsert_document_rejects_empty_content() {
+        let service = test_service();
+        let err = service
+            .upsert_document(Request::new(UpsertRequest {
+                document_id: String::new(),
+                content: String::new(),
+                metadata: HashMap::new(),
+            }))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn search_rejects_empty_query() {
+        let service = test_service();
+        let err = service
+            .search(Request::new(SearchRequest {
+                query: String::new(),
+                top_k: 5,
+                filters: HashMap::new(),
+            }))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn stream_inference_emits_completion_when_backend_returns_no_tokens() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(sender);
+
+        let mut stream = bridge_inference_chunks(receiver);
+        let response = stream.next().await.unwrap().unwrap();
+
+        assert!(response.complete);
+        assert!(response.token.is_empty());
+        assert!(stream.next().await.is_none());
+    }
+
+    fn test_service() -> EngineService {
+        let tempdir = tempdir().unwrap();
+        let models_dir = tempdir.path().join("models");
+        let training_dir = tempdir.path().join("training");
+        let db_dir = tempdir.path().join("lancedb");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        std::fs::create_dir_all(&training_dir).unwrap();
+        std::fs::create_dir_all(&db_dir).unwrap();
+
+        let store = EngineStore::new(db_dir.to_string_lossy().to_string());
+        let embedding_engine = Arc::new(create_default_engine());
+
+        EngineService {
+            state: AppState {
+                store: store.clone(),
+                runtime: RuntimeEngine::new(
+                    store.clone(),
+                    models_dir,
+                    "llama.cpp",
+                    create_fake_backend(tempdir.path())
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                training: TrainingEngine::new(store.clone(), training_dir, "llama.cpp"),
+                embedding_provider_name: embedding_engine.name().to_string(),
+                embedding: embedding_engine,
+                chunking: ChunkingConfig::default(),
+            },
+        }
+    }
+
+    fn create_fake_backend(root: &Path) -> PathBuf {
+        if cfg!(windows) {
+            let path = root.join("fake-llama.cmd");
+            fs::write(&path, "@echo off\r\necho backend:%~4\r\n").unwrap();
+            path
+        } else {
+            let path = root.join("fake-llama.sh");
+            fs::write(&path, "#!/bin/sh\nprintf 'backend:%s\\n' \"$4\"\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mut permissions = fs::metadata(&path).unwrap().permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(&path, permissions).unwrap();
+            }
+            path
+        }
+    }
+}
+
+fn bridge_inference_chunks(
+    mut chunks: mpsc::Receiver<Result<String>>,
+) -> ReceiverStream<Result<InferenceResponse, Status>> {
+    let (sender, receiver) = mpsc::channel(8);
+    tokio::spawn(async move {
+        while let Some(chunk) = chunks.recv().await {
+            match chunk {
+                Ok(token) => {
+                    if sender
+                        .send(Ok(InferenceResponse {
+                            token,
+                            complete: false,
+                            metrics: HashMap::new(),
+                        }))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(internal_status(error))).await;
+                    return;
+                }
+            }
+        }
+
+        let _ = sender
+            .send(Ok(InferenceResponse {
+                token: String::new(),
+                complete: true,
+                metrics: HashMap::new(),
+            }))
+            .await;
+    });
+
+    ReceiverStream::new(receiver)
 }
 
 /// Opens and returns a `ContextEngine` configured from environment variables.
@@ -1937,7 +2111,7 @@ impl ContextRpc for ContextGrpcService {
 }
 
 #[cfg(test)]
-mod tests {
+mod grpc_service_tests {
     use super::*;
 
     // -----------------------------------------------------------------------
