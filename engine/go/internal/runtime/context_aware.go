@@ -35,6 +35,7 @@ type ContextAwareService struct {
 }
 
 var preferOverPattern = regexp.MustCompile(`(?i)\bprefer(?:s|red)?\s+([a-z0-9._ -]+?)\s+over\s+([a-z0-9._ -]+)`)
+var affirmativePreferPattern = regexp.MustCompile(`(?i)(?:^|[^a-z])(?:prefer(?:s|red)?|like|use|choose)\s+([a-z0-9._ -]+?)(?:\s|$|[.,!?;:])`)
 
 // NewContextAwareService creates a ContextAwareService that wraps the provided inner Service
 // and uses the given ContextOrchestrationBackend to optionally augment inference requests.
@@ -341,15 +342,25 @@ func (s *ContextAwareService) learnFromTurn(ctx context.Context, sessionID, prom
 
 	var fact *contextsvc.UpsertResourceRequest
 	combined := strings.ToLower(strings.TrimSpace(prompt + "\n" + assistantReply))
+	userPrompt := strings.ToLower(strings.TrimSpace(prompt))
+
 	if matches := preferOverPattern.FindStringSubmatch(combined); len(matches) == 3 {
 		preferred := normalizeFactID(matches[1])
 		if preferred != "" {
 			fact = buildPreferenceFact(sessionID, preferred)
 		}
 	}
-	if fact == nil && strings.Contains(combined, "dragonfly") {
-		if strings.Contains(combined, "prefer") || strings.Contains(combined, "working memory") {
-			fact = buildPreferenceFact(sessionID, "dragonfly")
+
+	// Only check user prompt for affirmative preferences without negation
+	if fact == nil {
+		negationPattern := regexp.MustCompile(`(?i)\b(?:don't|do not|never|not|no|avoid)\b`)
+		if !negationPattern.MatchString(userPrompt) {
+			if matches := affirmativePreferPattern.FindStringSubmatch(userPrompt); len(matches) >= 2 {
+				preferred := normalizeFactID(matches[1])
+				if preferred != "" && len(preferred) > 2 {
+					fact = buildPreferenceFact(sessionID, preferred)
+				}
+			}
 		}
 	}
 

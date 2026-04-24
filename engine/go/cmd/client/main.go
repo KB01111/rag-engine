@@ -173,3 +173,7 @@ func truncate(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
+
+func boolPtr(b bool) *bool {
+	return &b
+}

@@ -403,12 +403,25 @@ func (s *Server) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.Cal
 }
 
 func (s *Server) RegisterHTTP(router *gin.Engine) {
-	router.Use(gin.Recovery())
+	// Recovery middleware must be first to catch panics in requestIDMiddleware and corsMiddleware
+	router.Use(gin.Recovery(), s.requestIDMiddleware(), s.corsMiddleware())
 	router.GET("/livez", s.handleLiveness)
 	router.GET("/readyz", s.handleReadiness)
 	router.GET("/health", s.handleHealth)
 	router.GET("/api/v1/status", s.handleStatus)
+	router.GET("/api/v1/capabilities", s.handleCapabilities)
+	router.GET("/api/v1/training/status", s.handleTrainingStatus)
+	router.GET("/api/v1/mcp/status", s.handleMCPStatus)
+	router.GET("/api/v1/runtime/status", s.handleRuntimeStatus)
 	router.GET("/api/v1/runtime/models", s.handleListModels)
+	router.POST("/api/v1/runtime/models/load", s.handleLoadRuntimeModel)
+	router.POST("/api/v1/runtime/models/unload", s.handleUnloadRuntimeModel)
+	router.POST("/api/v1/runtime/inference/stream", s.handleStreamRuntimeInference)
+	router.GET("/api/v1/rag/status", s.handleRAGStatus)
+	router.GET("/api/v1/rag/documents", s.handleListRAGDocuments)
+	router.POST("/api/v1/rag/documents", s.handleUpsertRAGDocument)
+	router.DELETE("/api/v1/rag/documents/:id", s.handleDeleteRAGDocument)
+	router.POST("/api/v1/rag/search", s.handleSearchRAG)
 	router.GET("/api/v1/context/status", s.handleContextStatus)
 	router.GET("/api/v1/context/resources", s.handleListContextResources)
 	router.POST("/api/v1/context/resources", s.handleUpsertContextResource)
@@ -507,8 +520,8 @@ func (s *Server) handleListModels(c *gin.Context) {
 
 	models, err := s.supervisor.Runtime.ListModels(ctx, &emptypb.Empty{})
 	if err != nil {
-		s.log.Error().Err(err).Msg("Failed to list models")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		s.log.Error().Err(err).Str("request_id", requestID(c)).Msg("Failed to list models")
+		backendError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{

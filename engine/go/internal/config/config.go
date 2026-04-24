@@ -32,6 +32,13 @@ type ServerConfig struct {
 		Host string `yaml:"host"`
 		Port int    `yaml:"port"`
 	} `yaml:"grpc"`
+	CORS CORSConfig `yaml:"cors"`
+}
+
+type CORSConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	AllowedOrigins []string `yaml:"allowed_origins"`
+	AllowedHeaders []string `yaml:"allowed_headers"`
 }
 
 type RuntimeConfig struct {
@@ -125,6 +132,18 @@ func DefaultConfig() *Config {
 			}{
 				Host: "127.0.0.1",
 				Port: 50051,
+			},
+			CORS: CORSConfig{
+				Enabled: true,
+				AllowedOrigins: []string{
+					"http://localhost:*",
+					"http://127.0.0.1:*",
+					"app://ai-engine",
+				},
+				AllowedHeaders: []string{
+					"Content-Type",
+					"Authorization",
+				},
 			},
 		},
 		Daemon: DaemonConfig{
