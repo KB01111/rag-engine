@@ -6,7 +6,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var builtinMCPTools = []string{"mcp.describe_connection", "mcp.echo"}
+func getBuiltinMCPTools() []string {
+	return append([]string(nil), "mcp.describe_connection", "mcp.echo")
+}
 
 func (s *Server) handleCapabilities(c *gin.Context) {
 	health := s.supervisor.Health()
@@ -37,7 +39,7 @@ func (s *Server) handleCapabilities(c *gin.Context) {
 			"mcp": gin.H{
 				"staged":        true,
 				"connections":   nestedInt(health, "mcp", "connections"),
-				"builtin_tools": builtinMCPTools,
+				"builtin_tools": getBuiltinMCPTools(),
 			},
 		},
 	})
@@ -57,7 +59,7 @@ func (s *Server) handleMCPStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"staged":        true,
 		"connections":   nestedInt(health, "mcp", "connections"),
-		"builtin_tools": builtinMCPTools,
+		"builtin_tools": getBuiltinMCPTools(),
 		"message":       "MCP transports are staged; only built-in plumbing tools are executable",
 	})
 }
@@ -66,10 +68,10 @@ func serviceReady(health map[string]interface{}) bool {
 	if running, ok := health["running"].(bool); ok && !running {
 		return false
 	}
-	if status, ok := health["status"].(string); ok && status == "stopped" {
-		return false
+	if status, ok := health["status"].(string); ok {
+		return status == "ok"
 	}
-	return true
+	return false
 }
 
 func nestedInt(values map[string]interface{}, section, key string) int {

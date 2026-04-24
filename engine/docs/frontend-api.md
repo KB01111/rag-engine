@@ -57,6 +57,16 @@ SSE is the MVP streaming transport because chat inference is server-to-client
 token flow. If the frontend later needs bidirectional realtime controls,
 `github.com/coder/websocket` is the preferred websocket package to evaluate.
 
+**Note on reconnect semantics:** Browser and Electron `EventSource` clients
+auto-reconnect by default when a connection is lost. The server **does not**
+support `Last-Event-ID` replay, so reconnects will **not** resume an in-flight
+inference. Clients must re-issue the `POST` request to
+`/api/v1/runtime/inference/stream` if a reconnect is required, which may
+accidentally resend requests. To reduce spurious reconnects, consider periodic
+server-side keep-alive (e.g., comment or ping events) or shorter server
+timeouts to cleanly close idle streams. See the `event: token`, `event:
+complete`, and `event: error` examples above for the expected event shapes.
+
 ## RAG
 
 | Method | Path | Purpose |

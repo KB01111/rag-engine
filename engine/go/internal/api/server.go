@@ -403,10 +403,8 @@ func (s *Server) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.Cal
 }
 
 func (s *Server) RegisterHTTP(router *gin.Engine) {
-	router.Use(s.requestIDMiddleware(), s.corsMiddleware(), gin.Recovery())
-	router.OPTIONS("/api/v1/*path", func(c *gin.Context) {
-		c.Status(http.StatusNoContent)
-	})
+	// Recovery middleware must be first to catch panics in requestIDMiddleware and corsMiddleware
+	router.Use(gin.Recovery(), s.requestIDMiddleware(), s.corsMiddleware())
 	router.GET("/livez", s.handleLiveness)
 	router.GET("/readyz", s.handleReadiness)
 	router.GET("/health", s.handleHealth)

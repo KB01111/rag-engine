@@ -30,9 +30,10 @@ func TestDefaultConfigSetsLanceDBStorage(t *testing.T) {
 }
 
 func TestLoadParsesServerCORSConfig(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(`
+	t.Run("enabled true", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(`
 server:
   cors:
     enabled: true
@@ -43,23 +44,51 @@ server:
       - "Content-Type"
       - "Authorization"
 `), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+			t.Fatalf("write config: %v", err)
+		}
 
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("load config: %v", err)
+		}
 
-	if !cfg.Server.CORS.Enabled {
-		t.Fatal("expected CORS to be enabled")
-	}
-	if got, want := cfg.Server.CORS.AllowedOrigins[1], "app://ai-engine"; got != want {
-		t.Fatalf("expected origin %q, got %q", want, got)
-	}
-	if got, want := cfg.Server.CORS.AllowedHeaders[0], "Content-Type"; got != want {
-		t.Fatalf("expected header %q, got %q", want, got)
-	}
+		if !cfg.Server.CORS.Enabled {
+			t.Fatal("expected CORS to be enabled")
+		}
+		if len(cfg.Server.CORS.AllowedOrigins) != 2 {
+			t.Fatalf("expected 2 allowed origins, got %d", len(cfg.Server.CORS.AllowedOrigins))
+		}
+		if got, want := cfg.Server.CORS.AllowedOrigins[1], "app://ai-engine"; got != want {
+			t.Fatalf("expected origin %q, got %q", want, got)
+		}
+		if len(cfg.Server.CORS.AllowedHeaders) < 1 {
+			t.Fatalf("expected at least 1 allowed header, got %d", len(cfg.Server.CORS.AllowedHeaders))
+		}
+		if got, want := cfg.Server.CORS.AllowedHeaders[0], "Content-Type"; got != want {
+			t.Fatalf("expected header %q, got %q", want, got)
+		}
+	})
+
+	t.Run("enabled false", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(`
+server:
+  cors:
+    enabled: false
+`), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("load config: %v", err)
+		}
+
+		if cfg.Server.CORS.Enabled {
+			t.Fatal("expected CORS to be disabled")
+		}
+	})
 }
 
 func TestLoadMapsLegacyRagStoragePathToLanceDBURI(t *testing.T) {

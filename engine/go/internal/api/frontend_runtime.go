@@ -12,6 +12,8 @@ import (
 	pb "github.com/ai-engine/proto/go"
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -175,21 +177,35 @@ func (s *httpInferenceStream) Send(resp *pb.InferenceResponse) error {
 	return s.writeEvent(event, resp)
 }
 
-func (s *httpInferenceStream) SetHeader(metadata.MD) error {
+func (s *httpInferenceStream) SetHeader(md metadata.MD) error {
+	// Metadata operations are no-ops for HTTP/SSE streams
 	return nil
 }
 
-func (s *httpInferenceStream) SendHeader(metadata.MD) error {
+func (s *httpInferenceStream) SendHeader(md metadata.MD) error {
+	// Metadata operations are no-ops for HTTP/SSE streams
 	return nil
 }
 
-func (s *httpInferenceStream) SetTrailer(metadata.MD) {}
+func (s *httpInferenceStream) SetTrailer(md metadata.MD) {
+	// Metadata operations are no-ops for HTTP/SSE streams
+}
 
-func (s *httpInferenceStream) SendMsg(any) error {
+func (s *httpInferenceStream) SendMsg(m any) error {
+	if resp, ok := m.(*pb.InferenceResponse); ok {
+		return s.Send(resp)
+	}
 	return nil
 }
 
-func (s *httpInferenceStream) RecvMsg(any) error {
+func (s *httpInferenceStream) RecvMsg(m any) error {
+	resp, err := s.Recv()
+	if err != nil {
+		return err
+	}
+	if req, ok := m.(*pb.InferenceRequest); ok {
+		proto.Merge(req, resp)
+	}
 	return nil
 }
 
@@ -212,9 +228,21 @@ func (s *httpInferenceStream) writeEvent(event string, payload any) error {
 		s.started = true
 	}
 
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return err
+	var raw []byte
+	var err error
+	if protoMsg, ok := payload.(proto.Message); ok {
+		raw, err = protojson.MarshalOptions{
+			Multiline:     false,
+			UseProtoNames: false,
+		}.Marshal(protoMsg)
+		if err != nil {
+			return err
+		}
+	} else {
+		raw, err = json.Marshal(payload)
+		if err != nil {
+			return err
+		}
 	}
 	if _, err := fmt.Fprintf(s.writer, "event: %s\ndata: %s\n\n", event, raw); err != nil {
 		return err

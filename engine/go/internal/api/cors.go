@@ -1,13 +1,12 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 const requestIDHeader = "X-Request-Id"
@@ -22,7 +21,7 @@ func (s *Server) requestIDMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := strings.TrimSpace(c.GetHeader(requestIDHeader))
 		if requestID == "" {
-			requestID = fmt.Sprintf("%d", time.Now().UnixNano())
+			requestID = uuid.New().String()
 		}
 		c.Set("request_id", requestID)
 		c.Header(requestIDHeader, requestID)
@@ -56,7 +55,7 @@ func (s *Server) corsMiddleware() gin.HandlerFunc {
 
 		c.Header("Access-Control-Allow-Origin", origin)
 		c.Header("Access-Control-Allow-Headers", allowedHeaders)
-		c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Vary", "Origin")
 
@@ -84,6 +83,14 @@ func originAllowed(origin string, allowed []string) bool {
 	return false
 }
 
+func parseAndValidateURL(rawURL string) (*url.URL, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, false
+	}
+	return parsed, true
+}
+
 func originMatchesPattern(origin, pattern string) bool {
 	origin = strings.TrimSpace(origin)
 	pattern = strings.TrimSpace(pattern)
@@ -98,12 +105,12 @@ func originMatchesPattern(origin, pattern string) bool {
 	}
 
 	trimmed := strings.TrimSuffix(pattern, ":*")
-	allowedURL, err := url.Parse(trimmed)
-	if err != nil || allowedURL.Scheme == "" || allowedURL.Host == "" {
+	allowedURL, ok := parseAndValidateURL(trimmed)
+	if !ok {
 		return false
 	}
-	originURL, err := url.Parse(origin)
-	if err != nil || originURL.Scheme == "" || originURL.Host == "" {
+	originURL, ok := parseAndValidateURL(origin)
+	if !ok {
 		return false
 	}
 	return originURL.Scheme == allowedURL.Scheme && originURL.Hostname() == allowedURL.Hostname()
