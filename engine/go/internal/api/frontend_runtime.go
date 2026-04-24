@@ -140,7 +140,7 @@ func (s *Server) handleStreamRuntimeInference(c *gin.Context) {
 
 	s.log.Warn().Err(err).Str("request_id", requestID(c)).Str("model_id", req.ModelID).Bool("stream_started", stream.started).Msg("stream inference failed")
 	if stream.started {
-		_ = stream.sendError(apiErrorBackendUnavailable, err.Error())
+		_ = stream.sendError(apiErrorBackendUnavailable, "inference stream error")
 		return
 	}
 	backendError(c, err)
