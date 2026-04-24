@@ -777,7 +777,7 @@ func statusFromProto(status *pb.ContextStatus) *StatusResponse {
 // listResourcesFromProto converts a protobuf ContextResourceList into a ListResourcesResponse.
 // If resp is nil, it returns an empty ListResourcesResponse. Each proto resource is mapped to a
 // listResourcesFromProto converts a protobuf ContextResourceList into a ListResourcesResponse.
-// 
+//
 // If the input is nil, an empty ListResourcesResponse is returned. Each protobuf resource is
 // mapped to a Resource with URI, Title, Layer (cast from the proto enum), and Metadata.
 func listResourcesFromProto(resp *pb.ContextResourceList) *ListResourcesResponse {

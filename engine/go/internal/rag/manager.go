@@ -49,8 +49,8 @@ func (m *Manager) UpsertDocument(ctx context.Context, req *pb.UpsertRequest) (*p
 	metadata := ragMetadata(req.Metadata, req.DocumentId)
 	title := req.DocumentId
 	if maybeTitle, ok := metadata["title"]; ok && strings.TrimSpace(maybeTitle) != "" {
-			title = maybeTitle
-		}
+		title = maybeTitle
+	}
 
 	resp, err := m.backend.UpsertResource(ctx, contextsvc.UpsertResourceRequest{
 		URI:      documentURI(req.DocumentId),
