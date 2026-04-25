@@ -5,6 +5,7 @@ go 1.25.3
 require (
 	github.com/ai-engine/proto/go v0.0.0
 	github.com/gin-gonic/gin v1.12.0
+	github.com/google/uuid v1.6.0
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sync v0.19.0

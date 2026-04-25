@@ -20,4 +20,4 @@ mistralrs-cuda-flash-attn = ["mistralrs-cuda", "mistralrs/flash-attn"]
 mistralrs-mkl = ["mistralrs-backend", "mistralrs/mkl"]
 
 [dev-dependencies]
-tempfile = "3.0"
+tempfile = "3"

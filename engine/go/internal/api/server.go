@@ -15,8 +15,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -338,46 +340,88 @@ func (s *Server) GetSession(ctx context.Context, req *pb.ContextSessionGetReques
 }
 
 func (s *Server) StartRun(ctx context.Context, req *pb.TrainingRunRequest) (*pb.TrainingRun, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.StartRun(ctx, req)
 }
 
 func (s *Server) CancelRun(ctx context.Context, req *pb.CancelRequest) (*emptypb.Empty, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.CancelRun(ctx, req)
 }
 
 func (s *Server) ListRuns(ctx context.Context, _ *emptypb.Empty) (*pb.TrainingRunList, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.ListRuns(ctx, &emptypb.Empty{})
 }
 
 func (s *Server) ListArtifacts(ctx context.Context, req *pb.ArtifactsRequest) (*pb.ArtifactList, error) {
+	if !s.config.Services.EnableTraining {
+		return nil, status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.ListArtifacts(ctx, req)
 }
 
 func (s *Server) StreamLogs(req *pb.LogsRequest, stream pb.Training_StreamLogsServer) error {
+	if !s.config.Services.EnableTraining {
+		return status.Error(codes.Unimplemented, "training service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.Training.StreamLogs(req, stream)
 }
 
 func (s *Server) Connect(ctx context.Context, req *pb.MCPConnectionRequest) (*pb.MCPConnection, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.Connect(ctx, req)
 }
 
 func (s *Server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*emptypb.Empty, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.Disconnect(ctx, req)
 }
 
 func (s *Server) ListTools(ctx context.Context, req *pb.MCPConnectionRequest) (*pb.ToolList, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.ListTools(ctx, req)
 }
 
 func (s *Server) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.CallToolResponse, error) {
+	if !s.config.Services.EnableMCP {
+		return nil, status.Error(codes.Unimplemented, "mcp service is disabled for the WinUI v1 surface")
+	}
 	return s.supervisor.MCP.CallTool(ctx, req)
 }
 
 func (s *Server) RegisterHTTP(router *gin.Engine) {
-	router.Use(gin.Recovery())
+	// Recovery middleware must be first to catch panics in requestIDMiddleware and corsMiddleware
+	router.Use(gin.Recovery(), s.requestIDMiddleware(), s.corsMiddleware())
+	router.GET("/livez", s.handleLiveness)
+	router.GET("/readyz", s.handleReadiness)
 	router.GET("/health", s.handleHealth)
 	router.GET("/api/v1/status", s.handleStatus)
+	router.GET("/api/v1/capabilities", s.handleCapabilities)
+	router.GET("/api/v1/training/status", s.handleTrainingStatus)
+	router.GET("/api/v1/mcp/status", s.handleMCPStatus)
+	router.GET("/api/v1/runtime/status", s.handleRuntimeStatus)
 	router.GET("/api/v1/runtime/models", s.handleListModels)
+	router.POST("/api/v1/runtime/models/load", s.handleLoadRuntimeModel)
+	router.POST("/api/v1/runtime/models/unload", s.handleUnloadRuntimeModel)
+	router.POST("/api/v1/runtime/inference/stream", s.handleStreamRuntimeInference)
+	router.GET("/api/v1/rag/status", s.handleRAGStatus)
+	router.GET("/api/v1/rag/documents", s.handleListRAGDocuments)
+	router.POST("/api/v1/rag/documents", s.handleUpsertRAGDocument)
+	router.DELETE("/api/v1/rag/documents/:id", s.handleDeleteRAGDocument)
+	router.POST("/api/v1/rag/search", s.handleSearchRAG)
 	router.GET("/api/v1/context/status", s.handleContextStatus)
 	router.GET("/api/v1/context/resources", s.handleListContextResources)
 	router.POST("/api/v1/context/resources", s.handleUpsertContextResource)
@@ -393,8 +437,36 @@ func (s *Server) RegisterHTTP(router *gin.Engine) {
 	router.GET("/api/v1/context/sessions/:id", s.handleGetContextSession)
 }
 
+// handleLiveness returns 200 OK as long as the HTTP server process is alive.
+// Does not check IsRunning() - that's a readiness concern, not liveness.
+func (s *Server) handleLiveness(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"alive": true,
+	})
+}
+
+// handleReadiness checks if the supervisor is running and ready to serve requests.
+// Returns 503 if not ready (e.g., during graceful shutdown when IsRunning() is false).
+func (s *Server) handleReadiness(c *gin.Context) {
+	if !s.supervisor.IsRunning() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"ready":  false,
+			"status": "not_running",
+		})
+		return
+	}
+	response, statusCode := s.healthResponse(c.Request.Context())
+	c.JSON(statusCode, response)
+}
+
+// handleHealth provides detailed health information including context backend status.
 func (s *Server) handleHealth(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	response, statusCode := s.healthResponse(c.Request.Context())
+	c.JSON(statusCode, response)
+}
+
+func (s *Server) healthResponse(reqCtx context.Context) (gin.H, int) {
+	ctx, cancel := context.WithTimeout(reqCtx, 3*time.Second)
 	defer cancel()
 
 	ready := true
@@ -410,12 +482,31 @@ func (s *Server) handleHealth(c *gin.Context) {
 		}
 	}
 
+	supervisorHealth := s.supervisor.Health()
+	if supervisorStatus, ok := supervisorHealth["status"].(string); ok && supervisorStatus != "" && supervisorStatus != "ok" {
+		status = supervisorStatus
+	}
+	if degraded, ok := supervisorHealth["degraded"].(bool); ok && degraded {
+		status = "degraded"
+	}
+	if running, ok := supervisorHealth["running"].(bool); ok && !running {
+		ready = false
+	}
+	if status != "ok" {
+		ready = false
+	}
+
 	statusCode := http.StatusOK
 	if !ready || status == "degraded" {
 		statusCode = http.StatusServiceUnavailable
 	}
 
-	c.JSON(statusCode, gin.H{"status": status, "ready": ready})
+	return gin.H{
+		"status":         status,
+		"ready":          ready,
+		"execution_mode": s.supervisor.ExecutionMode(),
+		"supervisor":     supervisorHealth,
+	}, statusCode
 }
 
 func (s *Server) handleStatus(c *gin.Context) {
@@ -429,11 +520,16 @@ func (s *Server) handleListModels(c *gin.Context) {
 
 	models, err := s.supervisor.Runtime.ListModels(ctx, &emptypb.Empty{})
 	if err != nil {
-		s.log.Error().Err(err).Msg("Failed to list models")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		s.log.Error().Err(err).Str("request_id", requestID(c)).Msg("Failed to list models")
+		backendError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"models": len(models.Models)})
+	c.JSON(http.StatusOK, gin.H{
+		"models":         models.Models,
+		"execution_mode": s.supervisor.ExecutionMode(),
+		"loaded_models":  len(models.Models),
+		"provider_count": countModelProviders(models.Models),
+	})
 }
 
 func (s *Server) handleContextStatus(c *gin.Context) {
@@ -742,4 +838,21 @@ func (s *Server) logUnaryInterceptor(ctx context.Context, req interface{}, info 
 	resp, err := handler(ctx, req)
 	s.log.Debug().Str("method", info.FullMethod).Dur("duration", time.Since(start)).Err(err).Msg("unary")
 	return resp, err
+}
+
+func countModelProviders(models []*pb.ModelInfo) int {
+	providers := make(map[string]struct{})
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if provider := model.GetMetadata()["provider"]; provider != "" {
+			providers[provider] = struct{}{}
+			continue
+		}
+		if source := model.GetMetadata()["source"]; source != "" {
+			providers[source] = struct{}{}
+		}
+	}
+	return len(providers)
 }

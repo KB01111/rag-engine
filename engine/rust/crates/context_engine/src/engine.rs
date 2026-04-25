@@ -22,6 +22,8 @@ use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
 use crate::bridge::{BridgeError, OpenVikingBridgeClient, OpenVikingBridgeConfig};
+use crate::graph::{GraphFactRecord, GraphNode, GraphNodeKind, GraphRelationKind, GraphStore};
+use crate::memory::{DragonflyConfig, WorkingMemoryProvider};
 use crate::model::{
     DeleteOutcome, FileEntry, LayeredContent, ResourceLayer, ResourceSummary,
     ResourceUpsertRequest, SearchHit, SearchRequest, SessionEntry, SessionEventRequest,
@@ -93,24 +95,54 @@ pub struct ContextConfig {
     pub data_dir: PathBuf,
     pub roots: Vec<ManagedRoot>,
     pub bridge: Option<OpenVikingBridgeConfig>,
+    pub dragonfly: Option<DragonflyConfig>,
 }
 
 impl ContextConfig {
+    /// Creates a ContextConfig using the given data directory and managed roots.
+    ///
+    /// The returned configuration has no bridge or dragonfly client configured.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crate::engine::ManagedRoot;
+    /// let roots = vec![ManagedRoot::new("workspace", "/path").unwrap()];
+    /// let cfg = ContextConfig::default_in("/data", roots.clone());
+    /// assert_eq!(cfg.data_dir, std::path::PathBuf::from("/data"));
+    /// assert_eq!(cfg.roots, roots);
+    /// ```
     pub fn default_in(dir: impl Into<PathBuf>, roots: Vec<ManagedRoot>) -> Self {
         Self {
             data_dir: dir.into(),
             roots,
             bridge: None,
+            dragonfly: None,
         }
     }
 }
 
 impl Default for ContextConfig {
+    /// Create a ContextConfig with standard default settings.
+    ///
+    /// The default configuration uses "./context-data" as the data directory, no managed
+    /// roots, and no configured OpenViking bridge or Dragonfly working-memory store.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = ContextConfig::default();
+    /// assert_eq!(cfg.data_dir, std::path::PathBuf::from("./context-data"));
+    /// assert!(cfg.roots.is_empty());
+    /// assert!(cfg.bridge.is_none());
+    /// assert!(cfg.dragonfly.is_none());
+    /// ```
     fn default() -> Self {
         Self {
             data_dir: PathBuf::from("./context-data"),
             roots: Vec::new(),
             bridge: None,
+            dragonfly: None,
         }
     }
 }
@@ -197,6 +229,19 @@ impl ContextEngine {
         })
     }
 
+    /// Creates a temporary ContextEngine configured with a new ephemeral workspace and data directory.
+    ///
+    /// The engine is opened synchronously using the current Tokio runtime when available, or a newly
+    /// created runtime otherwise. The backing files are placed under the system temporary directory
+    /// and are suitable for tests or short-lived local usage.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let engine = ContextEngine::placeholder();
+    /// // use the engine for short-lived tests and drop when finished
+    /// drop(engine);
+    /// ```
     pub fn placeholder() -> Self {
         let base = std::env::temp_dir().join(format!("context-engine-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&base).expect("temp dir");
@@ -212,6 +257,21 @@ impl ContextEngine {
         }
     }
 
+    /// Create the SQLite schema used by the context engine.
+    ///
+    /// Initializes the persistent tables and FTS5 virtual table required by the engine:
+    /// `resources`, `resource_chunks`, `resource_chunks_fts`, `sessions`, `memories`,
+    /// `graph_nodes`, and `graph_edges`. Calling this function multiple times is safe; it
+    /// will not overwrite existing tables.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let pool = sqlx::SqlitePool::connect(":memory:").await?;
+    /// crate::init_sqlite(&pool).await?;
+    /// # Ok(()) }
+    /// ```
     async fn init_sqlite(pool: &SqlitePool) -> Result<(), ContextError> {
         sqlx::query(
             r#"
@@ -280,6 +340,38 @@ impl ContextEngine {
                 content TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS graph_nodes (
+                node_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS graph_edges (
+                edge_id TEXT PRIMARY KEY,
+                subject_id TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                object_id TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                resource_uri TEXT,
+                session_id TEXT,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(subject_id, relation, object_id)
             )
             "#,
         )
@@ -638,6 +730,37 @@ impl ContextEngine {
         self.file_version(root, &to_normalized).await.or(Ok(0))
     }
 
+    /// Synchronizes files under a managed root into the engine's resource index.
+    ///
+    /// Walks the managed directory (optionally restricted by `path`), reads regular files
+    /// that are at most 1 MB and valid UTF-8, and upserts each file as a `ResourceLayer::L2` resource.
+    /// After walking, any previously-indexed resources under the same scope that were not encountered
+    /// are deleted from the index.
+    ///
+    /// # Parameters
+    ///
+    /// - `root`: name of the managed root to synchronize.
+    /// - `path`: optional relative path within the managed root to restrict the sync.
+    ///
+    /// # Returns
+    ///
+    /// `WorkspaceSyncOutcome` summarizing counts for indexed, reindexed, deleted, and skipped files,
+    /// plus the root and prefix used for the sync.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use context_engine::ContextEngine;
+    /// # use tokio;
+    /// #[tokio::test]
+    /// async fn sync_workspace_example() {
+    ///     // Create a temporary engine placeholder and sync the whole workspace.
+    ///     let engine = ContextEngine::placeholder().await.unwrap();
+    ///     let outcome = engine.sync_workspace("workspace", None).await.unwrap();
+    ///     // Outcome contains counts and the root name.
+    ///     assert_eq!(outcome.root, "workspace");
+    /// }
+    /// ```
     pub async fn sync_workspace(
         &self,
         root: &str,
@@ -775,6 +898,37 @@ impl ContextEngine {
         })
     }
 
+    /// Inserts or updates a resource and its derived chunks, persisting the resource row, chunk rows, FTS entries, vector-index vectors, and any graph edges derived from the resource metadata.
+    ///
+    /// The operation will reuse an existing resource ID when appropriate (via `previous_uri` or an existing URI), remove chunk rows that no longer exist, insert or update new chunks, synchronize the LanceDB vector table for added and deleted chunks, and persist graph nodes/edges extracted from `request.metadata`.
+    ///
+    /// # Returns
+    ///
+    /// `UpsertOutcome` describing the stored resource summary and counts of indexed, reused, and reindexed persisted chunk rows.
+    ///
+    /// Chunk counts reflect all generated layers (`L0`, `L1`, and `L2`) that are stored for the resource, not only
+    /// the source layer supplied on the request.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tokio::runtime::Runtime;
+    /// # use crate::{ContextEngine, ResourceUpsertRequest, Layer};
+    /// # let rt = Runtime::new().unwrap();
+    /// rt.block_on(async {
+    ///     let engine = ContextEngine::placeholder();
+    ///     let req = ResourceUpsertRequest {
+    ///         uri: "viking://resources/workspace/example.txt".to_string(),
+    ///         content: "example content".to_string(),
+    ///         metadata: serde_json::json!({}),
+    ///         title: None,
+    ///         layer: Layer::L2,
+    ///         previous_uri: None,
+    ///     };
+    ///     let outcome = engine.upsert_resource(req).await.unwrap();
+    ///     assert!(outcome.chunks_indexed >= 0);
+    /// });
+    /// ```
     pub async fn upsert_resource(
         &self,
         request: ResourceUpsertRequest,
@@ -947,6 +1101,13 @@ impl ContextEngine {
 
         self.sync_vector_table(resource_row.clone(), &chunks, &deleted_ids, &added_chunks)
             .await?;
+        self.persist_graph_from_metadata(
+            &request.metadata,
+            &request.uri,
+            request.previous_uri.as_deref(),
+            now,
+        )
+        .await?;
 
         let chunks_indexed = chunks.len() as i32;
         let reused_chunks = reused_ids.len() as i32;
@@ -1155,6 +1316,27 @@ impl ContextEngine {
         }))
     }
 
+    /// Load persisted resources for a managed root, optionally limited to a relative path prefix.
+    ///
+    /// When `prefix` is provided it matches resources whose `path` equals the prefix or begins with
+    /// `{prefix}/`. Results are ordered by `path` ascending.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<ResourceRow>` containing rows for the matched resources.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Run the async calls on a Tokio runtime in doc tests.
+    /// let rt = tokio::runtime::Runtime::new().unwrap();
+    /// let engine = rt.block_on(ContextEngine::placeholder()).unwrap();
+    /// // Load all resources under the "workspace" root.
+    /// let all = rt.block_on(engine.load_resources_for_scope("workspace", None)).unwrap();
+    /// // Load only resources under the "docs" subpath.
+    /// let docs = rt.block_on(engine.load_resources_for_scope("workspace", Some("docs"))).unwrap();
+    /// assert!(all.len() >= docs.len());
+    /// ```
     async fn load_resources_for_scope(
         &self,
         root: &str,
@@ -1205,6 +1387,23 @@ impl ContextEngine {
             .collect())
     }
 
+    /// Deletes the resource identified by `uri` along with its chunk rows, FTS entries, graph edges, and vector records.
+    ///
+    /// If no resource exists for the provided `uri`, no modifications are performed and the function reports that nothing was deleted.
+    /// Database deletions are performed inside a transaction; vector rows in the LanceDB table are removed after the transaction commits.
+    ///
+    /// # Returns
+    ///
+    /// `DeleteOutcome { deleted: true }` when a resource was found and deleted, `DeleteOutcome { deleted: false }` when no resource matched the URI.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(engine: &crate::ContextEngine) -> Result<(), crate::ContextError> {
+    /// let outcome = engine.delete_resource("viking://resources/workspace/notes.txt").await?;
+    /// assert!(outcome.deleted || !outcome.deleted);
+    /// # Ok(()) }
+    /// ```
     pub async fn delete_resource(&self, uri: &str) -> Result<DeleteOutcome, ContextError> {
         let Some(resource) = self.lookup_resource_by_uri(uri).await? else {
             return Ok(DeleteOutcome { deleted: false });
@@ -1223,6 +1422,15 @@ impl ContextEngine {
             .bind(&resource.resource_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM graph_edges WHERE resource_uri = ?1")
+            .bind(uri)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "DELETE FROM graph_nodes WHERE NOT EXISTS (SELECT 1 FROM graph_edges WHERE graph_edges.subject_id = graph_nodes.node_id OR graph_edges.object_id = graph_nodes.node_id)"
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
 
         self.inner
@@ -1397,6 +1605,26 @@ impl ContextEngine {
         Ok(rows)
     }
 
+    /// Fetches all entries for a session in chronological order.
+    ///
+    /// Loads all stored session events for `session_id`, ordered by `created_at` (oldest first)
+    /// and `id` as a tiebreaker. Each entry's `metadata` is parsed from JSON with an empty
+    /// object fallback on parse failure.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<SessionEntry>` containing the session's events ordered from oldest to newest.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use context_engine::{ContextEngine, ContextConfig};
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let engine = ContextEngine::placeholder().await.unwrap();
+    /// let entries = engine.list_sessions("session-123").await.unwrap();
+    /// // entries is a Vec<SessionEntry>
+    /// # });
+    /// ```
     pub async fn list_sessions(&self, session_id: &str) -> Result<Vec<SessionEntry>, ContextError> {
         let rows = sqlx::query(
             r#"
@@ -1423,6 +1651,33 @@ impl ContextEngine {
             .collect())
     }
 
+    /// Appends a session event to storage and updates the working-memory cache when configured.
+    ///
+    /// Inserts a session event using the provided `SessionEventRequest` and returns a `SessionEntry`
+    /// populated with the stored fields and the insertion timestamp. When a Dragonfly working-memory
+    /// cache is configured, the engine refreshes that cache for the session after insertion.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(SessionEntry)` containing the stored event with `created_at` set to the current
+    /// millisecond timestamp, or `Err(ContextError)` if persistence or cache refresh fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use chrono::Utc;
+    /// # use tokio_test::block_on;
+    /// # async fn _example(engine: &crate::ContextEngine) {
+    /// let req = crate::SessionEventRequest {
+    ///     session_id: "sess-123".to_string(),
+    ///     role: "user".to_string(),
+    ///     content: "Hello".to_string(),
+    ///     metadata: serde_json::json!({}),
+    /// };
+    /// let entry = engine.append_session(req).await.unwrap();
+    /// assert_eq!(entry.session_id, "sess-123");
+    /// # }
+    /// ```
     pub async fn append_session(
         &self,
         request: SessionEventRequest,
@@ -1443,6 +1698,9 @@ impl ContextEngine {
         .execute(&self.inner.pool)
         .await?;
 
+        self.refresh_working_memory_cache(&request.session_id)
+            .await?;
+
         Ok(SessionEntry {
             session_id: request.session_id,
             role: request.role,
@@ -1452,6 +1710,630 @@ impl ContextEngine {
         })
     }
 
+    /// Retrieve recent session entries for a session, preferring the Dragonfly working-memory cache when configured and the requested limit fits within the configured recent window.
+    ///
+    /// If a Dragonfly cache is configured and `limit` is less than or equal to the cache's `recent_window`, cached entries are returned when present; otherwise entries are loaded from SQLite. The returned entries are ordered chronologically (oldest first) and contain at most `limit` items.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<SessionEntry>` containing up to `limit` entries in chronological order (oldest first).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(engine: &ContextEngine) -> Result<(), context_engine::ContextError> {
+    /// let entries = engine.recent_session_entries("session-id", 10).await?;
+    /// println!("loaded {} entries", entries.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn recent_session_entries(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionEntry>, ContextError> {
+        let limit = limit.max(1);
+        if let Some(window) = self
+            .inner
+            .config
+            .dragonfly
+            .as_ref()
+            .map(|config| config.recent_window.max(1))
+        {
+            if limit <= window {
+                if let Some(mut entries) = self.load_working_memory_cache(session_id).await? {
+                    if entries.len() > limit {
+                        entries = entries.split_off(entries.len() - limit);
+                    }
+                    return Ok(entries);
+                }
+            }
+        }
+        self.load_recent_session_entries_from_sql(session_id, limit)
+            .await
+    }
+
+    /// Searches the graph for facts matching a text fragment.
+    ///
+    /// The query is compared using SQL `LIKE` against subject and object `node_id` and `name`,
+    /// edge `relation`, and edge `metadata_json`.
+    ///
+    /// # Returns
+    ///
+    /// A vector of `GraphFactRecord` ordered by edge `updated_at` descending and limited to `top_k`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn run_example(engine: &crate::ContextEngine) -> Result<(), crate::ContextError> {
+    /// let facts = engine.graph_facts("alice", 5).await?;
+    /// for f in facts {
+    ///     println!("{} - {} -> {}", f.subject.name, f.relation.as_str(), f.object.name);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn graph_facts(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<GraphFactRecord>, ContextError> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let escaped = trimmed
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let like = format!("%{}%", escaped);
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                e.edge_id,
+                e.subject_id,
+                e.relation,
+                e.object_id,
+                e.metadata_json,
+                e.resource_uri,
+                e.session_id,
+                e.updated_at,
+                s.kind AS subject_kind,
+                s.name AS subject_name,
+                s.metadata_json AS subject_metadata_json,
+                o.kind AS object_kind,
+                o.name AS object_name,
+                o.metadata_json AS object_metadata_json
+            FROM graph_edges e
+            JOIN graph_nodes s ON s.node_id = e.subject_id
+            JOIN graph_nodes o ON o.node_id = e.object_id
+            WHERE
+                s.node_id LIKE ?1 ESCAPE '\' OR
+                s.name LIKE ?1 ESCAPE '\' OR
+                o.node_id LIKE ?1 ESCAPE '\' OR
+                o.name LIKE ?1 ESCAPE '\' OR
+                e.relation LIKE ?1 ESCAPE '\' OR
+                e.metadata_json LIKE ?1 ESCAPE '\'
+            ORDER BY e.updated_at DESC
+            LIMIT ?2
+            "#,
+        )
+        .bind(&like)
+        .bind(top_k as i64)
+        .fetch_all(&self.inner.pool)
+        .await?;
+
+        let mut facts = Vec::with_capacity(rows.len());
+        for row in rows {
+            let metadata_json = row.get::<String, _>("metadata_json");
+            let subject_metadata_json = row.get::<String, _>("subject_metadata_json");
+            let object_metadata_json = row.get::<String, _>("object_metadata_json");
+            facts.push(GraphFactRecord {
+                edge_id: row.get("edge_id"),
+                subject: GraphNode {
+                    id: row.get("subject_id"),
+                    name: row.get("subject_name"),
+                    kind: GraphNodeKind::from_metadata(&row.get::<String, _>("subject_kind")),
+                    metadata: serde_json::from_str(&subject_metadata_json)?,
+                },
+                relation: GraphRelationKind::from_metadata(&row.get::<String, _>("relation")),
+                object: GraphNode {
+                    id: row.get("object_id"),
+                    name: row.get("object_name"),
+                    kind: GraphNodeKind::from_metadata(&row.get::<String, _>("object_kind")),
+                    metadata: serde_json::from_str(&object_metadata_json)?,
+                },
+                metadata: serde_json::from_str(&metadata_json)?,
+                resource_uri: row.get("resource_uri"),
+                session_id: row.get("session_id"),
+                updated_at: row.get("updated_at"),
+            });
+        }
+        Ok(facts)
+    }
+
+    /// Retrieve recent session entries for a session in chronological order (oldest first).
+    ///
+    /// Returns up to `limit` most recent entries for `session_id`. If fewer entries exist, all available entries are returned.
+    /// The returned vector is ordered by `created_at` ascending (oldest first).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(engine: &crate::ContextEngine) -> Result<(), crate::ContextError> {
+    /// let entries = engine.load_recent_session_entries_from_sql("session-123", 20).await?;
+    /// for entry in entries {
+    ///     println!("{}: {}", entry.created_at, entry.content);
+    /// }
+    /// # Ok(()) }
+    /// ```
+    async fn load_recent_session_entries_from_sql(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionEntry>, ContextError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT session_id, role, content, metadata_json, created_at
+            FROM sessions
+            WHERE session_id = ?1
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?2
+            "#,
+        )
+        .bind(session_id)
+        .bind(limit as i64)
+        .fetch_all(&self.inner.pool)
+        .await?;
+
+        let mut entries = rows
+            .into_iter()
+            .map(|row| SessionEntry {
+                session_id: row.get("session_id"),
+                role: row.get("role"),
+                content: row.get("content"),
+                metadata: serde_json::from_str(&row.get::<String, _>("metadata_json"))
+                    .unwrap_or_default(),
+                created_at: row.get::<i64, _>("created_at"),
+            })
+            .collect::<Vec<_>>();
+        entries.reverse();
+        Ok(entries)
+    }
+
+    /// Refreshes the Dragonfly-backed working-memory cache for a session.
+    ///
+    /// If Dragonfly is not configured for this engine, this function does nothing.
+    /// When configured, it loads the most recent session entries (bounded by the
+    /// configured `recent_window`) and upserts a JSON-encoded cache record into the
+    /// `memories` table keyed by the working-memory URI and the Dragonfly namespace.
+    ///
+    /// Returns an error if URI generation, JSON serialization, or the database upsert fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio_test::block_on(async {
+    /// let engine = ContextEngine::placeholder();
+    /// // No-op if Dragonfly isn't configured; otherwise updates the working-memory cache.
+    /// engine.refresh_working_memory_cache("session-123").await.unwrap();
+    /// # });
+    /// ```
+    async fn refresh_working_memory_cache(&self, session_id: &str) -> Result<(), ContextError> {
+        let Some(config) = self.inner.config.dragonfly.as_ref() else {
+            return Ok(());
+        };
+
+        let entries = self
+            .load_recent_session_entries_from_sql(session_id, config.recent_window.max(1))
+            .await?;
+        let uri = working_memory_cache_uri(session_id)?;
+        let metadata_json = serde_json::to_string(&BTreeMap::from([
+            ("provider".to_string(), "dragonfly".to_string()),
+            ("session_id".to_string(), session_id.to_string()),
+            (
+                "recent_window".to_string(),
+                config.recent_window.max(1).to_string(),
+            ),
+        ]))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO memories (uri, namespace, content, metadata_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(uri) DO UPDATE SET
+                namespace = excluded.namespace,
+                content = excluded.content,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&uri)
+        .bind(&config.key_prefix)
+        .bind(serde_json::to_string(&entries)?)
+        .bind(metadata_json)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.inner.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Loads the working-memory cache for a session if a Dragonfly cache is configured.
+    ///
+    /// Returns `Ok(Some(entries))` when a cached memory record exists for `session_id`,
+    /// `Ok(None)` when Dragonfly is not configured or no cache record is found, and
+    /// `Err(ContextError)` on SQL or deserialization failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(engine: &crate::ContextEngine) -> Result<(), crate::ContextError> {
+    /// let session_id = "session-123";
+    /// let cached = engine.load_working_memory_cache(session_id).await?;
+    /// if let Some(entries) = cached {
+    ///     // use entries...
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn load_working_memory_cache(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Vec<SessionEntry>>, ContextError> {
+        let Some(config) = self.inner.config.dragonfly.as_ref() else {
+            return Ok(None);
+        };
+        let uri = working_memory_cache_uri(session_id)?;
+        let row = sqlx::query(
+            r#"
+            SELECT content
+            FROM memories
+            WHERE uri = ?1 AND namespace = ?2
+            "#,
+        )
+        .bind(uri)
+        .bind(&config.key_prefix)
+        .fetch_optional(&self.inner.pool)
+        .await?;
+
+        row.map(|row| serde_json::from_str(&row.get::<String, _>("content")))
+            .transpose()
+            .map_err(ContextError::from)
+    }
+
+    /// Persist graph nodes and an edge derived from resource metadata.
+    ///
+    /// Deletes any existing edges for `resource_uri` (and for `previous_uri` if provided and
+    /// different), and when `metadata["kind"]` equals `"graph"` (case-insensitive) and both
+    /// `subject_id` and `object_id` are present and non-empty, upserts the subject and object
+    /// nodes and a deterministically identified edge linking them. The edge's stored metadata
+    /// will include `kind = "graph"` and `resource_uri`, and will include `previous_resource_uri`
+    /// when `previous_uri` is supplied.
+    ///
+    /// Parameters:
+    /// - `metadata`: resource metadata map; expected keys include `kind`, `subject_id`,
+    ///   `object_id`, optional `relation`, `subject_name`/`object_name`, and additional
+    ///   `subject_*/object_*` prefixed fields which become node metadata.
+    /// - `resource_uri`: URI of the resource producing the metadata; stored on the edge.
+    /// - `previous_uri`: optional previous resource URI; used for deletion and recorded on the edge
+    ///   when different from `resource_uri`.
+    /// - `updated_at`: millisecond Unix timestamp recorded as the nodes' and edge's update time.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when graph rows were persisted or when the metadata does not describe a graph;
+    /// `Err` on database or serialization errors.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::collections::BTreeMap;
+    ///
+    /// // Prepare metadata describing a graph fact
+    /// let mut metadata = BTreeMap::new();
+    /// metadata.insert("kind".to_string(), "graph".to_string());
+    /// metadata.insert("subject_id".to_string(), "node:a".to_string());
+    /// metadata.insert("object_id".to_string(), "node:b".to_string());
+    /// metadata.insert("relation".to_string(), "RELATED_TO".to_string());
+    ///
+    /// // Example usage (obtain a ContextEngine instance appropriate for your application):
+    /// // let engine: ContextEngine = /* ... */ ;
+    /// // let _ = tokio::runtime::Handle::current()
+    /// //     .block_on(engine.persist_graph_from_metadata(&metadata, "viking://resources/1", None, 1_670_000_000_000));
+    /// ```
+    async fn persist_graph_from_metadata(
+        &self,
+        metadata: &BTreeMap<String, String>,
+        resource_uri: &str,
+        previous_uri: Option<&str>,
+        updated_at: i64,
+    ) -> Result<(), ContextError> {
+        let mut tx = self.inner.pool.begin().await?;
+
+        sqlx::query("DELETE FROM graph_edges WHERE resource_uri = ?1")
+            .bind(resource_uri)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(previous_uri) = previous_uri.filter(|uri| *uri != resource_uri) {
+            sqlx::query("DELETE FROM graph_edges WHERE resource_uri = ?1")
+                .bind(previous_uri)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "DELETE FROM graph_nodes WHERE NOT EXISTS (SELECT 1 FROM graph_edges WHERE graph_edges.subject_id = graph_nodes.node_id OR graph_edges.object_id = graph_nodes.node_id)"
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        if metadata
+            .get("kind")
+            .map(|value| !value.eq_ignore_ascii_case("graph"))
+            .unwrap_or(true)
+        {
+            tx.commit().await?;
+            return Ok(());
+        }
+
+        let Some(subject_id) = metadata
+            .get("subject_id")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        else {
+            tx.commit().await?;
+            return Ok(());
+        };
+        let Some(object_id) = metadata
+            .get("object_id")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        else {
+            tx.commit().await?;
+            return Ok(());
+        };
+
+        let relation = GraphRelationKind::from_metadata(
+            metadata
+                .get("relation")
+                .map(String::as_str)
+                .unwrap_or("RELATED_TO"),
+        );
+        let subject = GraphNode {
+            id: subject_id.to_string(),
+            name: metadata
+                .get("subject_name")
+                .cloned()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| subject_id.to_string()),
+            kind: GraphNodeKind::from_metadata(
+                metadata
+                    .get("subject_type")
+                    .map(String::as_str)
+                    .unwrap_or("generic"),
+            ),
+            metadata: collect_graph_node_metadata(metadata, "subject_"),
+        };
+        let object = GraphNode {
+            id: object_id.to_string(),
+            name: metadata
+                .get("object_name")
+                .cloned()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| object_id.to_string()),
+            kind: GraphNodeKind::from_metadata(
+                metadata
+                    .get("object_type")
+                    .map(String::as_str)
+                    .unwrap_or("generic"),
+            ),
+            metadata: collect_graph_node_metadata(metadata, "object_"),
+        };
+
+        sqlx::query(
+            r#"
+            INSERT INTO graph_nodes (node_id, kind, name, metadata_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(node_id) DO UPDATE SET
+                kind = excluded.kind,
+                name = excluded.name,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&subject.id)
+        .bind(subject.kind.as_str())
+        .bind(&subject.name)
+        .bind(serde_json::to_string(&subject.metadata)?)
+        .bind(updated_at)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO graph_nodes (node_id, kind, name, metadata_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(node_id) DO UPDATE SET
+                kind = excluded.kind,
+                name = excluded.name,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&object.id)
+        .bind(object.kind.as_str())
+        .bind(&object.name)
+        .bind(serde_json::to_string(&object.metadata)?)
+        .bind(updated_at)
+        .execute(&mut *tx)
+        .await?;
+
+        let mut edge_metadata = metadata.clone();
+        edge_metadata.insert("kind".to_string(), "graph".to_string());
+        edge_metadata
+            .entry("resource_uri".to_string())
+            .or_insert_with(|| resource_uri.to_string());
+        if let Some(previous_uri) = previous_uri {
+            edge_metadata
+                .entry("previous_resource_uri".to_string())
+                .or_insert_with(|| previous_uri.to_string());
+        }
+
+        let edge = GraphEdgeRow {
+            edge_id: graph_edge_id(&subject.id, relation.as_str(), &object.id),
+            subject_id: subject.id,
+            relation: relation.as_str().to_string(),
+            object_id: object.id,
+            metadata_json: serde_json::to_string(&edge_metadata)?,
+            resource_uri: Some(resource_uri.to_string()),
+            session_id: metadata.get("session_id").cloned(),
+            updated_at,
+        };
+
+        sqlx::query(
+            r#"
+            INSERT INTO graph_edges (edge_id, subject_id, relation, object_id, metadata_json, resource_uri, session_id, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(edge_id) DO UPDATE SET
+                subject_id = excluded.subject_id,
+                relation = excluded.relation,
+                object_id = excluded.object_id,
+                metadata_json = excluded.metadata_json,
+                resource_uri = excluded.resource_uri,
+                session_id = excluded.session_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&edge.edge_id)
+        .bind(&edge.subject_id)
+        .bind(&edge.relation)
+        .bind(&edge.object_id)
+        .bind(&edge.metadata_json)
+        .bind(&edge.resource_uri)
+        .bind(&edge.session_id)
+        .bind(updated_at)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Insert or update a graph node row keyed by the node's id.
+    ///
+    /// Serializes `node.metadata` to JSON and stores the node's `kind`, `name`, `metadata_json`, and `updated_at`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(engine: &ContextEngine) -> Result<(), ContextError> {
+    /// let node = GraphNode {
+    ///     id: "node-123".to_string(),
+    ///     kind: "person".to_string(),
+    ///     name: "Alice".to_string(),
+    ///     metadata: serde_json::json!({ "role": "author" }),
+    /// };
+    /// engine.upsert_graph_node(&node, 1_700_000_000_000_i64).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn upsert_graph_node(
+        &self,
+        node: &GraphNode,
+        updated_at: i64,
+    ) -> Result<(), ContextError> {
+        sqlx::query(
+            r#"
+            INSERT INTO graph_nodes (node_id, kind, name, metadata_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(node_id) DO UPDATE SET
+                kind = excluded.kind,
+                name = excluded.name,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&node.id)
+        .bind(node.kind.as_str())
+        .bind(&node.name)
+        .bind(serde_json::to_string(&node.metadata)?)
+        .bind(updated_at)
+        .execute(&self.inner.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Upserts a graph edge into the `graph_edges` table, inserting a new row or replacing the existing row with the same `edge_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ContextError` if the database operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(engine: &crate::ContextInner) -> Result<(), crate::ContextError> {
+    /// let edge = crate::GraphEdgeRow {
+    ///     edge_id: "edge1".into(),
+    ///     subject_id: "subject1".into(),
+    ///     relation: "RELATED_TO".into(),
+    ///     object_id: "object1".into(),
+    ///     metadata_json: "{}".into(),
+    ///     resource_uri: "viking://resources/root/path".into(),
+    ///     session_id: None,
+    ///     updated_at: 0,
+    /// };
+    /// engine.upsert_graph_edge(&edge).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn upsert_graph_edge(&self, edge: &GraphEdgeRow) -> Result<(), ContextError> {
+        sqlx::query(
+            r#"
+            INSERT INTO graph_edges (edge_id, subject_id, relation, object_id, metadata_json, resource_uri, session_id, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(edge_id) DO UPDATE SET
+                subject_id = excluded.subject_id,
+                relation = excluded.relation,
+                object_id = excluded.object_id,
+                metadata_json = excluded.metadata_json,
+                resource_uri = excluded.resource_uri,
+                session_id = excluded.session_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&edge.edge_id)
+        .bind(&edge.subject_id)
+        .bind(&edge.relation)
+        .bind(&edge.object_id)
+        .bind(&edge.metadata_json)
+        .bind(&edge.resource_uri)
+        .bind(&edge.session_id)
+        .bind(edge.updated_at)
+        .execute(&self.inner.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Provides runtime status and storage metrics for the engine.
+    ///
+    /// The returned `StatusResponse` includes counts of indexed documents and chunks,
+    /// an estimated index size in bytes, the embedding model identifier, readiness,
+    /// and a list of managed roots.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tokio;
+    /// # async fn _run() {
+    /// let engine = ContextEngine::placeholder();
+    /// let status = engine.status().await.unwrap();
+    /// assert!(status.ready);
+    /// assert!(status.document_count >= 0);
+    /// # }
+    /// ```
     pub async fn status(&self) -> Result<StatusResponse, ContextError> {
         let document_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM resources")
             .fetch_one(&self.inner.pool)
@@ -1478,10 +2360,40 @@ impl ContextEngine {
         })
     }
 
+    /// List the managed roots configured for this engine.
+    ///
+    /// Returns a `Vec<ManagedRoot>` containing cloned managed roots from the engine configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Synchronous example using a simple executor to call the async method.
+    /// let engine = futures::executor::block_on(ContextEngine::placeholder()).unwrap();
+    /// let roots = futures::executor::block_on(engine.managed_roots());
+    /// assert!(!roots.is_empty());
+    /// ```
     pub async fn managed_roots(&self) -> Vec<ManagedRoot> {
         self.inner.config.roots.clone()
     }
 
+    /// Return the configured OpenViking bridge client, initializing it lazily if configured.
+    ///
+    /// If the engine was constructed without a bridge configuration, this returns `Ok(None)`.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Some(client))` if a bridge is configured and has been (lazily) initialized, `Ok(None)` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use context_engine::ContextEngine;
+    /// # async fn _demo() -> Result<(), Box<dyn std::error::Error>> {
+    /// let engine = ContextEngine::placeholder();
+    /// let client = engine.bridge().await?;
+    /// // `client` is `Some(...)` when configured, `None` otherwise.
+    /// # Ok(()) }
+    /// ```
     pub async fn bridge(&self) -> Result<Option<OpenVikingBridgeClient>, ContextError> {
         if self.inner.bridge.get().is_none() {
             let bridge = self
@@ -1496,6 +2408,149 @@ impl ContextEngine {
     }
 }
 
+impl GraphStore for ContextEngine {
+    /// Upserts the subject and object graph nodes and the relation edge described by `fact`.
+    ///
+    /// The function inserts or updates the two nodes and then upserts the corresponding edge,
+    /// serializing the edge metadata to JSON as stored on the edge row. Errors from database
+    /// operations or metadata serialization are propagated as `ContextError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ContextError)` if a database, serialization, or I/O error occurs.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // `engine` implements the GraphStore trait
+    /// let fact = GraphFactRecord { /* populate required fields */ };
+    /// futures::executor::block_on(engine.upsert_fact(fact)).unwrap();
+    /// ```
+    fn upsert_fact<'a>(
+        &'a self,
+        fact: GraphFactRecord,
+    ) -> crate::graph::ProviderFuture<'a, Result<(), ContextError>> {
+        Box::pin(async move {
+            self.upsert_graph_node(&fact.subject, fact.updated_at)
+                .await?;
+            self.upsert_graph_node(&fact.object, fact.updated_at)
+                .await?;
+            self.upsert_graph_edge(&GraphEdgeRow {
+                edge_id: fact.edge_id,
+                subject_id: fact.subject.id,
+                relation: fact.relation.as_str().to_string(),
+                object_id: fact.object.id,
+                metadata_json: serde_json::to_string(&fact.metadata)?,
+                resource_uri: fact.resource_uri,
+                session_id: fact.session_id,
+                updated_at: fact.updated_at,
+            })
+            .await
+        })
+    }
+
+    /// Find graph facts matching a text query.
+    ///
+    /// Matches are checked against subject/object IDs and names, edge relation, and edge metadata;
+    /// results are ordered by most-recently-updated and limited to `limit`.
+    ///
+    /// # Returns
+    ///
+    /// On success, a vector of matching `GraphFactRecord` items (at most `limit`).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use futures::executor::block_on;
+    /// # use my_crate::ContextEngine;
+    /// # async fn _example(engine: Arc<ContextEngine>) {
+    /// let facts = engine.related_facts("alice", 10).await.unwrap();
+    /// println!("found {} facts", facts.len());
+    /// # }
+    /// ```
+    fn related_facts<'a>(
+        &'a self,
+        query: &'a str,
+        limit: usize,
+    ) -> crate::graph::ProviderFuture<'a, Result<Vec<GraphFactRecord>, ContextError>> {
+        Box::pin(async move { self.graph_facts(query, limit).await })
+    }
+}
+
+impl WorkingMemoryProvider for ContextEngine {
+    /// Appends a session entry to persistent session storage and updates the working-memory cache when configured.
+    ///
+    /// The provided `SessionEntry` is persisted as an internal session event; if a Dragonfly working-memory provider is enabled,
+    /// the engine's cached recent-session view is refreshed to include the new entry.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run_example(engine: &crate::ContextEngine) -> Result<(), crate::ContextError> {
+    /// let entry = crate::SessionEntry {
+    ///     session_id: "session-123".to_string(),
+    ///     role: "user".to_string(),
+    ///     content: "Hello".to_string(),
+    ///     metadata: serde_json::json!({}),
+    /// };
+    /// engine.append_session_entry(entry).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn append_session_entry<'a>(
+        &'a self,
+        entry: SessionEntry,
+    ) -> crate::memory::ProviderFuture<'a, Result<(), ContextError>> {
+        Box::pin(async move {
+            self.append_session(SessionEventRequest {
+                session_id: entry.session_id,
+                role: entry.role,
+                content: entry.content,
+                metadata: entry.metadata,
+            })
+            .await?;
+            Ok(())
+        })
+    }
+
+    /// Provide recent session entries for a session, using the engine's working-memory cache when available.
+    ///
+    /// Returns up to `limit` recent `SessionEntry` items for `session_id` in chronological order, or an `ContextError` on failure.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Async context required:
+    /// let engine = ContextEngine::placeholder();
+    /// let entries = futures::executor::block_on(engine.recent_entries("session-1", 10)).unwrap();
+    /// assert!(entries.len() <= 10);
+    /// ```
+    fn recent_entries<'a>(
+        &'a self,
+        session_id: &'a str,
+        limit: usize,
+    ) -> crate::memory::ProviderFuture<'a, Result<Vec<SessionEntry>, ContextError>> {
+        Box::pin(async move { self.recent_session_entries(session_id, limit).await })
+    }
+}
+
+/// Parse a LanceDB/Arrow `RecordBatch` from a nearest-neighbors query into `ScoredChunk` rows.
+///
+/// This function reads the required string columns `chunk_id`, `resource_id`, `layer`, and `content`,
+/// an optional `metadata_json` string column (per-row default `"{}"`), and an optional `_distance`
+/// Float32 column. When `_distance` is present each row's `score` is computed as `1.0 / (1.0 + distance)`;
+/// otherwise the row's `score` is `1.0`.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Given a RecordBatch `batch` returned from a LanceDB nearest-to query:
+/// let scored_chunks = parse_vector_batch(batch).expect("valid batch");
+/// for chunk in scored_chunks {
+///     println!("{} (score={})", chunk.chunk_id, chunk.score);
+/// }
+/// ```
 fn parse_vector_batch(batch: RecordBatch) -> Result<Vec<ScoredChunk>, ContextError> {
     let chunk_ids = column_str(&batch, "chunk_id")?;
     let resource_ids = column_str(&batch, "resource_id")?;
@@ -1548,6 +2603,29 @@ fn column_str(batch: &RecordBatch, name: &str) -> Result<Vec<String>, ContextErr
         .collect())
 }
 
+/// Determines whether all provided filter key/value pairs exactly match entries in `metadata`.
+///
+/// If `filters` is `None`, the function returns `true`. If `filters` is `Some(map)`, returns `true` only when every
+/// `(key, value)` in `map` is present in `metadata` with the same value, and `false` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::BTreeMap;
+///
+/// let mut metadata = BTreeMap::new();
+/// metadata.insert("lang".to_string(), "en".to_string());
+/// metadata.insert("type".to_string(), "note".to_string());
+///
+/// let mut filters = BTreeMap::new();
+/// filters.insert("lang".to_string(), "en".to_string());
+///
+/// assert!(filters_match(Some(&filters), &metadata));
+/// assert!(filters_match::<&BTreeMap<String,String>>(None, &metadata));
+///
+/// filters.insert("type".to_string(), "doc".to_string());
+/// assert!(!filters_match(Some(&filters), &metadata));
+/// ```
 fn filters_match(
     filters: Option<&BTreeMap<String, String>>,
     metadata: &BTreeMap<String, String>,
@@ -1561,6 +2639,27 @@ fn filters_match(
         .unwrap_or(true)
 }
 
+/// Merge metadata from a resource and a chunk, preferring keys from the resource metadata.
+///
+/// Parses `resource_json` and `chunk_json` as `Map<String, String>` and returns a `BTreeMap` containing
+/// all key/value pairs from the resource metadata plus any key/value pairs from the chunk metadata that
+/// are not present in the resource metadata (resource values win on key conflicts).
+///
+/// # Errors
+///
+/// Returns `ContextError` if either `resource_json` or `chunk_json` is not valid JSON or cannot be
+/// deserialized into a `Map<String, String>`.
+///
+/// # Examples
+///
+/// ```
+/// let resource_json = r#"{"title":"Doc","author":"Alice"}"#;
+/// let chunk_json = r#"{"author":"Bob","chunk":"intro"}"#;
+/// let merged = merge_metadata(resource_json, chunk_json).unwrap();
+/// assert_eq!(merged.get("title").map(String::as_str), Some("Doc"));
+/// assert_eq!(merged.get("author").map(String::as_str), Some("Alice")); // resource wins
+/// assert_eq!(merged.get("chunk").map(String::as_str), Some("intro"));
+/// ```
 fn merge_metadata(
     resource_json: &str,
     chunk_json: &str,
@@ -1573,6 +2672,73 @@ fn merge_metadata(
     Ok(merged)
 }
 
+/// Collects metadata entries whose keys start with the provided prefix, using the remaining suffix as the result key.
+
+///
+
+/// Keys that become `id`, `name`, or `type` after removing the prefix are omitted.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// use std::collections::BTreeMap;
+
+///
+
+/// let mut src = BTreeMap::new();
+
+/// src.insert("subject_id".to_string(), "s1".to_string());
+
+/// src.insert("subject_name".to_string(), "Subject".to_string());
+
+/// src.insert("subject_role".to_string(), "actor".to_string());
+
+/// src.insert("other".to_string(), "x".to_string());
+
+///
+
+/// let out = collect_graph_node_metadata(&src, "subject_");
+
+/// assert_eq!(out.get("role").map(|s| s.as_str()), Some("actor"));
+
+/// assert!(out.get("id").is_none());
+
+/// assert!(out.get("name").is_none());
+
+/// ```
+fn collect_graph_node_metadata(
+    metadata: &BTreeMap<String, String>,
+    prefix: &str,
+) -> BTreeMap<String, String> {
+    metadata
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix(prefix).and_then(|stripped| {
+                if matches!(stripped, "id" | "name" | "type") {
+                    None
+                } else {
+                    Some((stripped.to_string(), value.clone()))
+                }
+            })
+        })
+        .collect()
+}
+
+/// Normalizes a search query by trimming and replacing any sequence of whitespace with a single space.
+///
+/// This produces a compact query suitable for lexical matching or embedding.
+///
+/// # Examples
+///
+/// ```
+/// let q = "  quick   brown\tfox\njumps  ";
+/// assert_eq!(normalize_search_query(q), "quick brown fox jumps");
+/// ```
 fn normalize_search_query(query: &str) -> String {
     query
         .split_whitespace()
@@ -1627,14 +2793,88 @@ fn chunk_id(resource_id: &str, layer: ResourceLayer, text: &str) -> String {
     hash_text(&format!("{resource_id}|{}|{text}", layer.as_str()))
 }
 
+/// Maps an absolute lexical distance score to a normalized relevance score in (0.0, 1.0].
+///
+/// # Returns
+///
+/// A normalized relevance score where 1.0 corresponds to an input of 0.0 and values decrease toward 0.0 as the absolute input grows.
+///
+/// # Examples
+///
+/// ```
+/// let s = lexical_score(-2.0);
+/// assert!(s > 0.0 && s < 1.0);
+/// assert_eq!(lexical_score(0.0), 1.0);
+/// ```
 fn lexical_score(score: f32) -> f32 {
     1.0 / (1.0 + score.abs())
 }
 
+/// Escapes single quotes for embedding a string in an SQL string literal by doubling them.
+///
+/// Converts each `'` to `''`.
+///
+/// # Examples
+///
+/// ```
+/// let s = "O'Reilly";
+/// assert_eq!(escape_sql(s), "O''Reilly");
+/// ```
 fn escape_sql(value: &str) -> String {
     value.replace('\'', "''")
 }
 
+/// Generates a deterministic edge identifier from a subject, relation, and object.
+///
+/// The identifier is the hex-encoded SHA-256 hash of the string
+/// "{subject_id}|{relation}|{object_id}".
+///
+/// # Examples
+///
+/// ```
+/// let a = graph_edge_id("node:alice", "FRIENDS_WITH", "node:bob");
+/// let b = graph_edge_id("node:alice", "FRIENDS_WITH", "node:bob");
+/// assert_eq!(a, b);
+///
+/// let c = graph_edge_id("node:bob", "FRIENDS_WITH", "node:alice");
+/// assert_ne!(a, c);
+/// ```
+fn graph_edge_id(subject_id: &str, relation: &str, object_id: &str) -> String {
+    hash_text(&format!("{subject_id}|{relation}|{object_id}"))
+}
+
+/// Constructs the Viking URI string for a session's working-memory record.
+///
+/// # Errors
+///
+/// Returns a `ContextError` if the underlying `VikingUri::user_memory` fails to construct a valid URI.
+///
+/// # Examples
+///
+/// ```
+/// let uri = working_memory_cache_uri("session-123").expect("should build URI");
+/// assert!(uri.contains("working-memory/session-123"));
+/// ```
+fn working_memory_cache_uri(session_id: &str) -> Result<String, ContextError> {
+    VikingUri::user_memory(format!("working-memory/{session_id}"))
+        .map(|uri| uri.to_string())
+        .map_err(ContextError::from)
+}
+
+/// Produces a deterministic fixed-size embedding vector for the given text.
+///
+/// The resulting vector is L2-normalized and deterministic for the same input text and
+/// embedding dimension. Token-level contributions are aggregated into a fixed-size
+/// float vector so that similar texts produce related embeddings.
+///
+/// # Examples
+///
+/// ```
+/// let v = embed_text("hello world");
+/// assert_eq!(v.len(), EMBEDDING_DIM);
+/// let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+/// assert!((norm - 1.0).abs() < 1e-5);
+/// ```
 fn embed_text(text: &str) -> Vec<f32> {
     let mut vector = vec![0.0f32; EMBEDDING_DIM];
     for token in tokenize(text) {
@@ -1654,6 +2894,17 @@ fn embed_text(text: &str) -> Vec<f32> {
     vector
 }
 
+/// Splits the input text into lowercase tokens of contiguous alphanumeric characters.
+///
+/// The returned `Vec<String>` contains tokens produced by splitting on any non-alphanumeric
+/// characters; tokens are converted to lowercase and empty tokens are omitted.
+///
+/// # Examples
+///
+/// ```
+/// let t = tokenize("Hello, World! 123 ABC_def");
+/// assert_eq!(t, vec!["hello", "world", "123", "abc", "def"]);
+/// ```
 fn tokenize(text: &str) -> Vec<String> {
     text.split(|character: char| !character.is_alphanumeric())
         .map(|token| token.to_lowercase())
@@ -1661,9 +2912,32 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Produces a stable 64-bit hash for a token using SHA-256.
+///
+/// The returned value is the first 8 bytes of the token's SHA-256 digest interpreted as a
+/// little-endian `u64`.
+///
+/// # Examples
+///
+/// ```
+/// let a = hash_token("example");
+/// let b = hash_token("example");
+/// assert_eq!(a, b);
+/// ```
 fn hash_token(token: &str) -> u64 {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     let digest = hasher.finalize();
     u64::from_le_bytes(digest[0..8].try_into().unwrap())
+}
+#[derive(Debug, Clone)]
+struct GraphEdgeRow {
+    edge_id: String,
+    subject_id: String,
+    relation: String,
+    object_id: String,
+    metadata_json: String,
+    resource_uri: Option<String>,
+    session_id: Option<String>,
+    updated_at: i64,
 }

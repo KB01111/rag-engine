@@ -145,7 +145,7 @@ func (m *Manager) ListModels(ctx context.Context, _ *emptypb.Empty) (*pb.ModelLi
 		return nil, err
 	}
 	for _, model := range localModels {
-		discovered[model.Id] = model
+		discovered[modelStoreKey(model)] = model
 	}
 
 	for _, provider := range m.providers {
@@ -154,16 +154,20 @@ func (m *Manager) ListModels(ctx context.Context, _ *emptypb.Empty) (*pb.ModelLi
 			continue
 		}
 		for _, model := range models {
-			discovered[model.Id] = model
+			discovered[modelStoreKey(model)] = model
 		}
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, modelInfo := range discovered {
-		existing := m.models[modelInfo.Id]
+	for key, modelInfo := range discovered {
+		existing := m.models[key]
 		loaded := existing != nil && existing.Loaded
+		displayID := modelInfo.Id
+		if loaded && existing != nil && existing.ID != "" {
+			displayID = existing.ID
+		}
 		metadata := cloneStringMap(modelInfo.Metadata)
 		if metadata == nil {
 			metadata = map[string]string{}
@@ -172,8 +176,8 @@ func (m *Manager) ListModels(ctx context.Context, _ *emptypb.Empty) (*pb.ModelLi
 			metadata["loaded_at"] = existing.Metadata["loaded_at"]
 		}
 
-		m.models[modelInfo.Id] = &Model{
-			ID:              modelInfo.Id,
+		m.models[key] = &Model{
+			ID:              displayID,
 			Name:            modelInfo.Name,
 			Path:            modelInfo.Path,
 			Provider:        metadata["provider"],
@@ -182,7 +186,7 @@ func (m *Manager) ListModels(ctx context.Context, _ *emptypb.Empty) (*pb.ModelLi
 			Loaded:          loaded,
 			Metadata:        metadata,
 		}
-		discovered[modelInfo.Id] = m.models[modelInfo.Id].toProto()
+		discovered[key] = m.models[key].toProto()
 	}
 
 	for id, model := range m.models {
@@ -240,6 +244,9 @@ func (m *Manager) LoadModel(ctx context.Context, req *pb.LoadModelRequest) (*pb.
 	}
 
 	model.Loaded = true
+	if providerName != "" {
+		model.ID = modelID
+	}
 	if model.Metadata == nil {
 		model.Metadata = map[string]string{}
 	}
@@ -387,6 +394,12 @@ func (m *Manager) resolveRequestedModel(modelID, providerName string) (string, s
 	if model, ok := m.models[modelID]; ok && model.Provider != "" {
 		return modelID, model.Provider, effectiveProviderModelID(model)
 	}
+	for key, model := range m.models {
+		if model.Provider == "" || model.ID != modelID {
+			continue
+		}
+		return key, model.Provider, effectiveProviderModelID(model)
+	}
 
 	return modelID, "", modelID
 }
@@ -506,7 +519,7 @@ func (p *openAICompatibleProvider) ListModels(ctx context.Context) ([]*pb.ModelI
 		}
 
 		models = append(models, &pb.ModelInfo{
-			Id:        providerModelIDToID(p.name, model.ID),
+			Id:        model.ID,
 			Name:      model.ID,
 			Path:      p.baseURL,
 			SizeBytes: 0,
@@ -798,6 +811,20 @@ func cloneStringMap(input map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func modelStoreKey(model *pb.ModelInfo) string {
+	if model == nil {
+		return ""
+	}
+	if provider := model.GetMetadata()["provider"]; provider != "" {
+		providerModelID := model.GetMetadata()["provider_model_id"]
+		if providerModelID == "" {
+			providerModelID = model.GetId()
+		}
+		return providerModelIDToID(provider, providerModelID)
+	}
+	return model.GetId()
 }
 
 func (m *Manager) LoadedModelCount() int {

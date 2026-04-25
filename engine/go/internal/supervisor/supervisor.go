@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -17,7 +18,8 @@ import (
 	"github.com/ai-engine/go/internal/rag"
 	"github.com/ai-engine/go/internal/runtime"
 	"github.com/ai-engine/go/internal/training"
-	"log"
+	"github.com/rs/zerolog/log"
+	stdlog "log"
 )
 
 type Supervisor struct {
@@ -26,6 +28,7 @@ type Supervisor struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	config  *config.Config
+	mode    string
 
 	Context  *contextsvc.Manager
 	Runtime  runtime.Service
@@ -69,32 +72,53 @@ func (s *Supervisor) Start() error {
 	if s.running {
 		return fmt.Errorf("supervisor already running")
 	}
+	if s.config.IsProduction() {
+		if !s.config.Context.Enabled {
+			return fmt.Errorf("context backend is required in production mode")
+		}
+		if s.config.Daemon.Command == "" {
+			return fmt.Errorf("daemon backend is required in production mode")
+		}
+	}
 
 	if err := s.config.EnsureDirs(); err != nil {
 		return fmt.Errorf("failed to ensure directories: %w", err)
 	}
-	if err := s.Context.Start(s.ctx); err != nil {
-		if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
-			log.Printf("failed to stop context backend after startup error: %v", stopErr)
-		}
-		return fmt.Errorf("failed to start context backend: %w", err)
-	}
 
+	daemonLaunched := false
 	if s.config.Daemon.Command != "" {
 		if err := s.launchDaemonLocked(); err != nil {
-			s.initLocalServicesLocked()
-			if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
-				log.Printf("failed to stop context backend after daemon startup error: %v", stopErr)
+			if s.config.Daemon.Required || s.config.IsProduction() {
+				return fmt.Errorf("failed to launch required daemon: %w", err)
 			}
-			return fmt.Errorf("failed to launch daemon: %w", err)
+			log.Error().Err(err).Msg("failed to launch optional daemon, falling back to local services")
+			s.initLocalServicesLocked()
+		} else {
+			daemonLaunched = true
 		}
 	} else {
+		if s.config.Daemon.Required {
+			return fmt.Errorf("daemon is required but no command or binary was found")
+		}
 		s.initLocalServicesLocked()
+	}
+
+	if s.config.Context.Enabled {
+		if daemonLaunched {
+			log.Info().Msg("context backend startup skipped; daemon is acting as context client")
+		} else {
+			if err := s.Context.Start(s.ctx); err != nil {
+				if stopErr := s.Context.Stop(context.Background()); stopErr != nil {
+					log.Error().Err(stopErr).Msg("failed to stop context backend after startup error")
+				}
+				return fmt.Errorf("failed to start context backend: %w", err)
+			}
+		}
 	}
 
 	s.running = true
 
-	log.Printf("AI Engine supervisor started")
+	stdlog.Printf("AI Engine supervisor started")
 
 	s.wg.Add(1)
 	go s.handleSignals()
@@ -116,7 +140,7 @@ func (s *Supervisor) Stop() error {
 	}
 	s.mu.Unlock()
 	if err := s.Context.Stop(context.Background()); err != nil {
-		log.Printf("failed to stop context backend: %v", err)
+		stdlog.Printf("failed to stop context backend: %v", err)
 	}
 	s.wg.Wait()
 
@@ -124,7 +148,7 @@ func (s *Supervisor) Stop() error {
 	defer s.mu.Unlock()
 	s.running = false
 
-	log.Printf("AI Engine supervisor stopped")
+	stdlog.Printf("AI Engine supervisor stopped")
 	return nil
 }
 
@@ -142,7 +166,7 @@ func (s *Supervisor) handleSignals() {
 
 	select {
 	case sig := <-sigCh:
-		log.Printf("Received signal: %v", sig)
+		stdlog.Printf("Received signal: %v", sig)
 		s.cancel()
 	case <-s.ctx.Done():
 	}
@@ -156,6 +180,11 @@ func (s *Supervisor) Health() map[string]interface{} {
 	ragSvc := s.RAG
 	trainingSvc := s.Training
 	mcpSvc := s.MCP
+	mode := s.mode
+	daemonConfigured := s.config.Daemon.Command != ""
+	daemonCommand := s.config.Daemon.Command
+	daemonAddr := s.config.Daemon.Addr()
+	daemonConnected := s.daemonClient != nil
 	s.mu.RUnlock()
 
 	contextHealth := map[string]interface{}{
@@ -176,9 +205,42 @@ func (s *Supervisor) Health() map[string]interface{} {
 		}
 	}
 
+	degraded := false
+	status := "ok"
+	if !running {
+		status = "stopped"
+		degraded = true
+	} else if !daemonConnected && daemonConfigured {
+		status = "degraded"
+		degraded = true
+	} else if contextManager != nil && contextManager.Enabled() {
+		if ready, ok := contextHealth["ready"].(bool); ok && !ready {
+			status = "degraded"
+			degraded = true
+		}
+	}
+
 	return map[string]interface{}{
-		"running": running,
+		"running":        running,
+		"ready":          running && !degraded,
+		"status":         status,
+		"execution_mode": mode,
+		"degraded":       degraded,
+		"daemon": map[string]interface{}{
+			"configured": daemonConfigured,
+			"required":   s.config.Daemon.Required || s.config.IsProduction(),
+			"connected":  daemonConnected,
+			"addr":       daemonAddr,
+			"command":    daemonCommand,
+		},
 		"context": contextHealth,
+		"service_modes": map[string]interface{}{
+			"runtime":  mode,
+			"rag":      mode,
+			"training": mode,
+			"mcp":      mode,
+			"context":  "context-service",
+		},
 		"runtime": map[string]interface{}{
 			"loaded_models": loadedModelCount(runtimeSvc),
 		},
@@ -195,10 +257,11 @@ func (s *Supervisor) Health() map[string]interface{} {
 }
 
 func (s *Supervisor) initLocalServicesLocked() {
-	s.Runtime = runtime.NewManager(s.config)
+	s.Runtime = s.wrapRuntimeService(runtime.NewManager(s.config))
 	s.RAG = rag.NewManager(s.config, s.Context)
 	s.Training = training.NewManager(s.config)
 	s.MCP = mcp.NewManager(s.config)
+	s.mode = "local-fallback"
 }
 
 func (s *Supervisor) launchDaemonLocked() error {
@@ -228,10 +291,12 @@ func (s *Supervisor) launchDaemonLocked() error {
 	}
 	s.daemonClient = client
 	s.daemonCmd = cmd
-	s.Runtime = client
-	s.RAG = rag.NewManager(s.config, s.Context)
+	s.Context.SetDaemonContextClient(client)
+	s.Runtime = s.wrapRuntimeService(client)
+	s.RAG = client
 	s.Training = client
 	s.MCP = client
+	s.mode = "daemon"
 
 	s.wg.Add(1)
 	go s.watchDaemon(cmd)
@@ -264,7 +329,7 @@ func (s *Supervisor) waitForDaemonClient(addr string) (*daemon.Client, error) {
 }
 
 func (s *Supervisor) daemonEnv() []string {
-	return []string{
+	env := []string{
 		fmt.Sprintf("AI_ENGINE_DAEMON_ADDR=%s", s.config.Daemon.Addr()),
 		fmt.Sprintf("AI_ENGINE_LANCEDB_URI=%s", s.config.Storage.LanceDBURI),
 		fmt.Sprintf("AI_ENGINE_MODELS_PATH=%s", s.config.Runtime.ModelsPath),
@@ -277,13 +342,33 @@ func (s *Supervisor) daemonEnv() []string {
 		fmt.Sprintf("AI_ENGINE_LLAMA_CLI=%s", s.config.Daemon.LlamaCLI),
 		fmt.Sprintf("AI_ENGINE_TRAINING_CLI=%s", s.config.Daemon.TrainingCLI),
 	}
+	if s.config.Context.Enabled {
+		env = append(env, fmt.Sprintf("CONTEXT_DATA_DIR=%s", s.config.Context.DataDir))
+		if len(s.config.Context.ManagedRoots) > 0 {
+			env = append(env, fmt.Sprintf("CONTEXT_ROOTS=%s", strings.Join(s.config.Context.ManagedRoots, string(os.PathListSeparator))))
+		}
+		if s.config.Context.OpenViking.URL != "" {
+			env = append(env, fmt.Sprintf("CONTEXT_OPENVIKING_URL=%s", s.config.Context.OpenViking.URL))
+		}
+		if s.config.Context.OpenViking.APIKey != "" {
+			env = append(env, fmt.Sprintf("CONTEXT_OPENVIKING_API_KEY=%s", s.config.Context.OpenViking.APIKey))
+		}
+	}
+	return env
+}
+
+func (s *Supervisor) wrapRuntimeService(service runtime.Service) runtime.Service {
+	if service == nil || s.Context == nil || !s.Context.Enabled() {
+		return service
+	}
+	return runtime.NewContextAwareService(service, s.Context)
 }
 
 func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {
 	defer s.wg.Done()
 
 	if err := cmd.Wait(); err != nil && s.ctx.Err() == nil {
-		log.Printf("AI Engine daemon exited: %v", err)
+		stdlog.Printf("AI Engine daemon exited: %v", err)
 	}
 
 	if s.ctx.Err() != nil {
@@ -309,14 +394,14 @@ func (s *Supervisor) watchDaemon(cmd *exec.Cmd) {
 
 		restartCount++
 		if restartCount > maxRestarts {
-			log.Printf("AI Engine daemon exceeded max restart attempts (%d)", maxRestarts)
+			stdlog.Printf("AI Engine daemon exceeded max restart attempts (%d)", maxRestarts)
 			s.mu.Unlock()
 			return
 		}
 
-		log.Printf("Restarting AI Engine daemon (attempt %d/%d)...", restartCount, maxRestarts)
+		stdlog.Printf("Restarting AI Engine daemon (attempt %d/%d)...", restartCount, maxRestarts)
 		if err := s.launchDaemonLocked(); err != nil {
-			log.Printf("AI Engine daemon restart failed: %v", err)
+			stdlog.Printf("AI Engine daemon restart failed: %v", err)
 			backoff = backoff * 2
 			if backoff > 30*time.Second {
 				backoff = 30 * time.Second
@@ -355,4 +440,10 @@ func connectionCount(svc mcp.Service) int {
 		return 0
 	}
 	return svc.ConnectionCount()
+}
+
+func (s *Supervisor) ExecutionMode() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.mode
 }

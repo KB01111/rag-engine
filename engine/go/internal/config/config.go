@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -13,6 +14,7 @@ import (
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Daemon   DaemonConfig   `yaml:"daemon"`
+	Services ServicesConfig `yaml:"services"`
 	Storage  StorageConfig  `yaml:"storage"`
 	Runtime  RuntimeConfig  `yaml:"runtime"`
 	Context  ContextConfig  `yaml:"context"`
@@ -25,10 +27,18 @@ type Config struct {
 type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
+	Mode string `yaml:"mode"`
 	GRPC struct {
 		Host string `yaml:"host"`
 		Port int    `yaml:"port"`
 	} `yaml:"grpc"`
+	CORS CORSConfig `yaml:"cors"`
+}
+
+type CORSConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	AllowedOrigins []string `yaml:"allowed_origins"`
+	AllowedHeaders []string `yaml:"allowed_headers"`
 }
 
 type RuntimeConfig struct {
@@ -48,6 +58,7 @@ type MistralRSConfig struct {
 type DaemonConfig struct {
 	Host           string        `yaml:"host"`
 	Port           int           `yaml:"port"`
+	Required       bool          `yaml:"required"`
 	Command        string        `yaml:"command"`
 	Args           []string      `yaml:"args"`
 	StartupTimeout time.Duration `yaml:"startup_timeout"`
@@ -55,6 +66,11 @@ type DaemonConfig struct {
 	ReadyTimeout   time.Duration `yaml:"ready_timeout"`
 	LlamaCLI       string        `yaml:"llama_cli"`
 	TrainingCLI    string        `yaml:"training_cli"`
+}
+
+type ServicesConfig struct {
+	EnableTraining bool `yaml:"enable_training"`
+	EnableMCP      bool `yaml:"enable_mcp"`
 }
 
 type StorageConfig struct {
@@ -117,6 +133,7 @@ func DefaultConfig() *Config {
 		Server: ServerConfig{
 			Host: "127.0.0.1",
 			Port: 8080,
+			Mode: "development",
 			GRPC: struct {
 				Host string `yaml:"host"`
 				Port int    `yaml:"port"`
@@ -124,10 +141,23 @@ func DefaultConfig() *Config {
 				Host: "127.0.0.1",
 				Port: 50051,
 			},
+			CORS: CORSConfig{
+				Enabled: true,
+				AllowedOrigins: []string{
+					"http://localhost:*",
+					"http://127.0.0.1:*",
+					"app://ai-engine",
+				},
+				AllowedHeaders: []string{
+					"Content-Type",
+					"Authorization",
+				},
+			},
 		},
 		Daemon: DaemonConfig{
 			Host:           "127.0.0.1",
 			Port:           50061,
+			Required:       true,
 			Command:        defaultDaemonCommand(),
 			Args:           []string{},
 			StartupTimeout: 15 * time.Second,
@@ -135,6 +165,10 @@ func DefaultConfig() *Config {
 			ReadyTimeout:   10 * time.Second,
 			LlamaCLI:       "llama-cli",
 			TrainingCLI:    "llama-train",
+		},
+		Services: ServicesConfig{
+			EnableTraining: false,
+			EnableMCP:      false,
 		},
 		Storage: StorageConfig{
 			LanceDBURI:         filepath.Join(engineDir, "lancedb"),
@@ -186,6 +220,10 @@ func DefaultConfig() *Config {
 
 func (c *Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port)
+}
+
+func (c *Config) IsProduction() bool {
+	return normalizeServerMode(c.Server.Mode) == "production"
 }
 
 func (c *Config) GRPCAddr() string {
@@ -242,6 +280,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Daemon.Command == "" {
 		cfg.Daemon.Command = defaultDaemonCommand()
 	}
+	cfg.Server.Mode = normalizeServerMode(cfg.Server.Mode)
 	if source.Storage.LanceDBURI == "" && source.RAG.StoragePath != "" {
 		cfg.Storage.LanceDBURI = source.RAG.StoragePath
 	}
@@ -304,27 +343,29 @@ func containsScheme(value string) bool {
 }
 
 func defaultDaemonCommand() string {
-	wd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	return detectDaemonCommand(wd)
+	return detectDaemonCommand(searchRoots()...)
 }
 
-func detectDaemonCommand(root string) string {
-	candidates := []string{
-		filepath.Join(root, "bin", daemonBinaryName()),
-		filepath.Join(root, "go", "bin", daemonBinaryName()),
-		filepath.Join(root, "rust", "target", "debug", daemonBinaryName()),
-		filepath.Join(root, "rust", "target", "release", daemonBinaryName()),
-		filepath.Join(root, "..", "rust", "target", "debug", daemonBinaryName()),
-		filepath.Join(root, "..", "rust", "target", "release", daemonBinaryName()),
-	}
+func detectDaemonCommand(roots ...string) string {
+	binary := daemonBinaryName()
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
 
-	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err == nil && !info.IsDir() {
-			return candidate
+		for _, candidate := range []string{
+			filepath.Join(root, binary),
+			filepath.Join(root, "bin", binary),
+			filepath.Join(root, "go", "bin", binary),
+			filepath.Join(root, "rust", "target", "debug", binary),
+			filepath.Join(root, "rust", "target", "release", binary),
+			filepath.Join(root, "..", "rust", "target", "debug", binary),
+			filepath.Join(root, "..", "rust", "target", "release", binary),
+		} {
+			info, err := os.Stat(candidate)
+			if err == nil && !info.IsDir() {
+				return candidate
+			}
 		}
 	}
 
@@ -353,4 +394,24 @@ func expandPath(path string) string {
 		}
 	}
 	return path
+}
+
+func normalizeServerMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "production":
+		return "production"
+	default:
+		return "development"
+	}
+}
+
+func searchRoots() []string {
+	roots := make([]string, 0, 2)
+	if exe, err := os.Executable(); err == nil {
+		roots = append(roots, filepath.Dir(exe))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		roots = append(roots, wd)
+	}
+	return roots
 }
