@@ -239,10 +239,48 @@ func (c *Config) applyCompatAliases() {
 	}
 }
 
+func (c *Config) validate() error {
+	// Validate runtime.backend
+	validBackends := []string{"mistralrs", "mock"}
+	backendValid := false
+	normalizedBackend := normalizeBackendName(c.Runtime.Backend)
+	for _, valid := range validBackends {
+		if normalizedBackend == valid {
+			backendValid = true
+			break
+		}
+	}
+	if !backendValid {
+		return fmt.Errorf("invalid runtime.backend %q: must be one of %v", c.Runtime.Backend, validBackends)
+	}
+
+	// Validate MistralRS.MaxNumSeqs
+	if c.Runtime.MistralRS.MaxNumSeqs <= 0 {
+		return fmt.Errorf("invalid runtime.mistralrs.max_num_seqs %d: must be greater than 0", c.Runtime.MistralRS.MaxNumSeqs)
+	}
+
+	return nil
+}
+
+func normalizeBackendName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch normalized {
+	case "mistral.rs", "mistral_rs", "mistral-rs":
+		return "mistralrs"
+	case "":
+		return "mistralrs"
+	default:
+		return normalized
+	}
+}
+
 func Load(path string) (*Config, error) {
 	if path == "" {
 		cfg := DefaultConfig()
 		cfg.applyCompatAliases()
+		if err := cfg.validate(); err != nil {
+			return nil, err
+		}
 		return cfg, nil
 	}
 
@@ -285,6 +323,10 @@ func Load(path string) (*Config, error) {
 		cfg.Storage.LanceDBURI = source.RAG.StoragePath
 	}
 	cfg.applyCompatAliases()
+
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
 }

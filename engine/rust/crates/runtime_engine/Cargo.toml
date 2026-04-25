@@ -13,7 +13,7 @@ storage = { path = "../storage" }
 tokio = { version = "1.0", features = ["full"] }
 
 [features]
-default = []
+default = ["mistralrs-backend"]
 mistralrs-backend = ["dep:mistralrs"]
 mistralrs-cuda = ["mistralrs-backend", "mistralrs/cuda"]
 mistralrs-cuda-flash-attn = ["mistralrs-cuda", "mistralrs/flash-attn"]

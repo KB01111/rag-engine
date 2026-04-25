@@ -24,7 +24,7 @@ training_engine = { path = "../training_engine" }
 uuid = { version = "1.0", features = ["v4"] }
 
 [features]
-default = []
+default = ["mistralrs-backend"]
 mistralrs-backend = ["runtime_engine/mistralrs-backend"]
 mistralrs-cuda = ["runtime_engine/mistralrs-cuda"]
 mistralrs-cuda-flash-attn = ["runtime_engine/mistralrs-cuda-flash-attn"]

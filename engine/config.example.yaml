@@ -39,11 +39,13 @@ storage:
 
 runtime:
   models_path: "~/ai-engine/models"
-  # Embedded Rust runtime backend. Use "mistralrs" for real local inference or "mock" for deterministic tests.
+  # Embedded Rust runtime backend. "mistralrs" (default, compiled by default) provides real local inference.
+  # "mock" provides deterministic test responses. Allowed values: "mistralrs", "mock".
   backend: "mistralrs"
   max_memory_mb: 8192
   mistralrs:
     force_cpu: false
+    # max_num_seqs must be greater than 0 (default: 32)
     max_num_seqs: 32
     auto_isq: ""
   providers:
