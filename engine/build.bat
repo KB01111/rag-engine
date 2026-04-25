@@ -188,6 +188,11 @@ if errorlevel 1 (
     echo Failed to copy smoke.ps1 from %ROOT% to %BUNDLE_DIR%
     exit /b 1
 )
+copy /Y "%ROOT%doctor.ps1" "%BUNDLE_DIR%\doctor.ps1" >nul
+if errorlevel 1 (
+    echo Failed to copy doctor.ps1 from %ROOT% to %BUNDLE_DIR%
+    exit /b 1
+)
 copy /Y "%ROOT%README.md" "%BUNDLE_DIR%\README.md" >nul
 if errorlevel 1 (
     echo Failed to copy README.md from %ROOT% to %BUNDLE_DIR%

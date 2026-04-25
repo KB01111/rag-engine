@@ -30,6 +30,15 @@ func TestDefaultConfigSetsLanceDBStorage(t *testing.T) {
 	if cfg.Server.Mode != "development" {
 		t.Fatalf("expected default server mode to be development, got %q", cfg.Server.Mode)
 	}
+	if cfg.RAG.EmbeddingProvider != "fastembed" {
+		t.Fatalf("expected default RAG embedding provider fastembed, got %q", cfg.RAG.EmbeddingProvider)
+	}
+	if cfg.RAG.EmbeddingCacheDir == "" {
+		t.Fatal("expected default RAG embedding cache dir")
+	}
+	if !cfg.RAG.EmbeddingAllowDownload {
+		t.Fatal("expected default RAG embedding downloads to be enabled")
+	}
 }
 
 func TestLoadParsesServerCORSConfig(t *testing.T) {
@@ -166,6 +175,55 @@ runtime:
 	}
 	if cfg.Runtime.MistralRS.AutoISQ != "q4" {
 		t.Fatalf("expected runtime.mistralrs.auto_isq q4, got %q", cfg.Runtime.MistralRS.AutoISQ)
+	}
+}
+
+func TestLoadRAGEmbeddingOptions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	cacheDir := filepath.ToSlash(filepath.Join(dir, "embedding-cache"))
+	if err := os.WriteFile(path, []byte(`
+rag:
+  embedding_provider: "Mock"
+  embedding_model: "mock-384"
+  embedding_cache_dir: "`+cacheDir+`"
+  embedding_allow_download: false
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.RAG.EmbeddingProvider != "mock" {
+		t.Fatalf("expected normalized embedding provider mock, got %q", cfg.RAG.EmbeddingProvider)
+	}
+	if cfg.RAG.EmbeddingModel != "mock-384" {
+		t.Fatalf("expected embedding model mock-384, got %q", cfg.RAG.EmbeddingModel)
+	}
+	if cfg.RAG.EmbeddingCacheDir != cacheDir {
+		t.Fatalf("expected embedding cache dir %q, got %q", cacheDir, cfg.RAG.EmbeddingCacheDir)
+	}
+	if cfg.RAG.EmbeddingAllowDownload {
+		t.Fatal("expected embedding downloads to be disabled")
+	}
+}
+
+func TestLoadRejectsInvalidRAGEmbeddingProvider(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+rag:
+  embedding_provider: "remote"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected invalid embedding provider error")
 	}
 }
 

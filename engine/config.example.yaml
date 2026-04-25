@@ -71,7 +71,10 @@ context:
 
 rag:
   storage_path: "~/ai-engine/lancedb"
+  embedding_provider: "fastembed"
   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  embedding_cache_dir: "~/ai-engine/embedding-cache"
+  embedding_allow_download: true
   chunk_size: 512
   chunk_overlap: 50
   top_k: 10

@@ -15,6 +15,7 @@ For this v1 surface:
 - `Runtime` and `RAG` are the supported frontend services.
 - `Training` and `MCP` are disabled by default and return `UNIMPLEMENTED` from the Go control plane.
 - The daemon is required by default. If no daemon binary or command is available, startup fails fast instead of silently falling back to in-memory managers.
+- RAG uses FastEmbed locally by default and reports embedding metadata plus reindex status through `RagStatus`.
 
 ## Architecture
 
@@ -130,6 +131,21 @@ When model loading fails, run `mistralrs doctor` first to check CUDA/Metal/MKL, 
 - `GetStatus` - Get RAG index status
 - `ListDocuments` - List all documents
 
+The packaged RAG path uses FastEmbed by default:
+
+```yaml
+rag:
+  storage_path: "~/ai-engine/lancedb"
+  embedding_provider: "fastembed"
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  embedding_cache_dir: "~/ai-engine/embedding-cache"
+  embedding_allow_download: true
+```
+
+`RagStatus` includes the active embedding provider, model, dimension, provider
+version, and whether persisted chunks need a reindex after an embedding change.
+Use `embedding_provider: "mock"` only for deterministic tests.
+
 ### Context Service
 - `GetContextStatus` - Context readiness and managed-root status
 - `ListResources` / `SearchContext` - Resource inventory and layered search
@@ -160,7 +176,7 @@ See `config.example.yaml` for configuration options:
 - Daemon host/port plus binary auto-detection
 - Runtime model path and memory limits
 - Context service URL, binary path, data dir, and managed roots
-- RAG settings (chunk size, overlap, embedding model)
+- RAG settings (chunk size, overlap, embedding provider/model/cache)
 - Training working directory and job limits
 - MCP timeout and retry settings
 
@@ -172,12 +188,23 @@ See `config.example.yaml` for configuration options:
 
 - builds the server and daemon,
 - provisions a temporary local config with ephemeral ports,
+- copies a caller-provided GGUF model into the temporary model directory,
+- runs `doctor.ps1` to validate bundled binaries, model readability, loopback ports, runtime backend, and embedding cache settings,
 - launches the Go server and Rust daemon together,
 - runs the `Runtime + RAG` client flow,
 - restarts the stack, and
-- verifies document persistence after restart.
+- verifies real inference output, FastEmbed-backed RAG status, and document persistence after restart.
 
-The smoke path uses a deterministic fake `llama-cli` command so it can validate the runtime contract without depending on an external model runner being preinstalled.
+Run it with a real model path:
+
+```powershell
+cd engine
+.\smoke.ps1 -ModelPath C:\models\your-model.gguf -Force
+```
+
+Use `-ForceCpu` for CPU-only smoke environments. If FastEmbed/model downloads
+are not allowed, pre-populate the embedding cache and pass
+`-DisableEmbeddingDownload -EmbeddingCacheDir <cache-dir>`.
 
 ### Directory Structure
 
@@ -229,6 +256,10 @@ Full API definitions are in `proto/engine.proto`. Key services:
 - `AI_ENGINE_MISTRALRS_FORCE_CPU` - Force CPU execution for embedded `mistral.rs`
 - `AI_ENGINE_MISTRALRS_MAX_NUM_SEQS` - Maximum concurrent `mistral.rs` sequences
 - `AI_ENGINE_MISTRALRS_AUTO_ISQ` - Optional `mistral.rs` in-situ quantization mode
+- `AI_ENGINE_EMBEDDING_PROVIDER` - RAG embedding provider (`fastembed` or `mock`)
+- `AI_ENGINE_EMBEDDING_MODEL` - RAG embedding model, default `sentence-transformers/all-MiniLM-L6-v2`
+- `AI_ENGINE_EMBEDDING_CACHE_DIR` - Local FastEmbed model/cache directory
+- `AI_ENGINE_EMBEDDING_ALLOW_DOWNLOAD` - Whether FastEmbed may download missing model assets
 
 ## Verification Notes
 
