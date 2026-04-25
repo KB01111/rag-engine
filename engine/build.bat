@@ -27,7 +27,13 @@ set "CARGOEXE=cargo"
 if exist "%USERPROFILE%\.cargo\bin\cargo.exe" set "CARGOEXE=%USERPROFILE%\.cargo\bin\cargo.exe"
 
 REM Ensure protoc is available locally for both Go codegen and Rust builds.
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PROTOC_SCRIPT%"`) do set "PROTOC=%%i"
+set "PROTOC="
+for /f "delims=" %%i in ('where protoc 2^>nul') do if not defined PROTOC set "PROTOC=%%i"
+if not exist "%PROTOC%" (
+    set "PWSHEXE=powershell"
+    if exist "%ProgramFiles%\PowerShell\7\pwsh.exe" set "PWSHEXE=%ProgramFiles%\PowerShell\7\pwsh.exe"
+    for /f "delims=" %%i in ('""%PWSHEXE%" -NoProfile -ExecutionPolicy Bypass -File "%PROTOC_SCRIPT%""') do set "PROTOC=%%i"
+)
 if not exist "%PROTOC%" (
     echo Failed to provision protoc
     exit /b 1
@@ -44,23 +50,30 @@ if exist "%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe" set "PROTOC_GEN_GO_GRPC=%
 cd /d "%GO_DIR%"
 call "%GOEXE%" mod download
 if errorlevel 1 (
-    echo Failed to download Go dependencies
-    exit /b 1
+    echo Warning: failed to pre-download Go dependencies; continuing with local module cache.
 )
 
 for /f "delims=" %%i in ('"%GOEXE%" env GOPATH') do set "GOPATH_DIR=%%i"
 if defined GOPATH_DIR set "PATH=%GOPATH_DIR%\bin;%PATH%"
 
 echo Installing Go proto plugins...
-call "%GOEXE%" install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-if errorlevel 1 (
-    echo Failed to install protoc-gen-go
-    exit /b 1
+if exist "%PROTOC_GEN_GO%" (
+    echo Using existing protoc-gen-go: %PROTOC_GEN_GO%
+) else (
+    call "%GOEXE%" install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+    if errorlevel 1 (
+        echo Failed to install protoc-gen-go
+        exit /b 1
+    )
 )
-call "%GOEXE%" install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-if errorlevel 1 (
-    echo Failed to install protoc-gen-go-grpc
-    exit /b 1
+if exist "%PROTOC_GEN_GO_GRPC%" (
+    echo Using existing protoc-gen-go-grpc: %PROTOC_GEN_GO_GRPC%
+) else (
+    call "%GOEXE%" install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+    if errorlevel 1 (
+        echo Failed to install protoc-gen-go-grpc
+        exit /b 1
+    )
 )
 
 if exist "%PROTO_DIR%\engine.proto" (
