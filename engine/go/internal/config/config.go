@@ -43,8 +43,15 @@ type CORSConfig struct {
 
 type RuntimeConfig struct {
 	ModelsPath string           `yaml:"models_path"`
-	MaxMemory  int64            `yaml:"max_memory_mb"`
+	Backend    string           `yaml:"backend"`
 	Providers  []ProviderConfig `yaml:"providers"`
+	MistralRS  MistralRSConfig  `yaml:"mistralrs"`
+}
+
+type MistralRSConfig struct {
+	ForceCPU   bool   `yaml:"force_cpu"`
+	MaxNumSeqs int    `yaml:"max_num_seqs"`
+	AutoISQ    string `yaml:"auto_isq"`
 }
 
 type DaemonConfig struct {
@@ -169,8 +176,13 @@ func DefaultConfig() *Config {
 		},
 		Runtime: RuntimeConfig{
 			ModelsPath: filepath.Join(engineDir, "models"),
-			MaxMemory:  8192,
+			Backend:    "mistralrs",
 			Providers:  []ProviderConfig{},
+			MistralRS: MistralRSConfig{
+				ForceCPU:   false,
+				MaxNumSeqs: 32,
+				AutoISQ:    "",
+			},
 		},
 		Context: ContextConfig{
 			Enabled:        false,
@@ -225,10 +237,50 @@ func (c *Config) applyCompatAliases() {
 	}
 }
 
+func (c *Config) validate() error {
+	// Validate runtime.backend
+	validBackends := []string{"mistralrs", "mock"}
+	backendValid := false
+	normalizedBackend := normalizeBackendName(c.Runtime.Backend)
+	for _, valid := range validBackends {
+		if normalizedBackend == valid {
+			backendValid = true
+			break
+		}
+	}
+	if !backendValid {
+		return fmt.Errorf("invalid runtime.backend %q: must be one of %v", c.Runtime.Backend, validBackends)
+	}
+	// Persist the normalized backend name
+	c.Runtime.Backend = normalizedBackend
+
+	// Validate MistralRS.MaxNumSeqs
+	if c.Runtime.MistralRS.MaxNumSeqs <= 0 {
+		return fmt.Errorf("invalid runtime.mistralrs.max_num_seqs %d: must be greater than 0", c.Runtime.MistralRS.MaxNumSeqs)
+	}
+
+	return nil
+}
+
+func normalizeBackendName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch normalized {
+	case "mistral.rs", "mistral_rs", "mistral-rs":
+		return "mistralrs"
+	case "":
+		return "mistralrs"
+	default:
+		return normalized
+	}
+}
+
 func Load(path string) (*Config, error) {
 	if path == "" {
 		cfg := DefaultConfig()
 		cfg.applyCompatAliases()
+		if err := cfg.validate(); err != nil {
+			return nil, err
+		}
 		return cfg, nil
 	}
 
@@ -271,6 +323,10 @@ func Load(path string) (*Config, error) {
 		cfg.Storage.LanceDBURI = source.RAG.StoragePath
 	}
 	cfg.applyCompatAliases()
+
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
 }

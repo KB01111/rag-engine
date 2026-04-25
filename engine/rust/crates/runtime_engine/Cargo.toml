@@ -5,11 +5,19 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
+async-trait = "0.1"
+futures = "0.3"
+mistralrs = { version = "0.8.1", optional = true, default-features = false }
 serde_json = "1.0"
 storage = { path = "../storage" }
 tokio = { version = "1.0", features = ["full"] }
-which = "8.0"
-sysinfo = "0.37"
+
+[features]
+default = ["mistralrs-backend"]
+mistralrs-backend = ["dep:mistralrs"]
+mistralrs-cuda = ["mistralrs-backend", "mistralrs/cuda"]
+mistralrs-cuda-flash-attn = ["mistralrs-cuda", "mistralrs/flash-attn"]
+mistralrs-mkl = ["mistralrs-backend", "mistralrs/mkl"]
 
 [dev-dependencies]
-tempfile = "3.23"
+tempfile = "3"

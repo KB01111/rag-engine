@@ -13,14 +13,13 @@ use context_engine::{
 };
 use embedding::{create_default_engine, EmbeddingEngine};
 use prost_types::{value, Struct, Timestamp, Value};
-use runtime_engine::RuntimeEngine;
+use runtime_engine::{RuntimeEngine, RuntimeInferenceRequest};
 use serde::{Deserialize, Serialize};
 use storage::{
     ChunkSearchQuery, DocumentRecord, EngineStore, MCPConnectionRecord, ModelRecord, SearchMode,
     VectorRecord,
 };
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
 use tonic_health::server::health_reporter;
 use training_engine::TrainingEngine;
@@ -124,7 +123,20 @@ async fn main() -> Result<()> {
         std::env::var("AI_ENGINE_LLAMA_CLI").unwrap_or_else(|_| "llama-cli".to_string());
     let training_dir = std::env::var("AI_ENGINE_TRAINING_DIR")
         .unwrap_or_else(|_| ".ai-engine/training".to_string());
-    let backend = "llama.cpp".to_string();
+    let backend =
+        std::env::var("AI_ENGINE_RUNTIME_BACKEND").unwrap_or_else(|_| "mistralrs".to_string());
+
+    // Read MistralRS configuration from environment
+    let force_cpu = std::env::var("AI_ENGINE_MISTRALRS_FORCE_CPU")
+        .ok()
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(false);
+    let max_num_seqs = std::env::var("AI_ENGINE_MISTRALRS_MAX_NUM_SEQS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok());
+    let auto_isq = std::env::var("AI_ENGINE_MISTRALRS_AUTO_ISQ")
+        .ok()
+        .filter(|v| !v.is_empty());
 
     let store = EngineStore::new(lancedb_uri);
     let embedding_engine = Arc::new(create_default_engine());
@@ -135,7 +147,17 @@ async fn main() -> Result<()> {
     let service = EngineService {
         state: AppState {
             store: store.clone(),
-            runtime: RuntimeEngine::new(store.clone(), models_path, backend.clone(), llama_cli),
+            runtime: RuntimeEngine::new(
+                store.clone(),
+                models_path,
+                backend.clone(),
+                llama_cli,
+                runtime_engine::MistralRsConfig {
+                    force_cpu,
+                    max_num_seqs,
+                    auto_isq,
+                },
+            ),
             training: TrainingEngine::new(store.clone(), training_dir, backend),
             embedding: embedding_engine,
             embedding_provider_name,
@@ -258,11 +280,25 @@ impl Runtime for EngineService {
         let chunks = self
             .state
             .runtime
-            .stream_inference(&first.model_id, &first.prompt, &first.parameters)
+            .stream_inference_stream(RuntimeInferenceRequest {
+                model_id: first.model_id,
+                prompt: first.prompt,
+                parameters: first.parameters,
+                context_refs: first.context_refs,
+            })
             .await
-            .map_err(inference_status)?;
+            .map_err(runtime_status)?;
+        let stream = chunks.map(|chunk| {
+            chunk
+                .map(|chunk| InferenceResponse {
+                    token: chunk.token,
+                    complete: chunk.complete,
+                    metrics: chunk.metrics,
+                })
+                .map_err(runtime_status)
+        });
 
-        Ok(Response::new(Box::pin(bridge_inference_chunks(chunks))))
+        Ok(Response::new(Box::pin(stream)))
     }
 }
 
@@ -1215,6 +1251,24 @@ fn not_found_status(error: impl std::fmt::Display) -> Status {
     Status::not_found(error.to_string())
 }
 
+fn runtime_status(error: anyhow::Error) -> Status {
+    // Try to downcast to RuntimeError for typed error matching
+    if let Some(runtime_err) = error.downcast_ref::<runtime_engine::RuntimeError>() {
+        match runtime_err {
+            runtime_engine::RuntimeError::InvalidParameter { .. } => {
+                Status::invalid_argument(error.to_string())
+            }
+            runtime_engine::RuntimeError::ModelNotFound { .. } => {
+                Status::not_found(error.to_string())
+            }
+            runtime_engine::RuntimeError::Other(_) => Status::internal(error.to_string()),
+        }
+    } else {
+        // Fallback for other error types
+        Status::internal(error.to_string())
+    }
+}
+
 /// Get current time as seconds since the UNIX epoch.
 ///
 /// If the system clock is earlier than the UNIX epoch, returns `0`.
@@ -1322,6 +1376,7 @@ mod tests {
                     create_fake_backend(tempdir.path())
                         .to_string_lossy()
                         .to_string(),
+                    runtime_engine::MistralRsConfig::default(),
                 ),
                 training: TrainingEngine::new(store.clone(), training_dir, "llama.cpp"),
                 embedding_provider_name: embedding_engine.name().to_string(),

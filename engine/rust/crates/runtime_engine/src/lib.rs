@@ -1,165 +1,161 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+use futures::{stream, Stream, StreamExt};
 use storage::{EngineStore, ModelRecord};
-use sysinfo::System;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
-use tokio::sync::mpsc;
-use which::which;
+use tokio::sync::RwLock;
 
-#[derive(Debug, Clone)]
-pub struct RuntimeResources {
-    pub cpu_percent: f32,
-    pub memory_used_bytes: u64,
-    pub memory_total_bytes: u64,
+pub type InferenceStream = Pin<Box<dyn Stream<Item = Result<InferenceChunk>> + Send>>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeError {
+    #[error("invalid runtime parameter {parameter}: {details}")]
+    InvalidParameter { parameter: String, details: String },
+    #[error("model not found: {model_id}")]
+    ModelNotFound { model_id: String },
+    #[error("{0}")]
+    Other(#[from] anyhow::Error),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InferenceChunk {
-    pub token: String,
-    pub complete: bool,
-    pub metrics: HashMap<String, String>,
-}
-
-pub trait InferenceBackend: Send + Sync {
-    fn backend_name(&self) -> &str;
-    fn infer(&self, model: &ModelRecord, prompt: &str) -> Result<Vec<InferenceChunk>>;
-}
-
-#[derive(Debug, Clone)]
-pub struct WhitespaceInferenceBackend {
-    backend_name: String,
-}
-
-impl WhitespaceInferenceBackend {
-    pub fn new(backend_name: impl Into<String>) -> Self {
-        Self {
-            backend_name: backend_name.into(),
-        }
-    }
-}
-
-impl InferenceBackend for WhitespaceInferenceBackend {
-    fn backend_name(&self) -> &str {
-        &self.backend_name
-    }
-
-    fn infer(&self, model: &ModelRecord, prompt: &str) -> Result<Vec<InferenceChunk>> {
-        let trimmed = prompt.trim();
-        let tokens = if trimmed.is_empty() {
-            vec![
-                "No".to_string(),
-                "prompt".to_string(),
-                "provided.".to_string(),
-            ]
-        } else {
-            let split: Vec<String> = trimmed.split_whitespace().map(String::from).collect();
-            let mut result = Vec::with_capacity(split.len() * 2 - 1);
-            for (i, token) in split.into_iter().enumerate() {
-                if i > 0 {
-                    result.push(" ".to_string());
-                }
-                result.push(token);
-            }
-            result
-        };
-
-        let mut chunks = Vec::with_capacity(tokens.len().max(1));
-        for (index, token) in tokens.into_iter().enumerate() {
-            let complete = index + 1 == chunks.capacity();
-            let mut metrics = HashMap::new();
-            metrics.insert("backend".to_string(), self.backend_name.clone());
-            metrics.insert("model".to_string(), model.id.clone());
-            if complete {
-                metrics.insert("status".to_string(), "complete".to_string());
-            }
-            chunks.push(InferenceChunk {
-                token,
-                complete,
-                metrics,
-            });
-        }
-
-        if chunks.is_empty() {
-            chunks.push(InferenceChunk {
-                token: String::new(),
-                complete: true,
-                metrics: HashMap::from([
-                    ("backend".to_string(), self.backend_name.clone()),
-                    ("model".to_string(), model.id.clone()),
-                    ("status".to_string(), "complete".to_string()),
-                ]),
-            });
-        } else if let Some(last) = chunks.last_mut() {
-            last.complete = true;
-            last.metrics
-                .insert("status".to_string(), "complete".to_string());
-        }
-
-        Ok(chunks)
-    }
+#[derive(Debug, Clone, Default)]
+pub struct MistralRsConfig {
+    pub force_cpu: bool,
+    pub max_num_seqs: Option<usize>,
+    pub auto_isq: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct RuntimeEngine {
     store: EngineStore,
     models_path: PathBuf,
-    backend_name: String,
-    backend_command: String,
+    backend: Arc<dyn RuntimeBackend>,
+    mistralrs_config: MistralRsConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeInferenceRequest {
+    pub model_id: String,
+    pub prompt: String,
+    pub parameters: HashMap<String, String>,
+    pub context_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InferenceChunk {
+    pub token: String,
+    pub complete: bool,
+    pub metrics: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RuntimeParameters {
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub top_k: Option<usize>,
+    pub max_tokens: Option<usize>,
+    pub seed: Option<u64>,
+    pub stop: Vec<String>,
+    pub truncate_sequence: Option<bool>,
+    pub repetition_penalty: Option<f32>,
+}
+
+#[async_trait]
+pub trait RuntimeBackend: Send + Sync {
+    fn name(&self) -> &str;
+    async fn list_models(&self, models: Vec<ModelRecord>) -> Result<Vec<ModelRecord>>;
+    async fn load_model(&self, model: &ModelRecord) -> Result<()>;
+    async fn unload_model(&self, model_id: &str) -> Result<()>;
+    async fn stream_inference(
+        &self,
+        model: &ModelRecord,
+        request: RuntimeInferenceRequest,
+        parameters: RuntimeParameters,
+    ) -> Result<InferenceStream>;
 }
 
 impl RuntimeEngine {
     pub fn new(
         store: EngineStore,
         models_path: impl Into<PathBuf>,
-        backend_name: impl Into<String>,
-        backend_command: impl Into<String>,
+        backend: impl Into<String>,
+        _llama_cli: impl Into<String>,
+        mistralrs_config: MistralRsConfig,
+    ) -> Self {
+        Self::with_backend_name(store, models_path, backend.into(), mistralrs_config)
+    }
+
+    pub fn with_backend_name(
+        store: EngineStore,
+        models_path: impl Into<PathBuf>,
+        backend: impl Into<String>,
+        mistralrs_config: MistralRsConfig,
+    ) -> Self {
+        let backend = create_backend(backend.into(), mistralrs_config.clone());
+        Self {
+            store,
+            models_path: models_path.into(),
+            backend,
+            mistralrs_config,
+        }
+    }
+
+    pub fn with_backend(
+        store: EngineStore,
+        models_path: impl Into<PathBuf>,
+        backend: Arc<dyn RuntimeBackend>,
     ) -> Self {
         Self {
             store,
             models_path: models_path.into(),
-            backend_name: backend_name.into(),
-            backend_command: backend_command.into(),
+            backend,
+            mistralrs_config: MistralRsConfig::default(),
         }
+    }
+
+    pub fn backend_name(&self) -> &str {
+        self.backend.name()
     }
 
     pub async fn list_models(&self) -> Result<Vec<ModelRecord>> {
         self.discover_models().await?;
-        Ok(self.store.list_models().await?)
+        self.backend
+            .list_models(self.store.list_models().await?)
+            .await
     }
 
     pub async fn load_model(&self, model_id: &str) -> Result<ModelRecord> {
         let mut models = self.list_models().await?;
         let Some(model) = models.iter_mut().find(|model| model.id == model_id) else {
-            return Err(anyhow!("model not found: {model_id}"));
+            return Err(RuntimeError::ModelNotFound { model_id: model_id.to_string() }.into());
         };
-        let backend_command = self.resolve_backend_command()?;
 
+        self.load_model_from_record(model.clone()).await
+    }
+
+    async fn load_model_from_record(&self, mut model: ModelRecord) -> Result<ModelRecord> {
+        self.backend.load_model(&model).await?;
         model.status = "loaded".to_string();
-        model.metadata_json = json!({
-            "backend_command": backend_command.to_string_lossy(),
-            "loaded_at": now(),
-        })
-        .to_string();
+        model.backend = self.backend.name().to_string();
         model.updated_at = now();
         self.store.upsert_model(model.clone()).await?;
-        Ok(model.clone())
+        Ok(model)
     }
 
     pub async fn unload_model(&self, model_id: &str) -> Result<()> {
         let mut models = self.list_models().await?;
         let Some(model) = models.iter_mut().find(|model| model.id == model_id) else {
-            return Err(anyhow!("model not found: {model_id}"));
+            return Err(RuntimeError::ModelNotFound { model_id: model_id.to_string() }.into());
         };
 
+        self.backend.unload_model(model_id).await?;
         model.status = "discovered".to_string();
-        model.metadata_json = "{}".to_string();
+        model.backend = self.backend.name().to_string();
         model.updated_at = now();
         self.store.upsert_model(model.clone()).await?;
         Ok(())
@@ -167,200 +163,34 @@ impl RuntimeEngine {
 
     pub async fn stream_inference(
         &self,
-        model_id: &str,
-        prompt: &str,
-        parameters: &HashMap<String, String>,
-    ) -> Result<mpsc::Receiver<Result<String>>> {
-        if prompt.trim().is_empty() {
-            return Err(anyhow!("prompt is required"));
-        }
-
-        let model = self.loaded_model(model_id).await?;
-        let backend_command = self.backend_command_for_model(&model)?;
-        let args = build_backend_args(&model.path, prompt, parameters);
-
-        let mut child = Command::new(&backend_command)
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "failed to start backend command {} for model {}",
-                    backend_command.display(),
-                    model_id
-                )
-            })?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("backend command stdout was not piped"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow!("backend command stderr was not piped"))?;
-
-        let (sender, receiver) = mpsc::channel(32);
-        tokio::spawn(async move {
-            let mut stdout = tokio::io::BufReader::new(stdout);
-            let stderr_task = tokio::spawn(async move {
-                let mut stderr = tokio::io::BufReader::new(stderr);
-                let mut error_output = String::new();
-                let _ = stderr.read_to_string(&mut error_output).await;
-                error_output
-            });
-
-            let mut buffer = [0_u8; 1024];
-            let mut carry = Vec::new();
-            loop {
-                match stdout.read(&mut buffer).await {
-                    Ok(0) => break,
-                    Ok(read) => {
-                        carry.extend_from_slice(&buffer[..read]);
-                        loop {
-                            match std::str::from_utf8(&carry) {
-                                Ok(text) => {
-                                    if !text.is_empty()
-                                        && sender.send(Ok(text.to_string())).await.is_err()
-                                    {
-                                        let _ = child.kill().await;
-                                        return;
-                                    }
-                                    carry.clear();
-                                    break;
-                                }
-                                Err(error) => {
-                                    let valid_up_to = error.valid_up_to();
-                                    if valid_up_to > 0 {
-                                        let chunk = std::str::from_utf8(&carry[..valid_up_to])
-                                            .expect("valid UTF-8 prefix");
-                                        if sender.send(Ok(chunk.to_string())).await.is_err() {
-                                            let _ = child.kill().await;
-                                            return;
-                                        }
-                                        carry.drain(..valid_up_to);
-                                        continue;
-                                    }
-                                    if error.error_len().is_some() {
-                                        let _ = sender
-                                            .send(Err(anyhow!(
-                                                "backend output was not valid UTF-8"
-                                            )))
-                                            .await;
-                                        let _ = child.kill().await;
-                                        return;
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        let _ = sender
-                            .send(Err(anyhow!("failed to read backend output: {error}")))
-                            .await;
-                        let _ = child.kill().await;
-                        return;
-                    }
-                }
-            }
-
-            if !carry.is_empty() {
-                match std::str::from_utf8(&carry) {
-                    Ok(text) => {
-                        if !text.is_empty() && sender.send(Ok(text.to_string())).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        let _ = sender
-                            .send(Err(anyhow!("backend output ended with incomplete UTF-8")))
-                            .await;
-                        return;
-                    }
-                }
-            }
-
-            let status = match child.wait().await {
-                Ok(status) => status,
-                Err(error) => {
-                    let _ = sender
-                        .send(Err(anyhow!("failed to wait for backend command: {error}")))
-                        .await;
-                    return;
-                }
-            };
-
-            let stderr_output = stderr_task.await.unwrap_or_default();
-            if !status.success() {
-                let detail = stderr_output.trim();
-                let message = if detail.is_empty() {
-                    format!("backend command exited with status {status}")
-                } else {
-                    format!("backend command exited with status {status}: {detail}")
-                };
-                let _ = sender.send(Err(anyhow!(message))).await;
-            }
-        });
-
-        Ok(receiver)
+        request: RuntimeInferenceRequest,
+    ) -> Result<Vec<InferenceChunk>> {
+        let stream = self.stream_inference_stream(request).await?;
+        stream.collect::<Vec<_>>().await.into_iter().collect()
     }
 
-    pub fn system_resources(&self) -> RuntimeResources {
-        let mut system = System::new_all();
-        system.refresh_cpu_usage();
-        system.refresh_memory();
-
-        RuntimeResources {
-            cpu_percent: system.global_cpu_usage(),
-            memory_used_bytes: system.used_memory() * 1024,
-            memory_total_bytes: system.total_memory() * 1024,
-        }
+    pub async fn stream_inference_stream(
+        &self,
+        request: RuntimeInferenceRequest,
+    ) -> Result<InferenceStream> {
+        let parameters = RuntimeParameters::parse(&request.parameters)?;
+        let model = self.ensure_loaded_model(&request.model_id).await?;
+        self.backend
+            .stream_inference(&model, request, parameters)
+            .await
     }
 
-    async fn loaded_model(&self, model_id: &str) -> Result<ModelRecord> {
-        let mut models = self.list_models().await?;
-        let Some(model) = models.iter_mut().find(|model| model.id == model_id) else {
-            return Err(anyhow!("model not found: {model_id}"));
+    async fn ensure_loaded_model(&self, model_id: &str) -> Result<ModelRecord> {
+        let models = self.list_models().await?;
+        let Some(model) = models.into_iter().find(|model| model.id == model_id) else {
+            return Err(RuntimeError::ModelNotFound { model_id: model_id.to_string() }.into());
         };
-        if model.status != "loaded" {
-            return Err(anyhow!("model not loaded: {model_id}"));
-        }
-        Ok(model.clone())
-    }
 
-    fn resolve_backend_command(&self) -> Result<PathBuf> {
-        let candidate = Path::new(&self.backend_command);
-        if has_explicit_backend_path(&self.backend_command) {
-            if candidate.exists() {
-                return Ok(candidate.to_path_buf());
-            }
-            return Err(anyhow!(
-                "backend command not found at {}",
-                candidate.to_string_lossy()
-            ));
+        if model.status == "loaded" {
+            return Ok(model);
         }
 
-        which(&self.backend_command)
-            .map_err(|_| anyhow!("backend command not found: {}", self.backend_command))
-    }
-
-    fn backend_command_for_model(&self, model: &ModelRecord) -> Result<PathBuf> {
-        let stored_command = serde_json::from_str::<Value>(&model.metadata_json)
-            .ok()
-            .and_then(|metadata| {
-                metadata
-                    .get("backend_command")
-                    .and_then(|value| value.as_str())
-                    .filter(|value| !value.is_empty())
-                    .map(PathBuf::from)
-            });
-
-        stored_command
-            .map(Ok)
-            .unwrap_or_else(|| self.resolve_backend_command())
+        self.load_model_from_record(model).await
     }
 
     async fn discover_models(&self) -> Result<()> {
@@ -373,7 +203,6 @@ impl RuntimeEngine {
             .collect();
 
         let models_path = self.models_path.clone();
-        let backend_name = self.backend_name.clone();
         let discovered = tokio::task::spawn_blocking(move || {
             let mut models = Vec::new();
             if let Ok(entries) = fs::read_dir(&models_path) {
@@ -384,7 +213,7 @@ impl RuntimeEngine {
                     }
                     if let Ok(metadata) = entry.metadata() {
                         let name = entry.file_name().to_string_lossy().to_string();
-                        models.push((name, path, metadata.len(), backend_name.clone()));
+                        models.push((name, path, metadata.len()));
                     }
                 }
             }
@@ -392,15 +221,15 @@ impl RuntimeEngine {
         })
         .await?;
 
-        for (name, path, size_bytes, backend_name) in discovered {
+        for (name, path, size_bytes) in discovered {
             let existing = existing_map.remove(&name);
             let status = existing
                 .as_ref()
-                .map(|model| model.status.clone())
+                .map(|m| m.status.clone())
                 .unwrap_or_else(|| "discovered".to_string());
             let metadata_json = existing
                 .as_ref()
-                .map(|model| model.metadata_json.clone())
+                .map(|m| m.metadata_json.clone())
                 .unwrap_or_else(|| "{}".to_string());
 
             self.store
@@ -408,7 +237,7 @@ impl RuntimeEngine {
                     id: name.clone(),
                     name: name.clone(),
                     path: path.to_string_lossy().to_string(),
-                    backend: backend_name,
+                    backend: self.backend.name().to_string(),
                     status,
                     metadata_json,
                     size_bytes: size_bytes as i64,
@@ -420,51 +249,431 @@ impl RuntimeEngine {
     }
 }
 
-fn build_backend_args(
-    model_path: &str,
-    prompt: &str,
-    parameters: &HashMap<String, String>,
-) -> Vec<String> {
-    let mut args = vec![
-        "-m".to_string(),
-        model_path.to_string(),
-        "-p".to_string(),
-        prompt.to_string(),
-        "-n".to_string(),
-        parameters
-            .get("n_predict")
-            .cloned()
-            .unwrap_or_else(|| "128".to_string()),
-    ];
+impl RuntimeParameters {
+    pub fn parse(input: &HashMap<String, String>) -> Result<Self> {
+        Ok(Self {
+            temperature: parse_optional_f32(input, "temperature")?,
+            top_p: parse_optional_f32(input, "top_p")?,
+            top_k: parse_optional_usize(input, "top_k")?,
+            max_tokens: parse_optional_usize(input, "max_tokens")?,
+            seed: parse_optional_u64(input, "seed")?,
+            stop: parse_stop(input.get("stop"))?,
+            truncate_sequence: parse_optional_bool(input, "truncate_sequence")?,
+            repetition_penalty: parse_optional_f32(input, "repetition_penalty")?,
+        })
+    }
+}
 
-    if let Some(value) = parameters.get("temperature") {
-        args.push("--temp".to_string());
-        args.push(value.clone());
+#[derive(Debug)]
+pub struct MockBackend {
+    name: String,
+}
+
+impl MockBackend {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
     }
-    if let Some(value) = parameters.get("threads") {
-        args.push("-t".to_string());
-        args.push(value.clone());
-    }
-    if let Some(value) = parameters.get("ctx_size") {
-        args.push("-c".to_string());
-        args.push(value.clone());
-    }
-    if let Some(value) = parameters.get("top_k") {
-        args.push("--top-k".to_string());
-        args.push(value.clone());
-    }
-    if let Some(value) = parameters.get("top_p") {
-        args.push("--top-p".to_string());
-        args.push(value.clone());
+}
+
+#[async_trait]
+impl RuntimeBackend for MockBackend {
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    args
+    async fn list_models(&self, models: Vec<ModelRecord>) -> Result<Vec<ModelRecord>> {
+        Ok(models)
+    }
+
+    async fn load_model(&self, _model: &ModelRecord) -> Result<()> {
+        Ok(())
+    }
+
+    async fn unload_model(&self, _model_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn stream_inference(
+        &self,
+        model: &ModelRecord,
+        request: RuntimeInferenceRequest,
+        parameters: RuntimeParameters,
+    ) -> Result<InferenceStream> {
+        let tokens = mock_tokens(&request.prompt);
+        let total = tokens.len();
+        let chunks = tokens
+            .into_iter()
+            .enumerate()
+            .map(|(index, token)| {
+                Ok(InferenceChunk {
+                    token,
+                    complete: index + 1 == total,
+                    metrics: runtime_metrics(self.name(), model, &request, &parameters),
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(Box::pin(stream::iter(chunks)))
+    }
+}
+
+#[derive(Debug)]
+struct UnavailableBackend {
+    name: String,
+    message: String,
+}
+
+#[async_trait]
+impl RuntimeBackend for UnavailableBackend {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn list_models(&self, models: Vec<ModelRecord>) -> Result<Vec<ModelRecord>> {
+        Ok(models)
+    }
+
+    async fn load_model(&self, _model: &ModelRecord) -> Result<()> {
+        Err(anyhow!("{}", self.message))
+    }
+
+    async fn unload_model(&self, _model_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn stream_inference(
+        &self,
+        _model: &ModelRecord,
+        _request: RuntimeInferenceRequest,
+        _parameters: RuntimeParameters,
+    ) -> Result<InferenceStream> {
+        Err(anyhow!("{}", self.message))
+    }
+}
+
+#[cfg(feature = "mistralrs-backend")]
+mod mistralrs_backend {
+    use super::*;
+    use mistralrs::{
+        ChatCompletionChunkResponse, IsqBits, Model, ModelBuilder, Response, TextMessageRole, TextMessages,
+    };
+
+    pub struct MistralRsBackend {
+        models: RwLock<HashMap<String, Arc<Model>>>,
+        config: MistralRsConfig,
+    }
+
+    impl MistralRsBackend {
+        pub fn new(config: MistralRsConfig) -> Self {
+            Self {
+                models: RwLock::new(HashMap::new()),
+                config,
+            }
+        }
+
+        async fn get_or_load(&self, model: &ModelRecord) -> Result<Arc<Model>> {
+            // Fast path: check if already loaded
+            if let Some(existing) = self.models.read().await.get(&model.id).cloned() {
+                return Ok(existing);
+            }
+
+            // Acquire write lock to prevent concurrent loads
+            let mut models = self.models.write().await;
+
+            // Check again after acquiring write lock (double-checked locking)
+            if let Some(existing) = models.get(&model.id).cloned() {
+                return Ok(existing);
+            }
+
+            // Load the model using the shared builder
+            let loaded = Arc::new(self.build_model(&model.path).await?);
+            models.insert(model.id.clone(), loaded.clone());
+            Ok(loaded)
+        }
+
+        async fn build_model(&self, model_path: &str) -> Result<Model> {
+            let mut builder = ModelBuilder::new(model_path.to_string());
+
+            // Apply MistralRS configuration
+            if self.config.force_cpu {
+                builder = builder.with_force_cpu();
+            }
+            if let Some(max_num_seqs) = self.config.max_num_seqs {
+                builder = builder.with_max_num_seqs(max_num_seqs);
+            }
+            if let Some(ref auto_isq) = self.config.auto_isq {
+                let isq_bits = parse_isq_bits(auto_isq)?;
+                builder = builder.with_auto_isq(isq_bits);
+            }
+
+            builder.build().await
+        }
+    }
+
+    #[async_trait]
+    impl RuntimeBackend for MistralRsBackend {
+        fn name(&self) -> &str {
+            "mistralrs"
+        }
+
+        async fn list_models(&self, models: Vec<ModelRecord>) -> Result<Vec<ModelRecord>> {
+            Ok(models)
+        }
+
+        async fn load_model(&self, model: &ModelRecord) -> Result<()> {
+            let loaded = self.build_model(&model.path).await?;
+            self.models
+                .write()
+                .await
+                .insert(model.id.clone(), Arc::new(loaded));
+            Ok(())
+        }
+
+        async fn unload_model(&self, model_id: &str) -> Result<()> {
+            self.models.write().await.remove(model_id);
+            Ok(())
+        }
+
+        async fn stream_inference(
+            &self,
+            model: &ModelRecord,
+            request: RuntimeInferenceRequest,
+            parameters: RuntimeParameters,
+        ) -> Result<InferenceStream> {
+            let loaded = self.get_or_load(model).await?;
+            let messages =
+                TextMessages::new().add_message(TextMessageRole::User, build_prompt(&request));
+            let stream = loaded.stream_chat_request(messages).await?;
+            let metrics = runtime_metrics(self.name(), model, &request, &parameters);
+            Ok(Box::pin(stream.filter_map(move |response| {
+                let metrics = metrics.clone();
+                async move { mistralrs_response_chunk(response, metrics) }
+            })))
+        }
+    }
+
+    pub fn backend(config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
+        Arc::new(MistralRsBackend::new(config))
+    }
+
+    fn parse_isq_bits(value: &str) -> Result<IsqBits> {
+        match value.trim().to_lowercase().as_str() {
+            "four" | "4" | "q4" => Ok(IsqBits::Four),
+            "eight" | "8" | "q8" => Ok(IsqBits::Eight),
+            other => Err(RuntimeError::InvalidParameter {
+                parameter: "auto_isq".to_string(),
+                details: format!("unsupported ISQ value {other:?}, expected 'four', 'eight', 'q4', or 'q8'"),
+            }.into()),
+        }
+    }
+
+    fn mistralrs_response_chunk(
+        response: Response,
+        metrics: HashMap<String, String>,
+    ) -> Option<Result<InferenceChunk>> {
+        match response {
+            Response::Chunk(ChatCompletionChunkResponse { choices, .. }) => {
+                let token = choices
+                    .into_iter()
+                    .filter_map(|choice| choice.delta.content)
+                    .collect::<Vec<_>>()
+                    .join("");
+                if token.is_empty() {
+                    None
+                } else {
+                    Some(Ok(InferenceChunk {
+                        token,
+                        complete: false,
+                        metrics,
+                    }))
+                }
+            }
+            Response::Done(_) => Some(Ok(InferenceChunk {
+                token: String::new(),
+                complete: true,
+                metrics,
+            })),
+            Response::ModelError(message, _) => Some(Err(anyhow!(message))),
+            Response::CompletionModelError(message, _) => Some(Err(anyhow!(message))),
+            Response::ValidationError(err) => Some(Err(err.into())),
+            Response::InternalError(err) => Some(Err(err.into())),
+            _ => None,
+        }
+    }
+}
+
+fn create_backend(name: String, config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
+    match normalize_backend_name(&name).as_str() {
+        "mock" => Arc::new(MockBackend::new("mock")),
+        "mistralrs" => create_mistralrs_backend(config),
+        other => Arc::new(UnavailableBackend {
+            name: other.to_string(),
+            message: format!("unsupported runtime backend: {other}"),
+        }),
+    }
+}
+
+#[cfg(feature = "mistralrs-backend")]
+fn create_mistralrs_backend(config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
+    mistralrs_backend::backend(config)
+}
+
+#[cfg(not(feature = "mistralrs-backend"))]
+fn create_mistralrs_backend(_config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
+    Arc::new(UnavailableBackend {
+        name: "mistralrs".to_string(),
+        message: "runtime backend mistralrs requires building runtime_engine with the mistralrs-backend feature".to_string(),
+    })
+}
+
+fn normalize_backend_name(name: &str) -> String {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "" => "mistralrs".to_string(),
+        "mistral.rs" | "mistral_rs" | "mistral-rs" => "mistralrs".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn runtime_metrics(
+    backend: &str,
+    model: &ModelRecord,
+    request: &RuntimeInferenceRequest,
+    parameters: &RuntimeParameters,
+) -> HashMap<String, String> {
+    let mut metrics = HashMap::from([
+        ("backend".to_string(), backend.to_string()),
+        ("model".to_string(), model.id.clone()),
+        (
+            "context_ref_count".to_string(),
+            request.context_refs.len().to_string(),
+        ),
+    ]);
+    if let Some(max_tokens) = parameters.max_tokens {
+        metrics.insert("max_tokens".to_string(), max_tokens.to_string());
+    }
+    metrics
+}
+
+fn build_prompt(request: &RuntimeInferenceRequest) -> String {
+    if request.context_refs.is_empty() {
+        return request.prompt.clone();
+    }
+    format!(
+        "Context references:\n- {}\n\n{}",
+        request.context_refs.join("\n- "),
+        request.prompt
+    )
+}
+
+fn mock_tokens(prompt: &str) -> Vec<String> {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return vec![
+            "No".to_string(),
+            "prompt".to_string(),
+            "provided.".to_string(),
+        ];
+    }
+
+    let tokens = trimmed
+        .split_whitespace()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    let mut result = Vec::with_capacity(tokens.len() * 2 - 1);
+    for (index, token) in tokens.into_iter().enumerate() {
+        if index > 0 {
+            result.push(" ".to_string());
+        }
+        result.push(token);
+    }
+    result
+}
+
+fn parse_optional_f32(input: &HashMap<String, String>, key: &str) -> Result<Option<f32>> {
+    input
+        .get(key)
+        .map(|value| {
+            value.parse::<f32>().map_err(|_| {
+                RuntimeError::InvalidParameter {
+                    parameter: key.to_string(),
+                    details: format!("expected float, got {value:?}"),
+                }
+                .into()
+            })
+        })
+        .transpose()
+}
+
+fn parse_optional_usize(input: &HashMap<String, String>, key: &str) -> Result<Option<usize>> {
+    input
+        .get(key)
+        .map(|value| {
+            value.parse::<usize>().map_err(|_| {
+                RuntimeError::InvalidParameter {
+                    parameter: key.to_string(),
+                    details: format!("expected positive integer, got {value:?}"),
+                }
+                .into()
+            })
+        })
+        .transpose()
+}
+
+fn parse_optional_u64(input: &HashMap<String, String>, key: &str) -> Result<Option<u64>> {
+    input
+        .get(key)
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                RuntimeError::InvalidParameter {
+                    parameter: key.to_string(),
+                    details: format!("expected unsigned integer, got {value:?}"),
+                }
+                .into()
+            })
+        })
+        .transpose()
+}
+
+fn parse_optional_bool(input: &HashMap<String, String>, key: &str) -> Result<Option<bool>> {
+    input
+        .get(key)
+        .map(|value| {
+            value.parse::<bool>().map_err(|_| {
+                RuntimeError::InvalidParameter {
+                    parameter: key.to_string(),
+                    details: format!("expected bool, got {value:?}"),
+                }
+                .into()
+            })
+        })
+        .transpose()
+}
+
+fn parse_stop(value: Option<&String>) -> Result<Vec<String>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if trimmed.starts_with('[') {
+        return serde_json::from_str::<Vec<String>>(trimmed).map_err(|_| {
+            RuntimeError::InvalidParameter {
+                parameter: "stop".to_string(),
+                details: "expected string or JSON string array".to_string(),
+            }
+            .into()
+        });
+    }
+    Ok(vec![trimmed.to_string()])
 }
 
 fn is_model_file(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|ext| ext.to_str()),
-        Some("bin" | "gguf" | "ggml")
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase()),
+        Some(ext) if matches!(ext.as_str(), "bin" | "gguf" | "ggml")
     )
 }
 
@@ -477,171 +686,171 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::collections::HashMap;
-    use std::fs;
-    use std::path::{Path, PathBuf};
 
     use tempfile::tempdir;
 
-    use super::*;
-
-    #[tokio::test]
-    async fn load_model_requires_an_available_backend_command() {
-        let tempdir = tempdir().unwrap();
-        let models_dir = tempdir.path().join("models");
-        tokio::fs::create_dir_all(&models_dir).await.unwrap();
-        tokio::fs::write(models_dir.join("demo.gguf"), b"weights")
+    async fn test_engine(backend: &str) -> (RuntimeEngine, tempfile::TempDir, tempfile::TempDir) {
+        let store_dir = tempdir().unwrap();
+        let model_dir = tempdir().unwrap();
+        tokio::fs::write(model_dir.path().join("local.gguf"), b"model")
             .await
             .unwrap();
 
-        let store = EngineStore::new(tempdir.path().join("db").to_string_lossy().to_string());
+        let store = EngineStore::new(store_dir.path().to_string_lossy().to_string());
         let engine = RuntimeEngine::new(
             store,
-            &models_dir,
-            "llama.cpp",
-            "__missing_backend_command__",
+            model_dir.path(),
+            backend,
+            "llama-cli",
+            MistralRsConfig::default(),
         );
-
-        let err = engine.load_model("demo.gguf").await.unwrap_err();
-        assert!(
-            err.to_string().contains("backend command"),
-            "expected backend command validation error, got {err:?}"
-        );
+        (engine, store_dir, model_dir)
     }
 
     #[tokio::test]
-    async fn stream_inference_reads_output_from_the_backend_command() {
-        let tempdir = tempdir().unwrap();
-        let models_dir = tempdir.path().join("models");
-        tokio::fs::create_dir_all(&models_dir).await.unwrap();
-        tokio::fs::write(models_dir.join("demo.gguf"), b"weights")
+    async fn load_model_updates_store_status() {
+        let (engine, _store_dir, _model_dir) = test_engine("mock").await;
+
+        let loaded = engine.load_model("local.gguf").await.unwrap();
+
+        assert_eq!(loaded.id, "local.gguf");
+        assert_eq!(loaded.backend, "mock");
+        assert_eq!(loaded.status, "loaded");
+        assert!(engine
+            .list_models()
             .await
-            .unwrap();
-
-        let backend = create_fake_backend(tempdir.path());
-        let store = EngineStore::new(tempdir.path().join("db").to_string_lossy().to_string());
-        let engine = RuntimeEngine::new(
-            store,
-            &models_dir,
-            "llama.cpp",
-            backend.to_string_lossy().to_string(),
-        );
-
-        engine.load_model("demo.gguf").await.unwrap();
-
-        let mut stream = engine
-            .stream_inference("demo.gguf", "hello from runtime", &HashMap::new())
-            .await
-            .unwrap();
-
-        let mut output = String::new();
-        while let Some(chunk) = stream.recv().await {
-            output.push_str(&chunk.unwrap());
-        }
-
-        assert!(
-            output.contains("backend:hello from runtime"),
-            "expected backend output, got {output:?}"
-        );
+            .unwrap()
+            .into_iter()
+            .any(|model| model.id == "local.gguf" && model.status == "loaded"));
     }
 
     #[tokio::test]
-    async fn stream_inference_preserves_utf8_across_chunk_boundaries() {
-        let tempdir = tempdir().unwrap();
-        let models_dir = tempdir.path().join("models");
-        tokio::fs::create_dir_all(&models_dir).await.unwrap();
-        tokio::fs::write(models_dir.join("demo.gguf"), b"weights")
+    async fn unload_model_clears_loaded_status() {
+        let (engine, _store_dir, _model_dir) = test_engine("mock").await;
+        engine.load_model("local.gguf").await.unwrap();
+
+        engine.unload_model("local.gguf").await.unwrap();
+
+        let model = engine
+            .list_models()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|model| model.id == "local.gguf")
+            .unwrap();
+        assert_eq!(model.status, "discovered");
+    }
+
+    #[tokio::test]
+    async fn stream_inference_emits_ordered_chunks_and_completion() {
+        let (engine, _store_dir, _model_dir) = test_engine("mock").await;
+        engine.load_model("local.gguf").await.unwrap();
+
+        let chunks = engine
+            .stream_inference(RuntimeInferenceRequest {
+                model_id: "local.gguf".to_string(),
+                prompt: "hello world".to_string(),
+                parameters: HashMap::new(),
+                context_refs: vec!["viking://resources/doc".to_string()],
+            })
             .await
             .unwrap();
 
-        let backend = create_split_utf8_backend(tempdir.path());
-        let store = EngineStore::new(tempdir.path().join("db").to_string_lossy().to_string());
-        let engine = RuntimeEngine::new(
-            store,
-            &models_dir,
-            "llama.cpp",
-            backend.to_string_lossy().to_string(),
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| chunk.token.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hello", " ", "world"]
         );
+        assert!(chunks.last().unwrap().complete);
+        assert_eq!(chunks.last().unwrap().metrics["backend"], "mock");
+    }
 
-        engine.load_model("demo.gguf").await.unwrap();
+    #[tokio::test]
+    async fn stream_inference_lazy_loads_discovered_model() {
+        let (engine, _store_dir, _model_dir) = test_engine("mock").await;
+        engine.list_models().await.unwrap();
 
-        let mut stream = engine
-            .stream_inference("demo.gguf", "hello", &HashMap::new())
+        let chunks = engine
+            .stream_inference(RuntimeInferenceRequest {
+                model_id: "local.gguf".to_string(),
+                prompt: "lazy".to_string(),
+                parameters: HashMap::new(),
+                context_refs: Vec::new(),
+            })
             .await
             .unwrap();
 
-        let mut output = String::new();
-        while let Some(chunk) = stream.recv().await {
-            output.push_str(&chunk.unwrap());
-        }
-
-        let expected = format!("{}éb", "a".repeat(1023));
-        assert_eq!(output, expected);
+        assert_eq!(chunks[0].token, "lazy");
+        let model = engine
+            .list_models()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|model| model.id == "local.gguf")
+            .unwrap();
+        assert_eq!(model.status, "loaded");
     }
 
-    fn create_fake_backend(root: &Path) -> PathBuf {
-        if cfg!(windows) {
-            let path = root.join("fake-llama.cmd");
-            fs::write(
-                &path,
-                "@echo off\r\nset \"PROMPT=\"\r\n:next\r\nif \"%~1\"==\"\" goto done\r\nif /I \"%~1\"==\"-p\" (\r\n  set \"PROMPT=%~2\"\r\n  shift\r\n)\r\nshift\r\ngoto next\r\n:done\r\necho backend:%PROMPT%\r\n",
-            )
-            .unwrap();
-            path
-        } else {
-            let path = root.join("fake-llama.sh");
-            fs::write(
-                &path,
-                "#!/bin/sh\nPROMPT=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"-p\" ]; then\n    shift\n    PROMPT=\"$1\"\n  fi\n  shift\ndone\nprintf 'backend:%s\\n' \"$PROMPT\"\n",
-            )
-            .unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
+    #[tokio::test]
+    async fn stream_inference_returns_not_found_for_missing_model() {
+        let (engine, _store_dir, _model_dir) = test_engine("mock").await;
 
-                let mut permissions = fs::metadata(&path).unwrap().permissions();
-                permissions.set_mode(0o755);
-                fs::set_permissions(&path, permissions).unwrap();
-            }
-            path
-        }
+        let error = engine
+            .stream_inference(RuntimeInferenceRequest {
+                model_id: "missing.gguf".to_string(),
+                prompt: "hello".to_string(),
+                parameters: HashMap::new(),
+                context_refs: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("model not found: missing.gguf"));
     }
 
-    fn create_split_utf8_backend(root: &Path) -> PathBuf {
-        if cfg!(windows) {
-            let path = root.join("split-utf8.cmd");
-            fs::write(
-                &path,
-                "@echo off\r\npowershell -NoProfile -Command \"$bytes = New-Object byte[] 1026; for($i=0; $i -lt 1023; $i++){ $bytes[$i] = 97 }; $bytes[1023] = 0xC3; $bytes[1024] = 0xA9; $bytes[1025] = 98; [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)\"\r\n",
-            )
-            .unwrap();
-            path
-        } else {
-            let path = root.join("split-utf8.sh");
-            fs::write(
-                &path,
-                "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 1023 ]; do\n  printf 'a'\n  i=$((i + 1))\ndone\nprintf '\\303'\nprintf '\\251b'\n",
-            )
-            .unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
+    #[tokio::test]
+    async fn stream_inference_rejects_malformed_known_parameters() {
+        let (engine, _store_dir, _model_dir) = test_engine("mock").await;
+        engine.load_model("local.gguf").await.unwrap();
 
-                let mut permissions = fs::metadata(&path).unwrap().permissions();
-                permissions.set_mode(0o755);
-                fs::set_permissions(&path, permissions).unwrap();
-            }
-            path
-        }
+        let error = engine
+            .stream_inference(RuntimeInferenceRequest {
+                model_id: "local.gguf".to_string(),
+                prompt: "hello".to_string(),
+                parameters: HashMap::from([("temperature".to_string(), "warm".to_string())]),
+                context_refs: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("invalid runtime parameter temperature"));
     }
-}
 
-fn has_explicit_backend_path(command: &str) -> bool {
-    let candidate = Path::new(command);
-    candidate.is_absolute()
-        || command.contains(std::path::MAIN_SEPARATOR)
-        || command.contains('/')
-        || command.contains('\\')
-        || command.starts_with("./")
-        || command.starts_with(".\\")
+    #[test]
+    fn parameter_parser_accepts_json_stop_and_ignores_unknown_keys() {
+        let parameters = RuntimeParameters::parse(&HashMap::from([
+            ("stop".to_string(), "[\"</s>\",\"END\"]".to_string()),
+            ("future_option".to_string(), "kept-for-later".to_string()),
+        ]))
+        .unwrap();
+
+        assert_eq!(parameters.stop, vec!["</s>", "END"]);
+    }
+
+    #[test]
+    fn parameter_parser_rejects_malformed_stop_array() {
+        let error = RuntimeParameters::parse(&HashMap::from([(
+            "stop".to_string(),
+            "[\"unterminated\"".to_string(),
+        )]))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("invalid runtime parameter stop"));
+    }
 }
