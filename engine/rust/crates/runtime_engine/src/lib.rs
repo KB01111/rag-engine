@@ -13,11 +13,30 @@ use tokio::sync::RwLock;
 
 pub type InferenceStream = Pin<Box<dyn Stream<Item = Result<InferenceChunk>> + Send>>;
 
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeError {
+    #[error("invalid runtime parameter {parameter}: {details}")]
+    InvalidParameter { parameter: String, details: String },
+    #[error("model not found: {model_id}")]
+    ModelNotFound { model_id: String },
+    #[error("{0}")]
+    Other(#[from] anyhow::Error),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MistralRsConfig {
+    pub force_cpu: bool,
+    pub max_num_seqs: Option<usize>,
+    pub auto_isq: Option<String>,
+    pub max_memory_mb: Option<u64>,
+}
+
 #[derive(Clone)]
 pub struct RuntimeEngine {
     store: EngineStore,
     models_path: PathBuf,
     backend: Arc<dyn RuntimeBackend>,
+    mistralrs_config: MistralRsConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -66,20 +85,24 @@ impl RuntimeEngine {
         store: EngineStore,
         models_path: impl Into<PathBuf>,
         backend: impl Into<String>,
+        _llama_cli: impl Into<String>,
+        mistralrs_config: MistralRsConfig,
     ) -> Self {
-        Self::with_backend_name(store, models_path, backend.into())
+        Self::with_backend_name(store, models_path, backend.into(), mistralrs_config)
     }
 
     pub fn with_backend_name(
         store: EngineStore,
         models_path: impl Into<PathBuf>,
         backend: impl Into<String>,
+        mistralrs_config: MistralRsConfig,
     ) -> Self {
-        let backend = create_backend(backend.into());
+        let backend = create_backend(backend.into(), mistralrs_config.clone());
         Self {
             store,
             models_path: models_path.into(),
             backend,
+            mistralrs_config,
         }
     }
 
@@ -92,6 +115,7 @@ impl RuntimeEngine {
             store,
             models_path: models_path.into(),
             backend,
+            mistralrs_config: MistralRsConfig::default(),
         }
     }
 
@@ -109,21 +133,25 @@ impl RuntimeEngine {
     pub async fn load_model(&self, model_id: &str) -> Result<ModelRecord> {
         let mut models = self.list_models().await?;
         let Some(model) = models.iter_mut().find(|model| model.id == model_id) else {
-            return Err(anyhow!("model not found: {model_id}"));
+            return Err(RuntimeError::ModelNotFound { model_id: model_id.to_string() }.into());
         };
 
-        self.backend.load_model(model).await?;
+        self.load_model_from_record(model.clone()).await
+    }
+
+    async fn load_model_from_record(&self, mut model: ModelRecord) -> Result<ModelRecord> {
+        self.backend.load_model(&model).await?;
         model.status = "loaded".to_string();
         model.backend = self.backend.name().to_string();
         model.updated_at = now();
         self.store.upsert_model(model.clone()).await?;
-        Ok(model.clone())
+        Ok(model)
     }
 
     pub async fn unload_model(&self, model_id: &str) -> Result<()> {
         let mut models = self.list_models().await?;
         let Some(model) = models.iter_mut().find(|model| model.id == model_id) else {
-            return Err(anyhow!("model not found: {model_id}"));
+            return Err(RuntimeError::ModelNotFound { model_id: model_id.to_string() }.into());
         };
 
         self.backend.unload_model(model_id).await?;
@@ -156,14 +184,14 @@ impl RuntimeEngine {
     async fn ensure_loaded_model(&self, model_id: &str) -> Result<ModelRecord> {
         let models = self.list_models().await?;
         let Some(model) = models.into_iter().find(|model| model.id == model_id) else {
-            return Err(anyhow!("model not found: {model_id}"));
+            return Err(RuntimeError::ModelNotFound { model_id: model_id.to_string() }.into());
         };
 
         if model.status == "loaded" {
             return Ok(model);
         }
 
-        self.load_model(model_id).await
+        self.load_model_from_record(model).await
     }
 
     async fn discover_models(&self) -> Result<()> {
@@ -332,29 +360,35 @@ mod mistralrs_backend {
 
     pub struct MistralRsBackend {
         models: RwLock<HashMap<String, Arc<Model>>>,
+        config: MistralRsConfig,
     }
 
     impl MistralRsBackend {
-        pub fn new() -> Self {
+        pub fn new(config: MistralRsConfig) -> Self {
             Self {
                 models: RwLock::new(HashMap::new()),
+                config,
             }
         }
 
         async fn get_or_load(&self, model: &ModelRecord) -> Result<Arc<Model>> {
+            // Fast path: check if already loaded
             if let Some(existing) = self.models.read().await.get(&model.id).cloned() {
                 return Ok(existing);
             }
 
-            self.load_model(model).await?;
-            self.models
-                .read()
-                .await
-                .get(&model.id)
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow!("mistralrs model was not available after load: {}", model.id)
-                })
+            // Acquire write lock to prevent concurrent loads
+            let mut models = self.models.write().await;
+
+            // Check again after acquiring write lock (double-checked locking)
+            if let Some(existing) = models.get(&model.id).cloned() {
+                return Ok(existing);
+            }
+
+            // Load the model using the shared builder
+            let loaded = Arc::new(self.build_model(&model.path).await?);
+            models.insert(model.id.clone(), loaded.clone());
+            Ok(loaded)
         }
     }
 
@@ -369,12 +403,29 @@ mod mistralrs_backend {
         }
 
         async fn load_model(&self, model: &ModelRecord) -> Result<()> {
-            let loaded = ModelBuilder::new(model.path.clone()).build().await?;
+            let loaded = self.build_model(&model.path).await?;
             self.models
                 .write()
                 .await
                 .insert(model.id.clone(), Arc::new(loaded));
             Ok(())
+        }
+
+        async fn build_model(&self, model_path: &str) -> Result<Model> {
+            let mut builder = ModelBuilder::new(model_path.to_string());
+
+            // Apply MistralRS configuration
+            if self.config.force_cpu {
+                builder = builder.with_force_cpu();
+            }
+            if let Some(max_num_seqs) = self.config.max_num_seqs {
+                builder = builder.with_max_num_seqs(max_num_seqs);
+            }
+            if let Some(ref auto_isq) = self.config.auto_isq {
+                builder = builder.with_auto_isq(auto_isq.clone());
+            }
+
+            builder.build().await
         }
 
         async fn unload_model(&self, model_id: &str) -> Result<()> {
@@ -400,8 +451,8 @@ mod mistralrs_backend {
         }
     }
 
-    pub fn backend() -> Arc<dyn RuntimeBackend> {
-        Arc::new(MistralRsBackend::new())
+    pub fn backend(config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
+        Arc::new(MistralRsBackend::new(config))
     }
 
     fn mistralrs_response_chunk(
@@ -432,17 +483,17 @@ mod mistralrs_backend {
             })),
             Response::ModelError(message, _) => Some(Err(anyhow!(message))),
             Response::CompletionModelError(message, _) => Some(Err(anyhow!(message))),
-            Response::ValidationError(message) => Some(Err(anyhow!(message))),
-            Response::InternalError(message) => Some(Err(anyhow!(message))),
+            Response::ValidationError(err) => Some(Err(err.into())),
+            Response::InternalError(err) => Some(Err(err.into())),
             _ => None,
         }
     }
 }
 
-fn create_backend(name: String) -> Arc<dyn RuntimeBackend> {
+fn create_backend(name: String, config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
     match normalize_backend_name(&name).as_str() {
         "mock" => Arc::new(MockBackend::new("mock")),
-        "mistralrs" => create_mistralrs_backend(),
+        "mistralrs" => create_mistralrs_backend(config),
         other => Arc::new(UnavailableBackend {
             name: other.to_string(),
             message: format!("unsupported runtime backend: {other}"),
@@ -451,12 +502,12 @@ fn create_backend(name: String) -> Arc<dyn RuntimeBackend> {
 }
 
 #[cfg(feature = "mistralrs-backend")]
-fn create_mistralrs_backend() -> Arc<dyn RuntimeBackend> {
-    mistralrs_backend::backend()
+fn create_mistralrs_backend(config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
+    mistralrs_backend::backend(config)
 }
 
 #[cfg(not(feature = "mistralrs-backend"))]
-fn create_mistralrs_backend() -> Arc<dyn RuntimeBackend> {
+fn create_mistralrs_backend(_config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
     Arc::new(UnavailableBackend {
         name: "mistralrs".to_string(),
         message: "runtime backend mistralrs requires building runtime_engine with the mistralrs-backend feature".to_string(),
@@ -531,7 +582,11 @@ fn parse_optional_f32(input: &HashMap<String, String>, key: &str) -> Result<Opti
         .get(key)
         .map(|value| {
             value.parse::<f32>().map_err(|_| {
-                anyhow!("invalid runtime parameter {key}: expected float, got {value:?}")
+                RuntimeError::InvalidParameter {
+                    parameter: key.to_string(),
+                    details: format!("expected float, got {value:?}"),
+                }
+                .into()
             })
         })
         .transpose()
@@ -542,7 +597,11 @@ fn parse_optional_usize(input: &HashMap<String, String>, key: &str) -> Result<Op
         .get(key)
         .map(|value| {
             value.parse::<usize>().map_err(|_| {
-                anyhow!("invalid runtime parameter {key}: expected positive integer, got {value:?}")
+                RuntimeError::InvalidParameter {
+                    parameter: key.to_string(),
+                    details: format!("expected positive integer, got {value:?}"),
+                }
+                .into()
             })
         })
         .transpose()
@@ -553,7 +612,11 @@ fn parse_optional_u64(input: &HashMap<String, String>, key: &str) -> Result<Opti
         .get(key)
         .map(|value| {
             value.parse::<u64>().map_err(|_| {
-                anyhow!("invalid runtime parameter {key}: expected unsigned integer, got {value:?}")
+                RuntimeError::InvalidParameter {
+                    parameter: key.to_string(),
+                    details: format!("expected unsigned integer, got {value:?}"),
+                }
+                .into()
             })
         })
         .transpose()
@@ -564,7 +627,11 @@ fn parse_optional_bool(input: &HashMap<String, String>, key: &str) -> Result<Opt
         .get(key)
         .map(|value| {
             value.parse::<bool>().map_err(|_| {
-                anyhow!("invalid runtime parameter {key}: expected bool, got {value:?}")
+                RuntimeError::InvalidParameter {
+                    parameter: key.to_string(),
+                    details: format!("expected bool, got {value:?}"),
+                }
+                .into()
             })
         })
         .transpose()
@@ -580,7 +647,11 @@ fn parse_stop(value: Option<&String>) -> Result<Vec<String>> {
     }
     if trimmed.starts_with('[') && trimmed.ends_with(']') {
         return serde_json::from_str::<Vec<String>>(trimmed).map_err(|_| {
-            anyhow!("invalid runtime parameter stop: expected string or JSON string array")
+            RuntimeError::InvalidParameter {
+                parameter: "stop".to_string(),
+                details: "expected string or JSON string array".to_string(),
+            }
+            .into()
         });
     }
     Ok(vec![trimmed.to_string()])
@@ -617,7 +688,13 @@ mod tests {
             .unwrap();
 
         let store = EngineStore::new(store_dir.path().to_string_lossy().to_string());
-        let engine = RuntimeEngine::new(store, model_dir.path(), backend);
+        let engine = RuntimeEngine::new(
+            store,
+            model_dir.path(),
+            backend,
+            "llama-cli",
+            MistralRsConfig::default(),
+        );
         (engine, store_dir, model_dir)
     }
 

@@ -126,6 +126,21 @@ async fn main() -> Result<()> {
     let backend =
         std::env::var("AI_ENGINE_RUNTIME_BACKEND").unwrap_or_else(|_| "mistralrs".to_string());
 
+    // Read MistralRS configuration from environment
+    let max_memory_mb = std::env::var("AI_ENGINE_RUNTIME_MAX_MEMORY_MB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+    let force_cpu = std::env::var("AI_ENGINE_MISTRALRS_FORCE_CPU")
+        .ok()
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(false);
+    let max_num_seqs = std::env::var("AI_ENGINE_MISTRALRS_MAX_NUM_SEQS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok());
+    let auto_isq = std::env::var("AI_ENGINE_MISTRALRS_AUTO_ISQ")
+        .ok()
+        .filter(|v| !v.is_empty());
+
     let store = EngineStore::new(lancedb_uri);
     let embedding_engine = Arc::new(create_default_engine());
     let embedding_provider_name = embedding_engine.name().to_string();
@@ -135,7 +150,18 @@ async fn main() -> Result<()> {
     let service = EngineService {
         state: AppState {
             store: store.clone(),
-            runtime: RuntimeEngine::new(store.clone(), models_path, backend.clone(), llama_cli),
+            runtime: RuntimeEngine::new(
+                store.clone(),
+                models_path,
+                backend.clone(),
+                llama_cli,
+                runtime_engine::MistralRsConfig {
+                    force_cpu,
+                    max_num_seqs,
+                    auto_isq,
+                    max_memory_mb,
+                },
+            ),
             training: TrainingEngine::new(store.clone(), training_dir, backend),
             embedding: embedding_engine,
             embedding_provider_name,
@@ -1229,14 +1255,21 @@ fn not_found_status(error: impl std::fmt::Display) -> Status {
     Status::not_found(error.to_string())
 }
 
-fn runtime_status(error: impl std::fmt::Display) -> Status {
-    let message = error.to_string();
-    if message.contains("invalid runtime parameter") {
-        Status::invalid_argument(message)
-    } else if message.contains("model not found") {
-        Status::not_found(message)
+fn runtime_status(error: anyhow::Error) -> Status {
+    // Try to downcast to RuntimeError for typed error matching
+    if let Some(runtime_err) = error.downcast_ref::<runtime_engine::RuntimeError>() {
+        match runtime_err {
+            runtime_engine::RuntimeError::InvalidParameter { .. } => {
+                Status::invalid_argument(error.to_string())
+            }
+            runtime_engine::RuntimeError::ModelNotFound { .. } => {
+                Status::not_found(error.to_string())
+            }
+            runtime_engine::RuntimeError::Other(_) => Status::internal(error.to_string()),
+        }
     } else {
-        Status::internal(message)
+        // Fallback for other error types
+        Status::internal(error.to_string())
     }
 }
 
@@ -1347,6 +1380,7 @@ mod tests {
                     create_fake_backend(tempdir.path())
                         .to_string_lossy()
                         .to_string(),
+                    runtime_engine::MistralRsConfig::default(),
                 ),
                 training: TrainingEngine::new(store.clone(), training_dir, "llama.cpp"),
                 embedding_provider_name: embedding_engine.name().to_string(),
