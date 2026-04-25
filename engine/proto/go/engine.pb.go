@@ -2517,13 +2517,18 @@ func (x *ContextSessionHistory) GetEntries() []*ContextSessionEntry {
 }
 
 type RagStatus struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	DocumentCount  int64                  `protobuf:"varint,1,opt,name=document_count,json=documentCount,proto3" json:"document_count,omitempty"`
-	ChunkCount     int64                  `protobuf:"varint,2,opt,name=chunk_count,json=chunkCount,proto3" json:"chunk_count,omitempty"`
-	IndexSizeBytes int64                  `protobuf:"varint,3,opt,name=index_size_bytes,json=indexSizeBytes,proto3" json:"index_size_bytes,omitempty"`
-	EmbeddingModel string                 `protobuf:"bytes,4,opt,name=embedding_model,json=embeddingModel,proto3" json:"embedding_model,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	DocumentCount      int64                  `protobuf:"varint,1,opt,name=document_count,json=documentCount,proto3" json:"document_count,omitempty"`
+	ChunkCount         int64                  `protobuf:"varint,2,opt,name=chunk_count,json=chunkCount,proto3" json:"chunk_count,omitempty"`
+	IndexSizeBytes     int64                  `protobuf:"varint,3,opt,name=index_size_bytes,json=indexSizeBytes,proto3" json:"index_size_bytes,omitempty"`
+	EmbeddingModel     string                 `protobuf:"bytes,4,opt,name=embedding_model,json=embeddingModel,proto3" json:"embedding_model,omitempty"`
+	EmbeddingProvider  string                 `protobuf:"bytes,5,opt,name=embedding_provider,json=embeddingProvider,proto3" json:"embedding_provider,omitempty"`
+	EmbeddingDimension int32                  `protobuf:"varint,6,opt,name=embedding_dimension,json=embeddingDimension,proto3" json:"embedding_dimension,omitempty"`
+	EmbeddingVersion   string                 `protobuf:"bytes,7,opt,name=embedding_version,json=embeddingVersion,proto3" json:"embedding_version,omitempty"`
+	RequiresReindex    bool                   `protobuf:"varint,8,opt,name=requires_reindex,json=requiresReindex,proto3" json:"requires_reindex,omitempty"`
+	ReindexReasons     []string               `protobuf:"bytes,9,rep,name=reindex_reasons,json=reindexReasons,proto3" json:"reindex_reasons,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *RagStatus) Reset() {
@@ -2582,6 +2587,41 @@ func (x *RagStatus) GetEmbeddingModel() string {
 		return x.EmbeddingModel
 	}
 	return ""
+}
+
+func (x *RagStatus) GetEmbeddingProvider() string {
+	if x != nil {
+		return x.EmbeddingProvider
+	}
+	return ""
+}
+
+func (x *RagStatus) GetEmbeddingDimension() int32 {
+	if x != nil {
+		return x.EmbeddingDimension
+	}
+	return 0
+}
+
+func (x *RagStatus) GetEmbeddingVersion() string {
+	if x != nil {
+		return x.EmbeddingVersion
+	}
+	return ""
+}
+
+func (x *RagStatus) GetRequiresReindex() bool {
+	if x != nil {
+		return x.RequiresReindex
+	}
+	return false
+}
+
+func (x *RagStatus) GetReindexReasons() []string {
+	if x != nil {
+		return x.ReindexReasons
+	}
+	return nil
 }
 
 type DocumentList struct {
@@ -3920,13 +3960,18 @@ const file_engine_proto_rawDesc = "" +
 	"\x15ContextSessionHistory\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x125\n" +
-	"\aentries\x18\x02 \x03(\v2\x1b.engine.ContextSessionEntryR\aentries\"\xa6\x01\n" +
+	"\aentries\x18\x02 \x03(\v2\x1b.engine.ContextSessionEntryR\aentries\"\x87\x03\n" +
 	"\tRagStatus\x12%\n" +
 	"\x0edocument_count\x18\x01 \x01(\x03R\rdocumentCount\x12\x1f\n" +
 	"\vchunk_count\x18\x02 \x01(\x03R\n" +
 	"chunkCount\x12(\n" +
 	"\x10index_size_bytes\x18\x03 \x01(\x03R\x0eindexSizeBytes\x12'\n" +
-	"\x0fembedding_model\x18\x04 \x01(\tR\x0eembeddingModel\"B\n" +
+	"\x0fembedding_model\x18\x04 \x01(\tR\x0eembeddingModel\x12-\n" +
+	"\x12embedding_provider\x18\x05 \x01(\tR\x11embeddingProvider\x12/\n" +
+	"\x13embedding_dimension\x18\x06 \x01(\x05R\x12embeddingDimension\x12+\n" +
+	"\x11embedding_version\x18\a \x01(\tR\x10embeddingVersion\x12)\n" +
+	"\x10requires_reindex\x18\b \x01(\bR\x0frequiresReindex\x12'\n" +
+	"\x0freindex_reasons\x18\t \x03(\tR\x0ereindexReasons\"B\n" +
 	"\fDocumentList\x122\n" +
 	"\tdocuments\x18\x01 \x03(\v2\x14.engine.DocumentInfoR\tdocuments\"\xcb\x01\n" +
 	"\fDocumentInfo\x12\x0e\n" +

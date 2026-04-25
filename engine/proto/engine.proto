@@ -312,6 +312,11 @@ message RagStatus {
   int64 chunk_count = 2;
   int64 index_size_bytes = 3;
   string embedding_model = 4;
+  string embedding_provider = 5;
+  int32 embedding_dimension = 6;
+  string embedding_version = 7;
+  bool requires_reindex = 8;
+  repeated string reindex_reasons = 9;
 }
 
 message DocumentList {

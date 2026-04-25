@@ -11,7 +11,7 @@ use context_engine::{
     OpenVikingBridgeConfig, ResourceLayer, ResourceUpsertRequest,
     SearchRequest as ContextSearchRequestModel, SessionEventRequest,
 };
-use embedding::{create_default_engine, EmbeddingEngine};
+use embedding::{create_default_engine, create_engine, EmbeddingConfig, EmbeddingEngine};
 use prost_types::{value, Struct, Timestamp, Value};
 use runtime_engine::{RuntimeEngine, RuntimeInferenceRequest};
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,8 @@ use storage::{
     ChunkSearchQuery, DocumentRecord, EngineStore, MCPConnectionRecord, ModelRecord, SearchMode,
     VectorRecord,
 };
-use tokio_stream::StreamExt;
+use tokio::sync::mpsc;
+use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{transport::Server, Request, Response, Status};
 use tonic_health::server::health_reporter;
 use training_engine::TrainingEngine;
@@ -45,6 +46,11 @@ use engine::{
 
 const MAX_TOP_K: i32 = 1000;
 const MAX_CONTEXT_TOP_K: usize = 100;
+const EMBEDDING_PROVIDER_KEY: &str = "embedding_provider";
+const EMBEDDING_MODEL_KEY: &str = "embedding_model";
+const EMBEDDING_DIMENSION_KEY: &str = "embedding_dimension";
+const EMBEDDING_VERSION_KEY: &str = "embedding_version";
+const EMBEDDING_FINGERPRINT_KEY: &str = "embedding_fingerprint";
 
 type InferenceStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<InferenceResponse, Status>> + Send>>;
@@ -57,8 +63,59 @@ struct AppState {
     runtime: RuntimeEngine,
     training: TrainingEngine,
     embedding: Arc<EmbeddingEngine>,
-    embedding_provider_name: String,
     chunking: ChunkingConfig,
+}
+
+impl AppState {
+    fn embedding_metadata(&self) -> HashMap<String, String> {
+        HashMap::from([
+            (
+                EMBEDDING_PROVIDER_KEY.to_string(),
+                self.embedding.name().to_string(),
+            ),
+            (
+                EMBEDDING_MODEL_KEY.to_string(),
+                self.embedding.model().to_string(),
+            ),
+            (
+                EMBEDDING_DIMENSION_KEY.to_string(),
+                self.embedding.dimension().to_string(),
+            ),
+            (
+                EMBEDDING_VERSION_KEY.to_string(),
+                self.embedding.version().to_string(),
+            ),
+            (
+                EMBEDDING_FINGERPRINT_KEY.to_string(),
+                self.embedding.fingerprint(),
+            ),
+        ])
+    }
+
+    fn reindex_status(&self, chunks: &[VectorRecord]) -> (bool, Vec<String>) {
+        let expected = self.embedding.fingerprint();
+        let stale_chunks = chunks
+            .iter()
+            .filter(|chunk| {
+                chunk
+                    .metadata
+                    .get(EMBEDDING_FINGERPRINT_KEY)
+                    .map(String::as_str)
+                    != Some(expected.as_str())
+            })
+            .count();
+
+        if stale_chunks == 0 {
+            return (false, Vec::new());
+        }
+
+        (
+            true,
+            vec![format!(
+                "{stale_chunks} indexed chunks use stale or missing embedding metadata"
+            )],
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -139,8 +196,7 @@ async fn main() -> Result<()> {
         .filter(|v| !v.is_empty());
 
     let store = EngineStore::new(lancedb_uri);
-    let embedding_engine = Arc::new(create_default_engine());
-    let embedding_provider_name = embedding_engine.name().to_string();
+    let embedding_engine = Arc::new(create_engine(embedding_config_from_env())?);
     let context_service = ContextGrpcService {
         engine: open_context_engine_from_env().await?,
     };
@@ -160,7 +216,6 @@ async fn main() -> Result<()> {
             ),
             training: TrainingEngine::new(store.clone(), training_dir, backend),
             embedding: embedding_engine,
-            embedding_provider_name,
             chunking: ChunkingConfig::default(),
         },
     };
@@ -322,6 +377,8 @@ impl Rag for EngineService {
             .get("title")
             .cloned()
             .unwrap_or_else(|| document_id.clone());
+        let mut metadata = request.metadata;
+        metadata.extend(self.state.embedding_metadata());
         let now = now();
 
         let chunks = chunking::chunk_text(&request.content, &self.state.chunking)
@@ -354,7 +411,7 @@ impl Rag for EngineService {
                 document_id: document_id.clone(),
                 chunk_text: chunk.text.clone(),
                 vector: embeddings[index].vector.clone(),
-                metadata: request.metadata.clone(),
+                metadata: metadata.clone(),
                 created_at: now,
             })
             .collect::<Vec<_>>();
@@ -366,7 +423,7 @@ impl Rag for EngineService {
                     id: document_id.clone(),
                     title,
                     content: request.content,
-                    metadata: request.metadata,
+                    metadata,
                     created_at: now,
                     updated_at: now,
                 },
@@ -457,12 +514,18 @@ impl Rag for EngineService {
             .iter()
             .map(|chunk| (chunk.vector.len() * std::mem::size_of::<f32>()) as i64)
             .sum();
+        let (requires_reindex, reindex_reasons) = self.state.reindex_status(&chunks);
 
         Ok(Response::new(RagStatus {
             document_count: documents.len() as i64,
             chunk_count: chunks.len() as i64,
             index_size_bytes,
-            embedding_model: self.state.embedding_provider_name.clone(),
+            embedding_model: self.state.embedding.model().to_string(),
+            embedding_provider: self.state.embedding.name().to_string(),
+            embedding_dimension: self.state.embedding.dimension() as i32,
+            embedding_version: self.state.embedding.version().to_string(),
+            requires_reindex,
+            reindex_reasons,
         }))
     }
 
@@ -1286,6 +1349,28 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+fn embedding_config_from_env() -> EmbeddingConfig {
+    let provider =
+        std::env::var("AI_ENGINE_EMBEDDING_PROVIDER").unwrap_or_else(|_| "fastembed".to_string());
+    let model = std::env::var("AI_ENGINE_EMBEDDING_MODEL")
+        .unwrap_or_else(|_| "sentence-transformers/all-MiniLM-L6-v2".to_string());
+    let cache_dir = std::env::var("AI_ENGINE_EMBEDDING_CACHE_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from);
+    let allow_download = std::env::var("AI_ENGINE_EMBEDDING_ALLOW_DOWNLOAD")
+        .ok()
+        .and_then(|value| value.parse::<bool>().ok())
+        .unwrap_or(true);
+
+    EmbeddingConfig {
+        provider,
+        model,
+        cache_dir,
+        allow_download,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1342,6 +1427,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rag_status_reports_embedding_metadata_after_upsert() {
+        let service = test_service();
+        service
+            .upsert_document(Request::new(UpsertRequest {
+                document_id: "doc-1".to_string(),
+                content: "retrieval augmented generation uses embeddings".to_string(),
+                metadata: HashMap::new(),
+            }))
+            .await
+            .unwrap();
+
+        let status = service
+            .get_rag_status(Request::new(()))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(status.embedding_provider, "mock");
+        assert_eq!(status.embedding_model, "mock-384");
+        assert_eq!(status.embedding_dimension, 384);
+        assert_eq!(status.embedding_version, "mock-v1");
+        assert!(!status.requires_reindex);
+        assert!(status.reindex_reasons.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rag_status_flags_stale_embedding_metadata() {
+        let service = test_service();
+        let now = now();
+        service
+            .state
+            .store
+            .upsert_document(
+                DocumentRecord {
+                    id: "doc-stale".to_string(),
+                    title: "stale".to_string(),
+                    content: "old embedding metadata".to_string(),
+                    metadata: HashMap::new(),
+                    created_at: now,
+                    updated_at: now,
+                },
+                vec![VectorRecord {
+                    id: "doc-stale-chunk-0".to_string(),
+                    document_id: "doc-stale".to_string(),
+                    chunk_text: "old embedding metadata".to_string(),
+                    vector: vec![0.1; 384],
+                    metadata: HashMap::from([(
+                        EMBEDDING_FINGERPRINT_KEY.to_string(),
+                        "mock:old:384:mock-v0".to_string(),
+                    )]),
+                    created_at: now,
+                }],
+            )
+            .await
+            .unwrap();
+
+        let status = service
+            .get_rag_status(Request::new(()))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(status.requires_reindex);
+        assert_eq!(status.reindex_reasons.len(), 1);
+        assert!(status.reindex_reasons[0].contains("stale or missing"));
+    }
+
+    #[tokio::test]
     async fn stream_inference_emits_completion_when_backend_returns_no_tokens() {
         let (sender, receiver) = mpsc::channel(1);
         drop(sender);
@@ -1379,7 +1532,6 @@ mod tests {
                     runtime_engine::MistralRsConfig::default(),
                 ),
                 training: TrainingEngine::new(store.clone(), training_dir, "llama.cpp"),
-                embedding_provider_name: embedding_engine.name().to_string(),
                 embedding: embedding_engine,
                 chunking: ChunkingConfig::default(),
             },

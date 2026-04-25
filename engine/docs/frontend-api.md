@@ -77,6 +77,25 @@ complete`, and `event: error` examples above for the expected event shapes.
 | `DELETE` | `/api/v1/rag/documents/:id` | Delete a document |
 | `POST` | `/api/v1/rag/search` | Search indexed content |
 
+Status includes embedding metadata so the frontend can surface whether an index
+needs a reindex after the embedding backend changes:
+
+```json
+{
+  "status": {
+    "document_count": 1,
+    "chunk_count": 3,
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "embedding_provider": "fastembed",
+    "embedding_dimension": 384,
+    "embedding_version": "fastembed-5.13.3",
+    "requires_reindex": false,
+    "reindex_reasons": []
+  },
+  "execution_mode": "daemon"
+}
+```
+
 Upsert a document:
 
 ```json

@@ -102,11 +102,14 @@ type OpenVikingConfig struct {
 }
 
 type RAGConfig struct {
-	StoragePath    string `yaml:"storage_path"`
-	EmbeddingModel string `yaml:"embedding_model"`
-	ChunkSize      int    `yaml:"chunk_size"`
-	ChunkOverlap   int    `yaml:"chunk_overlap"`
-	TopK           int    `yaml:"top_k"`
+	StoragePath            string `yaml:"storage_path"`
+	EmbeddingProvider      string `yaml:"embedding_provider"`
+	EmbeddingModel         string `yaml:"embedding_model"`
+	EmbeddingCacheDir      string `yaml:"embedding_cache_dir"`
+	EmbeddingAllowDownload bool   `yaml:"embedding_allow_download"`
+	ChunkSize              int    `yaml:"chunk_size"`
+	ChunkOverlap           int    `yaml:"chunk_overlap"`
+	TopK                   int    `yaml:"top_k"`
 }
 
 type TrainingConfig struct {
@@ -195,11 +198,14 @@ func DefaultConfig() *Config {
 			OpenViking:     OpenVikingConfig{},
 		},
 		RAG: RAGConfig{
-			StoragePath:    filepath.Join(engineDir, "lancedb"),
-			EmbeddingModel: "sentence-transformers/all-MiniLM-L6-v2",
-			ChunkSize:      512,
-			ChunkOverlap:   50,
-			TopK:           10,
+			StoragePath:            filepath.Join(engineDir, "lancedb"),
+			EmbeddingProvider:      "fastembed",
+			EmbeddingModel:         "sentence-transformers/all-MiniLM-L6-v2",
+			EmbeddingCacheDir:      filepath.Join(engineDir, "embedding-cache"),
+			EmbeddingAllowDownload: true,
+			ChunkSize:              512,
+			ChunkOverlap:           50,
+			TopK:                   10,
 		},
 		Training: TrainingConfig{
 			WorkingDir: filepath.Join(engineDir, "training"),
@@ -259,6 +265,23 @@ func (c *Config) validate() error {
 		return fmt.Errorf("invalid runtime.mistralrs.max_num_seqs %d: must be greater than 0", c.Runtime.MistralRS.MaxNumSeqs)
 	}
 
+	validEmbeddingProviders := []string{"fastembed", "mock"}
+	embeddingProviderValid := false
+	normalizedEmbeddingProvider := normalizeEmbeddingProvider(c.RAG.EmbeddingProvider)
+	for _, valid := range validEmbeddingProviders {
+		if normalizedEmbeddingProvider == valid {
+			embeddingProviderValid = true
+			break
+		}
+	}
+	if !embeddingProviderValid {
+		return fmt.Errorf("invalid rag.embedding_provider %q: must be one of %v", c.RAG.EmbeddingProvider, validEmbeddingProviders)
+	}
+	c.RAG.EmbeddingProvider = normalizedEmbeddingProvider
+	if strings.TrimSpace(c.RAG.EmbeddingModel) == "" {
+		return fmt.Errorf("invalid rag.embedding_model: must not be empty")
+	}
+
 	return nil
 }
 
@@ -269,6 +292,18 @@ func normalizeBackendName(name string) string {
 		return "mistralrs"
 	case "":
 		return "mistralrs"
+	default:
+		return normalized
+	}
+}
+
+func normalizeEmbeddingProvider(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch normalized {
+	case "":
+		return "fastembed"
+	case "fast-embed", "fast_embed":
+		return "fastembed"
 	default:
 		return normalized
 	}
@@ -313,6 +348,7 @@ func Load(path string) (*Config, error) {
 	cfg.Context.DataDir = expandPath(cfg.Context.DataDir)
 	cfg.Training.WorkingDir = expandPath(cfg.Training.WorkingDir)
 	cfg.RAG.StoragePath = expandPath(cfg.RAG.StoragePath)
+	cfg.RAG.EmbeddingCacheDir = expandPath(cfg.RAG.EmbeddingCacheDir)
 	cfg.Daemon.Command = expandPath(cfg.Daemon.Command)
 
 	if cfg.Daemon.Command == "" {
@@ -348,6 +384,7 @@ func (c *Config) EnsureDirs() error {
 	appendDir(c.Runtime.ModelsPath)
 	appendDir(c.Context.DataDir)
 	appendDir(c.Training.WorkingDir)
+	appendDir(c.RAG.EmbeddingCacheDir)
 	if isLocalPath(c.Storage.LanceDBURI) {
 		appendDir(c.Storage.LanceDBURI)
 	}

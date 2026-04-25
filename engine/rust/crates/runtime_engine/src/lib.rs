@@ -132,7 +132,10 @@ impl RuntimeEngine {
     pub async fn load_model(&self, model_id: &str) -> Result<ModelRecord> {
         let mut models = self.list_models().await?;
         let Some(model) = models.iter_mut().find(|model| model.id == model_id) else {
-            return Err(RuntimeError::ModelNotFound { model_id: model_id.to_string() }.into());
+            return Err(RuntimeError::ModelNotFound {
+                model_id: model_id.to_string(),
+            }
+            .into());
         };
 
         self.load_model_from_record(model.clone()).await
@@ -150,7 +153,10 @@ impl RuntimeEngine {
     pub async fn unload_model(&self, model_id: &str) -> Result<()> {
         let mut models = self.list_models().await?;
         let Some(model) = models.iter_mut().find(|model| model.id == model_id) else {
-            return Err(RuntimeError::ModelNotFound { model_id: model_id.to_string() }.into());
+            return Err(RuntimeError::ModelNotFound {
+                model_id: model_id.to_string(),
+            }
+            .into());
         };
 
         self.backend.unload_model(model_id).await?;
@@ -183,7 +189,10 @@ impl RuntimeEngine {
     async fn ensure_loaded_model(&self, model_id: &str) -> Result<ModelRecord> {
         let models = self.list_models().await?;
         let Some(model) = models.into_iter().find(|model| model.id == model_id) else {
-            return Err(RuntimeError::ModelNotFound { model_id: model_id.to_string() }.into());
+            return Err(RuntimeError::ModelNotFound {
+                model_id: model_id.to_string(),
+            }
+            .into());
         };
 
         if model.status == "loaded" {
@@ -354,7 +363,8 @@ impl RuntimeBackend for UnavailableBackend {
 mod mistralrs_backend {
     use super::*;
     use mistralrs::{
-        ChatCompletionChunkResponse, IsqBits, Model, ModelBuilder, Response, TextMessageRole, TextMessages,
+        ChatCompletionChunkResponse, IsqBits, Model, ModelBuilder, Response, TextMessageRole,
+        TextMessages,
     };
 
     pub struct MistralRsBackend {
@@ -461,8 +471,11 @@ mod mistralrs_backend {
             "eight" | "8" | "q8" => Ok(IsqBits::Eight),
             other => Err(RuntimeError::InvalidParameter {
                 parameter: "auto_isq".to_string(),
-                details: format!("unsupported ISQ value {other:?}, expected 'four', 'eight', 'q4', or 'q8'"),
-            }.into()),
+                details: format!(
+                    "unsupported ISQ value {other:?}, expected 'four', 'eight', 'q4', or 'q8'"
+                ),
+            }
+            .into()),
         }
     }
 

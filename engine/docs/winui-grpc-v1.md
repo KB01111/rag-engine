@@ -19,7 +19,7 @@
 
 ## Runtime Semantics
 
-- `LoadModel` marks a discovered model as ready for CLI-backed inference.
+- `LoadModel` loads a discovered local model through the configured Rust runtime backend.
 - `StreamInference` requires a loaded model and a non-empty prompt.
 - Runtime streaming forwards backend stdout chunks as `InferenceResponse.token`.
 - The final message uses `complete=true` with an empty token.
@@ -29,6 +29,8 @@
 - `UpsertDocument` requires non-empty content.
 - `Search` requires a non-empty query.
 - `ListDocuments` and `Search` operate on the Rust-backed persistent store.
+- RAG uses FastEmbed by default with `sentence-transformers/all-MiniLM-L6-v2`.
+- `RagStatus` reports embedding provider, model, dimension, provider version, and whether persisted chunks require reindexing after an embedding change.
 - The packaged smoke test verifies persistence by restarting the stack and re-querying the same document.
 
 ## Error Mapping
@@ -51,6 +53,7 @@
 
 ## Current Limitations
 
-- The runtime path depends on a `llama-cli`-compatible command configured through `daemon.llama_cli`.
-- The smoke test uses a fake backend command to validate process orchestration and streaming without requiring a real model runner installation.
+- The runtime path depends on a readable local model file and the configured `mistralrs` backend.
+- The smoke test requires `-ModelPath <path-to-model.gguf>` and validates non-empty real inference output.
+- FastEmbed may need to download model assets on first run unless `embedding_allow_download` is disabled and the cache is pre-populated.
 - `Training` and `MCP` are intentionally out of the first frontend surface.

@@ -16,6 +16,10 @@ func TestDaemonEnvIncludesRuntimeBackendConfig(t *testing.T) {
 	cfg.Runtime.MistralRS.ForceCPU = true
 	cfg.Runtime.MistralRS.MaxNumSeqs = 8
 	cfg.Runtime.MistralRS.AutoISQ = "q8"
+	cfg.RAG.EmbeddingProvider = "fastembed"
+	cfg.RAG.EmbeddingModel = "sentence-transformers/all-MiniLM-L6-v2"
+	cfg.RAG.EmbeddingCacheDir = "C:/tmp/ai-engine/embedding-cache"
+	cfg.RAG.EmbeddingAllowDownload = false
 
 	env := NewSupervisor(cfg).daemonEnv()
 	joined := "\n" + strings.Join(env, "\n") + "\n"
@@ -25,6 +29,10 @@ func TestDaemonEnvIncludesRuntimeBackendConfig(t *testing.T) {
 		"\nAI_ENGINE_MISTRALRS_FORCE_CPU=true\n",
 		"\nAI_ENGINE_MISTRALRS_MAX_NUM_SEQS=8\n",
 		"\nAI_ENGINE_MISTRALRS_AUTO_ISQ=q8\n",
+		"\nAI_ENGINE_EMBEDDING_PROVIDER=fastembed\n",
+		"\nAI_ENGINE_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2\n",
+		"\nAI_ENGINE_EMBEDDING_CACHE_DIR=C:/tmp/ai-engine/embedding-cache\n",
+		"\nAI_ENGINE_EMBEDDING_ALLOW_DOWNLOAD=false\n",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("expected daemon env to contain %q, got %v", strings.TrimSpace(expected), env)
