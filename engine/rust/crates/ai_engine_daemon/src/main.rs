@@ -127,9 +127,6 @@ async fn main() -> Result<()> {
         std::env::var("AI_ENGINE_RUNTIME_BACKEND").unwrap_or_else(|_| "mistralrs".to_string());
 
     // Read MistralRS configuration from environment
-    let max_memory_mb = std::env::var("AI_ENGINE_RUNTIME_MAX_MEMORY_MB")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok());
     let force_cpu = std::env::var("AI_ENGINE_MISTRALRS_FORCE_CPU")
         .ok()
         .and_then(|v| v.parse::<bool>().ok())
@@ -159,7 +156,6 @@ async fn main() -> Result<()> {
                     force_cpu,
                     max_num_seqs,
                     auto_isq,
-                    max_memory_mb,
                 },
             ),
             training: TrainingEngine::new(store.clone(), training_dir, backend),

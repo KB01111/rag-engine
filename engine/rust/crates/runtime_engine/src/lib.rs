@@ -28,7 +28,6 @@ pub struct MistralRsConfig {
     pub force_cpu: bool,
     pub max_num_seqs: Option<usize>,
     pub auto_isq: Option<String>,
-    pub max_memory_mb: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -355,7 +354,7 @@ impl RuntimeBackend for UnavailableBackend {
 mod mistralrs_backend {
     use super::*;
     use mistralrs::{
-        ChatCompletionChunkResponse, Model, ModelBuilder, Response, TextMessageRole, TextMessages,
+        ChatCompletionChunkResponse, IsqBits, Model, ModelBuilder, Response, TextMessageRole, TextMessages,
     };
 
     pub struct MistralRsBackend {
@@ -390,6 +389,24 @@ mod mistralrs_backend {
             models.insert(model.id.clone(), loaded.clone());
             Ok(loaded)
         }
+
+        async fn build_model(&self, model_path: &str) -> Result<Model> {
+            let mut builder = ModelBuilder::new(model_path.to_string());
+
+            // Apply MistralRS configuration
+            if self.config.force_cpu {
+                builder = builder.with_force_cpu();
+            }
+            if let Some(max_num_seqs) = self.config.max_num_seqs {
+                builder = builder.with_max_num_seqs(max_num_seqs);
+            }
+            if let Some(ref auto_isq) = self.config.auto_isq {
+                let isq_bits = parse_isq_bits(auto_isq)?;
+                builder = builder.with_auto_isq(isq_bits);
+            }
+
+            builder.build().await
+        }
     }
 
     #[async_trait]
@@ -409,23 +426,6 @@ mod mistralrs_backend {
                 .await
                 .insert(model.id.clone(), Arc::new(loaded));
             Ok(())
-        }
-
-        async fn build_model(&self, model_path: &str) -> Result<Model> {
-            let mut builder = ModelBuilder::new(model_path.to_string());
-
-            // Apply MistralRS configuration
-            if self.config.force_cpu {
-                builder = builder.with_force_cpu();
-            }
-            if let Some(max_num_seqs) = self.config.max_num_seqs {
-                builder = builder.with_max_num_seqs(max_num_seqs);
-            }
-            if let Some(ref auto_isq) = self.config.auto_isq {
-                builder = builder.with_auto_isq(auto_isq.clone());
-            }
-
-            builder.build().await
         }
 
         async fn unload_model(&self, model_id: &str) -> Result<()> {
@@ -453,6 +453,17 @@ mod mistralrs_backend {
 
     pub fn backend(config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
         Arc::new(MistralRsBackend::new(config))
+    }
+
+    fn parse_isq_bits(value: &str) -> Result<IsqBits> {
+        match value.trim().to_lowercase().as_str() {
+            "four" | "4" | "q4" => Ok(IsqBits::Four),
+            "eight" | "8" | "q8" => Ok(IsqBits::Eight),
+            other => Err(RuntimeError::InvalidParameter {
+                parameter: "auto_isq".to_string(),
+                details: format!("unsupported ISQ value {other:?}, expected 'four', 'eight', 'q4', or 'q8'"),
+            }.into()),
+        }
     }
 
     fn mistralrs_response_chunk(
@@ -645,7 +656,7 @@ fn parse_stop(value: Option<&String>) -> Result<Vec<String>> {
     if trimmed.is_empty() {
         return Ok(Vec::new());
     }
-    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+    if trimmed.starts_with('[') {
         return serde_json::from_str::<Vec<String>>(trimmed).map_err(|_| {
             RuntimeError::InvalidParameter {
                 parameter: "stop".to_string(),

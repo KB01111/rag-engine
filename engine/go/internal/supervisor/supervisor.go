@@ -334,7 +334,6 @@ func (s *Supervisor) daemonEnv() []string {
 		fmt.Sprintf("AI_ENGINE_LANCEDB_URI=%s", s.config.Storage.LanceDBURI),
 		fmt.Sprintf("AI_ENGINE_MODELS_PATH=%s", s.config.Runtime.ModelsPath),
 		fmt.Sprintf("AI_ENGINE_RUNTIME_BACKEND=%s", s.config.Runtime.Backend),
-		fmt.Sprintf("AI_ENGINE_RUNTIME_MAX_MEMORY_MB=%d", s.config.Runtime.MaxMemory),
 		fmt.Sprintf("AI_ENGINE_MISTRALRS_FORCE_CPU=%t", s.config.Runtime.MistralRS.ForceCPU),
 		fmt.Sprintf("AI_ENGINE_MISTRALRS_MAX_NUM_SEQS=%d", s.config.Runtime.MistralRS.MaxNumSeqs),
 		fmt.Sprintf("AI_ENGINE_MISTRALRS_AUTO_ISQ=%s", s.config.Runtime.MistralRS.AutoISQ),

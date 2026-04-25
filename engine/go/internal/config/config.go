@@ -44,7 +44,6 @@ type CORSConfig struct {
 type RuntimeConfig struct {
 	ModelsPath string           `yaml:"models_path"`
 	Backend    string           `yaml:"backend"`
-	MaxMemory  int64            `yaml:"max_memory_mb"`
 	Providers  []ProviderConfig `yaml:"providers"`
 	MistralRS  MistralRSConfig  `yaml:"mistralrs"`
 }
@@ -178,7 +177,6 @@ func DefaultConfig() *Config {
 		Runtime: RuntimeConfig{
 			ModelsPath: filepath.Join(engineDir, "models"),
 			Backend:    "mistralrs",
-			MaxMemory:  8192,
 			Providers:  []ProviderConfig{},
 			MistralRS: MistralRSConfig{
 				ForceCPU:   false,
@@ -253,6 +251,8 @@ func (c *Config) validate() error {
 	if !backendValid {
 		return fmt.Errorf("invalid runtime.backend %q: must be one of %v", c.Runtime.Backend, validBackends)
 	}
+	// Persist the normalized backend name
+	c.Runtime.Backend = normalizedBackend
 
 	// Validate MistralRS.MaxNumSeqs
 	if c.Runtime.MistralRS.MaxNumSeqs <= 0 {
