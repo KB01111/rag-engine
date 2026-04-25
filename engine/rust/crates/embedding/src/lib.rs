@@ -288,7 +288,7 @@ mod fastembed_provider {
     };
 
     pub struct FastEmbedProvider {
-        inner: TextEmbedding,
+        inner: Mutex<TextEmbedding>,
         model: String,
         dimension: usize,
     }
