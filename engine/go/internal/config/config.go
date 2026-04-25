@@ -33,8 +33,16 @@ type ServerConfig struct {
 
 type RuntimeConfig struct {
 	ModelsPath string           `yaml:"models_path"`
+	Backend    string           `yaml:"backend"`
 	MaxMemory  int64            `yaml:"max_memory_mb"`
 	Providers  []ProviderConfig `yaml:"providers"`
+	MistralRS  MistralRSConfig  `yaml:"mistralrs"`
+}
+
+type MistralRSConfig struct {
+	ForceCPU   bool   `yaml:"force_cpu"`
+	MaxNumSeqs int    `yaml:"max_num_seqs"`
+	AutoISQ    string `yaml:"auto_isq"`
 }
 
 type DaemonConfig struct {
@@ -135,8 +143,14 @@ func DefaultConfig() *Config {
 		},
 		Runtime: RuntimeConfig{
 			ModelsPath: filepath.Join(engineDir, "models"),
+			Backend:    "mistralrs",
 			MaxMemory:  8192,
 			Providers:  []ProviderConfig{},
+			MistralRS: MistralRSConfig{
+				ForceCPU:   false,
+				MaxNumSeqs: 32,
+				AutoISQ:    "",
+			},
 		},
 		Context: ContextConfig{
 			Enabled:        false,

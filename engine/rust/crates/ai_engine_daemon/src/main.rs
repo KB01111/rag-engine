@@ -7,14 +7,13 @@ use anyhow::{Context, Result};
 use chunking::ChunkingConfig;
 use embedding::{create_default_engine, EmbeddingEngine};
 use prost_types::{value, Struct, Timestamp, Value};
-use runtime_engine::RuntimeEngine;
+use runtime_engine::{RuntimeEngine, RuntimeInferenceRequest};
 use serde::Deserialize;
 use storage::{
     ChunkSearchQuery, DocumentRecord, EngineStore, MCPConnectionRecord, ModelRecord, SearchMode,
     VectorRecord,
 };
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
 use tonic_health::server::health_reporter;
 use training_engine::TrainingEngine;
@@ -86,7 +85,8 @@ async fn main() -> Result<()> {
         std::env::var("AI_ENGINE_MODELS_PATH").unwrap_or_else(|_| ".ai-engine/models".to_string());
     let training_dir = std::env::var("AI_ENGINE_TRAINING_DIR")
         .unwrap_or_else(|_| ".ai-engine/training".to_string());
-    let backend = "llama.cpp".to_string();
+    let backend =
+        std::env::var("AI_ENGINE_RUNTIME_BACKEND").unwrap_or_else(|_| "mistralrs".to_string());
 
     let store = EngineStore::new(lancedb_uri);
     let embedding_engine = Arc::new(create_default_engine());
@@ -206,26 +206,28 @@ impl Runtime for EngineService {
             .await?
             .ok_or_else(|| Status::invalid_argument("missing inference request"))?;
 
-        let tokens = self.state.runtime.infer_tokens(&first.prompt);
-        let (sender, receiver) = mpsc::channel(8);
-        tokio::spawn(async move {
-            let total = tokens.len();
-            for (index, token) in tokens.into_iter().enumerate() {
-                if sender
-                    .send(Ok(InferenceResponse {
-                        token,
-                        complete: index + 1 == total,
-                        metrics: HashMap::new(),
-                    }))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
+        let chunks = self
+            .state
+            .runtime
+            .stream_inference_stream(RuntimeInferenceRequest {
+                model_id: first.model_id,
+                prompt: first.prompt,
+                parameters: first.parameters,
+                context_refs: first.context_refs,
+            })
+            .await
+            .map_err(runtime_status)?;
+        let stream = chunks.map(|chunk| {
+            chunk
+                .map(|chunk| InferenceResponse {
+                    token: chunk.token,
+                    complete: chunk.complete,
+                    metrics: chunk.metrics,
+                })
+                .map_err(runtime_status)
         });
 
-        Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
+        Ok(Response::new(Box::pin(stream)))
     }
 }
 
@@ -754,6 +756,17 @@ fn internal_status(error: impl std::fmt::Display) -> Status {
 
 fn not_found_status(error: impl std::fmt::Display) -> Status {
     Status::not_found(error.to_string())
+}
+
+fn runtime_status(error: impl std::fmt::Display) -> Status {
+    let message = error.to_string();
+    if message.contains("invalid runtime parameter") {
+        Status::invalid_argument(message)
+    } else if message.contains("model not found") {
+        Status::not_found(message)
+    } else {
+        Status::internal(message)
+    }
 }
 
 fn now() -> i64 {

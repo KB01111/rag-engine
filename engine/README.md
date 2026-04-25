@@ -22,8 +22,8 @@ A high-performance local AI engine with a Go control plane and Rust execution la
 ┌─────────────────────────────────────────────────────────────┐
 │                   Rust Execution Layer                       │
 │  ┌─────────────┐ ┌────────────┐ ┌──────────┐ ┌──────────┐  │
-│  │   RAG       │ │ Embedding  │ │ Chunking │ │ Storage  │  │
-│  │   Engine    │ │   Pipeline │ │   Text   │ │ VectorDB │  │
+│  │  Runtime    │ │   RAG      │ │Embedding │ │ Storage  │  │
+│  │ mistral.rs  │ │  Engine    │ │Pipeline  │ │ VectorDB │  │
 │  └─────────────┘ └────────────┘ └──────────┘ └──────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -67,6 +67,21 @@ cd engine/rust
 cargo build --release
 ```
 
+To build the daemon with embedded `mistral.rs` inference:
+
+```bash
+cd engine/rust
+cargo build --release -p ai_engine_daemon --features mistralrs-backend
+```
+
+Optional hardware feature bundles are exposed through the daemon crate:
+
+```bash
+cargo build --release -p ai_engine_daemon --features mistralrs-mkl
+cargo build --release -p ai_engine_daemon --features mistralrs-cuda
+cargo build --release -p ai_engine_daemon --features mistralrs-cuda-flash-attn
+```
+
 ### 5. Run Client Demo
 
 ```bash
@@ -82,6 +97,32 @@ go run ./cmd/client/main.go
 - `LoadModel` - Load a model into memory
 - `UnloadModel` - Unload a model
 - `StreamInference` - Stream inference responses
+
+The preferred local runtime backend is embedded `mistral.rs`. Configure it with:
+
+```yaml
+runtime:
+  models_path: "~/ai-engine/models"
+  backend: "mistralrs"
+  max_memory_mb: 8192
+  mistralrs:
+    force_cpu: false
+    max_num_seqs: 32
+    auto_isq: ""
+```
+
+For low-risk sidecar validation, run `mistralrs serve --port 1234 -m <model>` and keep using the existing OpenAI-compatible provider path:
+
+```yaml
+runtime:
+  providers:
+    - name: "mistralrs-sidecar"
+      type: "openai-compatible"
+      url: "http://127.0.0.1:1234/v1"
+      api_key: ""
+```
+
+When model loading fails, run `mistralrs doctor` first to check CUDA/Metal/MKL, Hugging Face, and local model environment issues before changing engine code.
 
 ### RAG Service
 - `UpsertDocument` - Add/update documents
@@ -137,6 +178,7 @@ engine/
         ├── chunking/   # Text chunking
         ├── embedding/  # Embedding pipeline
         ├── rag_engine/ # RAG orchestration
+        ├── runtime_engine/ # Pluggable inference backend abstraction
         └── storage/    # Vector storage
 ```
 
@@ -155,3 +197,7 @@ Full API definitions are in `proto/engine.proto`. Key services:
 
 - `AI_ENGINE_CONFIG` - Path to config file
 - `AI_ENGINE_LOG_LEVEL` - Log level (debug, info, warn, error)
+- `AI_ENGINE_RUNTIME_BACKEND` - Runtime backend selected for the Rust daemon (`mistralrs` or `mock`)
+- `AI_ENGINE_MISTRALRS_FORCE_CPU` - Force CPU execution for embedded `mistral.rs`
+- `AI_ENGINE_MISTRALRS_MAX_NUM_SEQS` - Maximum concurrent `mistral.rs` sequences
+- `AI_ENGINE_MISTRALRS_AUTO_ISQ` - Optional `mistral.rs` in-situ quantization mode

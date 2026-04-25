@@ -24,11 +24,18 @@ storage:
 
 runtime:
   models_path: "~/ai-engine/models"
+  # Embedded Rust runtime backend. Use "mistralrs" for real local inference or "mock" for deterministic tests.
+  backend: "mistralrs"
   max_memory_mb: 8192
+  mistralrs:
+    force_cpu: false
+    max_num_seqs: 32
+    auto_isq: ""
   providers:
-    - name: "local-openai"
+    # Optional sidecar validation path: run `mistralrs serve --port 1234 -m <model>` and use this provider.
+    - name: "mistralrs-sidecar"
       type: "openai-compatible"
-      url: "http://127.0.0.1:11434/v1"
+      url: "http://127.0.0.1:1234/v1"
       api_key: ""
 
 context:
