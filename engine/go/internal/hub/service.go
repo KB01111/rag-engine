@@ -260,7 +260,7 @@ func NewService(cfg Config) *Service {
 
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 60 * time.Second}
+client = &http.Client{}
 	}
 
 	extensions := cfg.CompatibleExtensions
