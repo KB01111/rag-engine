@@ -154,7 +154,9 @@ func (s *Server) handleRuntimeHubDownloadEvents(c *gin.Context) {
 	header.Set("Content-Type", "text/event-stream")
 	header.Set("Cache-Control", "no-cache")
 	header.Set("Connection", "keep-alive")
+	header.Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeader(http.StatusOK)
+	c.Writer.Flush()
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -164,12 +166,16 @@ func (s *Server) handleRuntimeHubDownloadEvents(c *gin.Context) {
 	for {
 		download, ok := s.hub.GetDownload(id)
 		if !ok {
-			_ = writeHubDownloadEvent(c.Writer, "error", apiErrorBody{Error: apiError{Code: apiErrorNotFound, Message: "download not found"}})
+			if err := writeHubDownloadEvent(c.Writer, "error", apiErrorBody{Error: apiError{Code: apiErrorNotFound, Message: "download not found"}}); err != nil {
+				return
+			}
 			return
 		}
 		if download.Status != lastStatus || download.DownloadedBytes != lastBytes || download.Terminal() {
 			event := downloadEventName(download.Status)
-			_ = writeHubDownloadEvent(c.Writer, event, download)
+			if err := writeHubDownloadEvent(c.Writer, event, download); err != nil {
+				return
+			}
 			lastStatus = download.Status
 			lastBytes = download.DownloadedBytes
 		}

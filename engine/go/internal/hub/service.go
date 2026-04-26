@@ -130,7 +130,8 @@ type Service struct {
 	modelsPath           string
 	maxDownloadBytes     int64
 	compatibleExtensions map[string]struct{}
-	http                 *http.Client
+	metadataClient       *http.Client
+	streamingClient      *http.Client
 	userAgent            string
 
 	mu        sync.RWMutex
@@ -260,11 +261,23 @@ func NewService(cfg Config) *Service {
 		endpoint = "https://huggingface.co"
 	}
 
-	client := cfg.HTTPClient
-	if client == nil {
-		client = &http.Client{
+	// Create separate clients for metadata vs streaming
+	var metadataClient, streamingClient *http.Client
+	if cfg.HTTPClient != nil {
+		// Use provided client as base for metadata
+		metadataClient = cfg.HTTPClient
+		// Create streaming client without total timeout
+		streamingClient = &http.Client{
+			Transport: cfg.HTTPClient.Transport,
+		}
+	} else {
+		// Create default clients
+		// Metadata client with short timeout for API calls
+		metadataClient = &http.Client{
 			Timeout: 30 * time.Second,
 		}
+		// Streaming client without total timeout for long downloads
+		streamingClient = &http.Client{}
 	}
 
 	extensions := cfg.CompatibleExtensions
@@ -293,7 +306,8 @@ func NewService(cfg Config) *Service {
 		modelsPath:           cfg.ModelsPath,
 		maxDownloadBytes:     cfg.MaxDownloadBytes,
 		compatibleExtensions: normalizedExtensions,
-		http:                 client,
+		metadataClient:       metadataClient,
+		streamingClient:      streamingClient,
 		userAgent:            userAgent,
 		downloads:            make(map[string]*downloadState),
 	}
@@ -631,7 +645,7 @@ func (s *Service) headDownload(ctx context.Context, resolvedURL string) (string,
 	}
 	s.prepareRequest(req)
 
-	resp, err := s.http.Do(req)
+	resp, err := s.metadataClient.Do(req)
 	if err != nil {
 		return "", 0, NewError(ErrorCodeBackendUnavailable, err, "failed to inspect Hugging Face model file")
 	}
@@ -668,7 +682,7 @@ func (s *Service) downloadFile(ctx context.Context, id string, license string, e
 		return err
 	}
 	s.prepareRequest(req)
-	resp, err := s.http.Do(req)
+	resp, err := s.streamingClient.Do(req)
 	if err != nil {
 		return NewError(ErrorCodeBackendUnavailable, err, "failed to download Hugging Face model file")
 	}
@@ -895,7 +909,7 @@ func (s *Service) getJSONWithHeaders(ctx context.Context, requestURL string, out
 		return nil, err
 	}
 	s.prepareRequest(req)
-	resp, err := s.http.Do(req)
+	resp, err := s.metadataClient.Do(req)
 	if err != nil {
 		return nil, NewError(ErrorCodeBackendUnavailable, err, "failed to contact Hugging Face Hub")
 	}
