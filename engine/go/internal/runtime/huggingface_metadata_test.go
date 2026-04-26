@@ -45,6 +45,7 @@ func TestDiscoverLocalModelsIncludesHuggingFaceSidecarMetadata(t *testing.T) {
 	require.Equal(t, "acme/tiny", metadata["repo_id"])
 	require.Equal(t, "tiny.gguf", metadata["filename"])
 	require.Equal(t, "main", metadata["revision"])
+	require.Equal(t, manifest.ResolvedURL, metadata["resolved_url"])
 	require.Equal(t, "mit", metadata["license"])
 	require.Equal(t, `"abc123"`, metadata["etag"])
 	require.Equal(t, manifest.DownloadedAt.Format(time.RFC3339), metadata["downloaded_at"])

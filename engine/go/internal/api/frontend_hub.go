@@ -34,6 +34,7 @@ func newRuntimeHubService(cfg *config.Config) RuntimeHubService {
 	})
 }
 
+// SetRuntimeHubService is test-only; called before handlers access s.hub.
 func (s *Server) SetRuntimeHubService(service RuntimeHubService) {
 	s.hub = service
 }
@@ -163,15 +164,7 @@ func (s *Server) handleRuntimeHubDownloadEvents(c *gin.Context) {
 			return
 		}
 		if download.Status != lastStatus || download.DownloadedBytes != lastBytes || download.Terminal() {
-			event := "progress"
-			switch download.Status {
-			case hubsvc.DownloadStatusCompleted:
-				event = "complete"
-			case hubsvc.DownloadStatusFailed:
-				event = "error"
-			case hubsvc.DownloadStatusCanceled:
-				event = "canceled"
-			}
+			event := downloadEventName(download.Status)
 			_ = writeHubDownloadEvent(c.Writer, event, download)
 			lastStatus = download.Status
 			lastBytes = download.DownloadedBytes
@@ -185,6 +178,19 @@ func (s *Server) handleRuntimeHubDownloadEvents(c *gin.Context) {
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+func downloadEventName(status string) string {
+	switch status {
+	case hubsvc.DownloadStatusCompleted:
+		return "complete"
+	case hubsvc.DownloadStatusFailed:
+		return "error"
+	case hubsvc.DownloadStatusCanceled:
+		return "canceled"
+	default:
+		return "progress"
 	}
 }
 

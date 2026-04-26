@@ -400,24 +400,28 @@ func huggingFaceSidecarMetadata(modelPath string) map[string]string {
 		"source":     "huggingface",
 		"downloaded": "true",
 		"repo_id":    manifest.RepoID,
-		"filename":   manifest.Filename,
-		"revision":   manifest.Revision,
 	}
-	if manifest.ResolvedURL != "" {
-		metadata["resolved_url"] = manifest.ResolvedURL
+
+	// Add optional string fields
+	optionalFields := map[string]string{
+		"filename":     manifest.Filename,
+		"revision":     manifest.Revision,
+		"resolved_url": manifest.ResolvedURL,
+		"etag":         manifest.ETag,
+		"sha":          manifest.SHA,
+		"license":      manifest.License,
 	}
-	if manifest.ETag != "" {
-		metadata["etag"] = manifest.ETag
+	for key, value := range optionalFields {
+		if value != "" {
+			metadata[key] = value
+		}
 	}
-	if manifest.SHA != "" {
-		metadata["sha"] = manifest.SHA
-	}
-	if manifest.License != "" {
-		metadata["license"] = manifest.License
-	}
+
+	// Add downloaded_at if present
 	if !manifest.DownloadedAt.IsZero() {
 		metadata["downloaded_at"] = manifest.DownloadedAt.Format(time.RFC3339)
 	}
+
 	return metadata
 }
 

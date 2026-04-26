@@ -2,7 +2,9 @@ package hub
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -424,6 +426,25 @@ func (s *Service) StartDownload(ctx context.Context, req DownloadRequest) (Downl
 			SizeBytes:    info.Size(),
 			DownloadedAt: now,
 		}
+
+		// Fetch model metadata to populate License, ETag and SHA
+		model, err := s.Model(context.Background(), req.RepoID)
+		if err == nil {
+			manifest.License = model.License
+			// Find the matching file to get SHA and ETag
+			for _, file := range model.CompatibleFiles {
+				if file.Filename == req.Filename {
+					manifest.SHA = file.SHA
+					break
+				}
+			}
+			// Fetch ETag via HEAD request
+			etag, _, headErr := s.headDownload(context.Background(), resolvedURL)
+			if headErr == nil {
+				manifest.ETag = etag
+			}
+		}
+
 		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
 			if err := writeJSONFile(manifestPath, manifest); err != nil {
 				return Download{}, NewError(ErrorCodeBackendUnavailable, err, "failed to write Hugging Face manifest")
@@ -450,8 +471,16 @@ func (s *Service) StartDownload(ctx context.Context, req DownloadRequest) (Downl
 	}
 
 	s.mu.Lock()
+	// Check for existing download with same target path
 	for _, existing := range s.downloads {
-		if existing.TargetPath == targetPath && !existing.Terminal() {
+		if existing.TargetPath == targetPath {
+			if !existing.Terminal() {
+				// Return in-progress download
+				download := existing.Download
+				s.mu.Unlock()
+				return download, nil
+			}
+			// Return existing terminal download instead of creating a new one
 			download := existing.Download
 			s.mu.Unlock()
 			return download, nil
@@ -470,6 +499,7 @@ func (s *Service) StartDownload(ctx context.Context, req DownloadRequest) (Downl
 		StartedAt:    time.Now().UTC(),
 	}
 	s.downloads[download.ID] = &downloadState{Download: download, cancel: cancel}
+	s.cleanupOldDownloads()
 	s.mu.Unlock()
 
 	go s.runDownload(ctxDownload, download.ID)
@@ -641,15 +671,12 @@ func (s *Service) downloadFile(ctx context.Context, id string, license string, e
 	}
 
 	var written int64
+	hash := sha256.New()
 	buf := make([]byte, 256*1024)
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			w, writeErr := file.Write(buf[:n])
-			written += int64(w)
-			s.updateDownload(id, func(d *Download) {
-				d.DownloadedBytes = written
-			})
 			if writeErr != nil {
 				_ = file.Close()
 				_ = os.Remove(tmpPath)
@@ -660,12 +687,23 @@ func (s *Service) downloadFile(ctx context.Context, id string, license string, e
 				_ = os.Remove(tmpPath)
 				return NewError(ErrorCodeBackendUnavailable, io.ErrShortWrite, "failed to write model file")
 			}
+			hash.Write(buf[:n])
+			written += int64(w)
+			s.updateDownload(id, func(d *Download) {
+				d.DownloadedBytes = written
+			})
 		}
 		if readErr == nil {
 			continue
 		}
 		if errors.Is(readErr, io.EOF) {
 			break
+		}
+		// Handle context cancellation/timeout
+		if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
+			_ = file.Close()
+			_ = os.Remove(tmpPath)
+			return nil
 		}
 		_ = file.Close()
 		_ = os.Remove(tmpPath)
@@ -676,6 +714,24 @@ func (s *Service) downloadFile(ctx context.Context, id string, license string, e
 		_ = os.Remove(tmpPath)
 		return NewError(ErrorCodeBackendUnavailable, err, "failed to finalize temporary model file")
 	}
+
+	// Verify size if provided
+	if sizeBytes > 0 && written != sizeBytes {
+		_ = os.Remove(tmpPath)
+		return NewError(ErrorCodeBackendUnavailable, fmt.Errorf("size mismatch: expected %d, got %d", sizeBytes, written), "download size verification failed")
+	}
+
+	// Verify SHA256 if provided
+	if sha != "" {
+		computedHash := hex.EncodeToString(hash.Sum(nil))
+		// SHA might be prefixed with "sha256:" in some formats
+		expectedSHA := strings.TrimPrefix(strings.ToLower(sha), "sha256:")
+		if computedHash != expectedSHA {
+			_ = os.Remove(tmpPath)
+			return NewError(ErrorCodeBackendUnavailable, fmt.Errorf("sha256 mismatch: expected %s, got %s", expectedSHA, computedHash), "download integrity verification failed")
+		}
+	}
+
 	if err := os.Rename(tmpPath, download.TargetPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return NewError(ErrorCodeBackendUnavailable, err, "failed to finalize model file")
@@ -701,13 +757,25 @@ func (s *Service) downloadFile(ctx context.Context, id string, license string, e
 		return NewError(ErrorCodeBackendUnavailable, err, "failed to write Hugging Face manifest")
 	}
 
-	s.updateDownload(id, func(d *Download) {
+	// Check-and-set: don't overwrite canceled state
+	updated := s.updateDownloadConditional(id, func(d *Download) bool {
+		// If already in a terminal canceled state, don't promote to completed
+		if d.Status == DownloadStatusCanceled {
+			return false
+		}
 		d.Status = DownloadStatusCompleted
 		d.ETag = etag
 		d.SizeBytes = manifest.SizeBytes
 		d.DownloadedBytes = written
 		d.CompletedAt = &now
+		return true
 	})
+
+	// If update was rejected (canceled), clean up downloaded files
+	if !updated {
+		_ = os.Remove(download.TargetPath)
+		_ = os.Remove(download.ManifestPath)
+	}
 	return nil
 }
 
@@ -735,6 +803,48 @@ func (s *Service) storeDownload(download Download) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.downloads[download.ID] = &downloadState{Download: download}
+	if download.Terminal() {
+		s.cleanupOldDownloads()
+	}
+}
+
+// cleanupOldDownloads removes old terminal downloads, keeping the 100 most recent.
+// Must be called with s.mu held.
+func (s *Service) cleanupOldDownloads() {
+	const maxDownloads = 100
+
+	if len(s.downloads) <= maxDownloads {
+		return
+	}
+
+	// Collect all terminal downloads
+	type downloadEntry struct {
+		id        string
+		startedAt time.Time
+	}
+	var terminals []downloadEntry
+	for id, state := range s.downloads {
+		if state.Terminal() {
+			terminals = append(terminals, downloadEntry{id: id, startedAt: state.StartedAt})
+		}
+	}
+
+	// If we don't have too many terminal downloads, nothing to clean
+	activeCount := len(s.downloads) - len(terminals)
+	if activeCount+maxDownloads >= len(s.downloads) {
+		return
+	}
+
+	// Sort by StartedAt (oldest first)
+	sort.Slice(terminals, func(i, j int) bool {
+		return terminals[i].startedAt.Before(terminals[j].startedAt)
+	})
+
+	// Remove oldest terminal downloads to get down to max
+	toRemove := len(s.downloads) - maxDownloads
+	for i := 0; i < toRemove && i < len(terminals); i++ {
+		delete(s.downloads, terminals[i].id)
+	}
 }
 
 func (s *Service) updateDownload(id string, fn func(*Download)) Download {
@@ -746,6 +856,16 @@ func (s *Service) updateDownload(id string, fn func(*Download)) Download {
 	}
 	fn(&state.Download)
 	return state.Download
+}
+
+func (s *Service) updateDownloadConditional(id string, fn func(*Download) bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.downloads[id]
+	if !ok {
+		return false
+	}
+	return fn(&state.Download)
 }
 
 func (s *Service) getJSON(ctx context.Context, requestURL string, out any) error {
