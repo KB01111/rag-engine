@@ -34,6 +34,7 @@ type Server struct {
 	config     *config.Config
 	supervisor *supervisor.Supervisor
 	log        zerolog.Logger
+	hub        RuntimeHubService
 
 	httpServer *http.Server
 	grpcServer *grpc.Server
@@ -44,6 +45,7 @@ func NewServer(cfg *config.Config, sup *supervisor.Supervisor, log zerolog.Logge
 		config:     cfg,
 		supervisor: sup,
 		log:        log,
+		hub:        newRuntimeHubService(cfg),
 	}
 }
 
@@ -414,6 +416,12 @@ func (s *Server) RegisterHTTP(router *gin.Engine) {
 	router.GET("/api/v1/mcp/status", s.handleMCPStatus)
 	router.GET("/api/v1/runtime/status", s.handleRuntimeStatus)
 	router.GET("/api/v1/runtime/models", s.handleListModels)
+	router.GET("/api/v1/runtime/hub/search", s.handleRuntimeHubSearch)
+	router.GET("/api/v1/runtime/hub/model", s.handleRuntimeHubModel)
+	router.POST("/api/v1/runtime/hub/downloads", s.handleRuntimeHubStartDownload)
+	router.GET("/api/v1/runtime/hub/downloads", s.handleRuntimeHubListDownloads)
+	router.GET("/api/v1/runtime/hub/downloads/:id/events", s.handleRuntimeHubDownloadEvents)
+	router.DELETE("/api/v1/runtime/hub/downloads/:id", s.handleRuntimeHubCancelDownload)
 	router.POST("/api/v1/runtime/models/load", s.handleLoadRuntimeModel)
 	router.POST("/api/v1/runtime/models/unload", s.handleUnloadRuntimeModel)
 	router.POST("/api/v1/runtime/inference/stream", s.handleStreamRuntimeInference)
