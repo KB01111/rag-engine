@@ -262,7 +262,9 @@ func NewService(cfg Config) *Service {
 
 	client := cfg.HTTPClient
 	if client == nil {
-client = &http.Client{}
+		client = &http.Client{
+			Timeout: 30 * time.Second,
+		}
 	}
 
 	extensions := cfg.CompatibleExtensions
@@ -428,7 +430,9 @@ func (s *Service) StartDownload(ctx context.Context, req DownloadRequest) (Downl
 		}
 
 		// Fetch model metadata to populate License, ETag and SHA
-		model, err := s.Model(context.Background(), req.RepoID)
+		ctxWithTimeout, ctxCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer ctxCancel()
+		model, err := s.Model(ctxWithTimeout, req.RepoID)
 		if err == nil {
 			manifest.License = model.License
 			// Find the matching file to get SHA and ETag
@@ -439,7 +443,7 @@ func (s *Service) StartDownload(ctx context.Context, req DownloadRequest) (Downl
 				}
 			}
 			// Fetch ETag via HEAD request
-			etag, _, headErr := s.headDownload(context.Background(), resolvedURL)
+			etag, _, headErr := s.headDownload(ctxWithTimeout, resolvedURL)
 			if headErr == nil {
 				manifest.ETag = etag
 			}
@@ -559,6 +563,18 @@ func (s *Service) runDownload(ctx context.Context, id string) {
 	if !ok {
 		return
 	}
+
+	// Get the cancel function and ensure it's called when download completes
+	s.mu.RLock()
+	state, ok := s.downloads[id]
+	s.mu.RUnlock()
+	if !ok {
+		return
+	}
+	if state.cancel != nil {
+		defer state.cancel()
+	}
+
 	s.updateDownload(id, func(d *Download) {
 		d.Status = DownloadStatusDownloading
 	})

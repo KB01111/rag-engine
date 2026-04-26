@@ -52,6 +52,10 @@ func (s *Server) handleRuntimeHubSearch(c *gin.Context) {
 			writeAPIError(c, http.StatusBadRequest, apiErrorInvalidRequest, "limit must be a positive integer")
 			return
 		}
+		if parsed > 100 {
+			writeAPIError(c, http.StatusBadRequest, apiErrorInvalidRequest, "limit must be between 1 and 100")
+			return
+		}
 		limit = parsed
 	}
 
