@@ -55,6 +55,16 @@ runtime:
       url: "http://127.0.0.1:1234/v1"
       api_key: ""
 
+huggingface:
+  enabled: true
+  endpoint: "https://huggingface.co"
+  # 0 means no backend cap beyond available disk and OS limits.
+  max_download_bytes: 0
+  compatible_extensions:
+    - ".gguf"
+    - ".ggml"
+    - ".bin"
+
 context:
   enabled: true
   service_url: "http://127.0.0.1:9191"

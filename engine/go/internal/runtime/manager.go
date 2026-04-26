@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ai-engine/go/internal/config"
+	"github.com/ai-engine/go/internal/hub"
 	pb "github.com/ai-engine/proto/go"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -359,8 +360,11 @@ func (m *Manager) discoverLocalModels() ([]*pb.ModelInfo, error) {
 			continue
 		}
 
-		metadata := map[string]string{
-			"source": "filesystem",
+		metadata := huggingFaceSidecarMetadata(path)
+		if metadata == nil {
+			metadata = map[string]string{
+				"source": "filesystem",
+			}
 		}
 		if loadedAt[entry.Name()] != "" {
 			metadata["loaded_at"] = loadedAt[entry.Name()]
@@ -377,6 +381,44 @@ func (m *Manager) discoverLocalModels() ([]*pb.ModelInfo, error) {
 	}
 
 	return models, nil
+}
+
+func huggingFaceSidecarMetadata(modelPath string) map[string]string {
+	var manifest hub.Manifest
+	data, err := os.ReadFile(modelPath + ".hf.json")
+	if err != nil {
+		return nil
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil
+	}
+	if strings.TrimSpace(manifest.RepoID) == "" {
+		return nil
+	}
+
+	metadata := map[string]string{
+		"source":     "huggingface",
+		"downloaded": "true",
+		"repo_id":    manifest.RepoID,
+		"filename":   manifest.Filename,
+		"revision":   manifest.Revision,
+	}
+	if manifest.ResolvedURL != "" {
+		metadata["resolved_url"] = manifest.ResolvedURL
+	}
+	if manifest.ETag != "" {
+		metadata["etag"] = manifest.ETag
+	}
+	if manifest.SHA != "" {
+		metadata["sha"] = manifest.SHA
+	}
+	if manifest.License != "" {
+		metadata["license"] = manifest.License
+	}
+	if !manifest.DownloadedAt.IsZero() {
+		metadata["downloaded_at"] = manifest.DownloadedAt.Format(time.RFC3339)
+	}
+	return metadata
 }
 
 func (m *Manager) resolveRequestedModel(modelID, providerName string) (string, string, string) {
