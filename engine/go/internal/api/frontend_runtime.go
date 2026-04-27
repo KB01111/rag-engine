@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	pb "github.com/ai-engine/proto/go"
@@ -27,18 +28,19 @@ type unloadModelHTTPBody struct {
 }
 
 type inferenceHTTPBody struct {
-	ModelID     string            `json:"model_id"`
-	Provider    string            `json:"provider,omitempty"`
-	Prompt      string            `json:"prompt"`
-	Parameters  map[string]string `json:"parameters,omitempty"`
-	ContextRefs []string          `json:"context_refs,omitempty"`
+	ModelID      string            `json:"model_id"`
+	Provider     string            `json:"provider,omitempty"`
+	Prompt       string            `json:"prompt"`
+	SystemPrompt string            `json:"system_prompt,omitempty"`
+	Parameters   map[string]string `json:"parameters,omitempty"`
+	ContextRefs  []string          `json:"context_refs,omitempty"`
 }
 
 func (s *Server) handleRuntimeStatus(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	status, err := s.supervisor.Runtime.GetStatus(ctx, &emptypb.Empty{})
+	status, err := s.supervisor.Runtime.GetStatus(withRequestID(ctx, c), &emptypb.Empty{})
 	if err != nil {
 		s.log.Warn().Err(err).Str("request_id", requestID(c)).Msg("runtime status failed")
 		backendError(c, err)
@@ -66,7 +68,7 @@ func (s *Server) handleLoadRuntimeModel(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	model, err := s.supervisor.Runtime.LoadModel(ctx, &pb.LoadModelRequest{
+	model, err := s.supervisor.Runtime.LoadModel(withRequestID(ctx, c), &pb.LoadModelRequest{
 		ModelId: req.ModelID,
 		Options: req.Options,
 	})
@@ -94,7 +96,7 @@ func (s *Server) handleUnloadRuntimeModel(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	if _, err := s.supervisor.Runtime.UnloadModel(ctx, &pb.UnloadModelRequest{ModelId: req.ModelID}); err != nil {
+	if _, err := s.supervisor.Runtime.UnloadModel(withRequestID(ctx, c), &pb.UnloadModelRequest{ModelId: req.ModelID}); err != nil {
 		s.log.Warn().Err(err).Str("request_id", requestID(c)).Str("model_id", req.ModelID).Msg("unload model failed")
 		backendError(c, err)
 		return
@@ -127,15 +129,18 @@ func (s *Server) handleStreamRuntimeInference(c *gin.Context) {
 		ctx:    c.Request.Context(),
 		writer: c.Writer,
 		req: &pb.InferenceRequest{
-			ModelId:     req.ModelID,
-			Provider:    req.Provider,
-			Prompt:      req.Prompt,
-			Parameters:  req.Parameters,
-			ContextRefs: req.ContextRefs,
+			ModelId:      req.ModelID,
+			Provider:     req.Provider,
+			Prompt:       req.Prompt,
+			SystemPrompt: optionalProtoString(req.SystemPrompt),
+			Parameters:   req.Parameters,
+			ContextRefs:  req.ContextRefs,
 		},
 	}
+	stopHeartbeat := stream.startHeartbeat(15 * time.Second)
+	defer stopHeartbeat()
 
-	err := s.supervisor.Runtime.StreamInference(c.Request.Context(), stream)
+	err := s.supervisor.Runtime.StreamInference(withRequestID(c.Request.Context(), c), stream)
 	if err == nil {
 		return
 	}
@@ -153,6 +158,7 @@ type httpInferenceStream struct {
 	writer gin.ResponseWriter
 	req    *pb.InferenceRequest
 
+	mu       sync.Mutex
 	received bool
 	started  bool
 }
@@ -219,13 +225,17 @@ func (s *httpInferenceStream) sendError(code, message string) error {
 }
 
 func (s *httpInferenceStream) writeEvent(event string, payload any) error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
 	if !s.started {
-		header := s.writer.Header()
-		header.Set("Content-Type", "text/event-stream")
-		header.Set("Cache-Control", "no-cache")
-		header.Set("Connection", "keep-alive")
-		s.writer.WriteHeader(http.StatusOK)
-		s.started = true
+		s.startLocked()
 	}
 
 	var raw []byte
@@ -249,6 +259,66 @@ func (s *httpInferenceStream) writeEvent(event string, payload any) error {
 	}
 	s.writer.Flush()
 	return nil
+}
+
+func (s *httpInferenceStream) startHeartbeat(interval time.Duration) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := s.writeComment("keepalive"); err != nil {
+					return
+				}
+			case <-done:
+				return
+			case <-s.ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return func() {
+		close(done)
+	}
+}
+
+func (s *httpInferenceStream) writeComment(comment string) error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	if !s.started {
+		s.startLocked()
+	}
+	if _, err := fmt.Fprintf(s.writer, ":%s\n\n", comment); err != nil {
+		return err
+	}
+	s.writer.Flush()
+	return nil
+}
+
+func (s *httpInferenceStream) startLocked() {
+	header := s.writer.Header()
+	header.Set("Content-Type", "text/event-stream")
+	header.Set("Cache-Control", "no-cache")
+	header.Set("Connection", "keep-alive")
+	s.writer.WriteHeader(http.StatusOK)
+	s.started = true
+}
+
+func optionalProtoString(value string) *string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }
 
 func requestID(c *gin.Context) string {

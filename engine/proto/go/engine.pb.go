@@ -435,6 +435,7 @@ type InferenceRequest struct {
 	Parameters    map[string]string      `protobuf:"bytes,3,rep,name=parameters,proto3" json:"parameters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Provider      string                 `protobuf:"bytes,4,opt,name=provider,proto3" json:"provider,omitempty"`
 	ContextRefs   []string               `protobuf:"bytes,5,rep,name=context_refs,json=contextRefs,proto3" json:"context_refs,omitempty"`
+	SystemPrompt  *string                `protobuf:"bytes,6,opt,name=system_prompt,json=systemPrompt,proto3,oneof" json:"system_prompt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -502,6 +503,13 @@ func (x *InferenceRequest) GetContextRefs() []string {
 		return x.ContextRefs
 	}
 	return nil
+}
+
+func (x *InferenceRequest) GetSystemPrompt() string {
+	if x != nil && x.SystemPrompt != nil {
+		return *x.SystemPrompt
+	}
+	return ""
 }
 
 type InferenceResponse struct {
@@ -3759,7 +3767,7 @@ const file_engine_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"/\n" +
 	"\x12UnloadModelRequest\x12\x19\n" +
-	"\bmodel_id\x18\x01 \x01(\tR\amodelId\"\x8d\x02\n" +
+	"\bmodel_id\x18\x01 \x01(\tR\amodelId\"\xc9\x02\n" +
 	"\x10InferenceRequest\x12\x19\n" +
 	"\bmodel_id\x18\x01 \x01(\tR\amodelId\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12H\n" +
@@ -3767,10 +3775,12 @@ const file_engine_proto_rawDesc = "" +
 	"parameters\x18\x03 \x03(\v2(.engine.InferenceRequest.ParametersEntryR\n" +
 	"parameters\x12\x1a\n" +
 	"\bprovider\x18\x04 \x01(\tR\bprovider\x12!\n" +
-	"\fcontext_refs\x18\x05 \x03(\tR\vcontextRefs\x1a=\n" +
+	"\fcontext_refs\x18\x05 \x03(\tR\vcontextRefs\x12(\n" +
+	"\rsystem_prompt\x18\x06 \x01(\tH\x00R\fsystemPrompt\x88\x01\x01\x1a=\n" +
 	"\x0fParametersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc3\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x10\n" +
+	"\x0e_system_prompt\"\xc3\x01\n" +
 	"\x11InferenceResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1a\n" +
 	"\bcomplete\x18\x02 \x01(\bR\bcomplete\x12@\n" +
@@ -4324,6 +4334,7 @@ func file_engine_proto_init() {
 	if File_engine_proto != nil {
 		return
 	}
+	file_engine_proto_msgTypes[6].OneofWrappers = []any{}
 	file_engine_proto_msgTypes[20].OneofWrappers = []any{}
 	file_engine_proto_msgTypes[24].OneofWrappers = []any{}
 	file_engine_proto_msgTypes[26].OneofWrappers = []any{}

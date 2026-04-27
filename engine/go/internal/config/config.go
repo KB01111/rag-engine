@@ -57,9 +57,12 @@ type HuggingFaceConfig struct {
 }
 
 type MistralRSConfig struct {
-	ForceCPU   bool   `yaml:"force_cpu"`
-	MaxNumSeqs int    `yaml:"max_num_seqs"`
-	AutoISQ    string `yaml:"auto_isq"`
+	ForceCPU            bool   `yaml:"force_cpu"`
+	MaxNumSeqs          int    `yaml:"max_num_seqs"`
+	AutoISQ             string `yaml:"auto_isq"`
+	PagedAttnBlockSize  int    `yaml:"paged_attn_block_size"`
+	PagedAttnGPUMemCtx  int    `yaml:"paged_attn_gpu_mem_ctx"`
+	PagedAttnCacheDType string `yaml:"paged_attn_cache_dtype"`
 }
 
 type DaemonConfig struct {
@@ -88,6 +91,7 @@ type StorageConfig struct {
 
 type ProviderConfig struct {
 	Name   string `yaml:"name"`
+	Preset string `yaml:"preset"`
 	Type   string `yaml:"type"`
 	URL    string `yaml:"url"`
 	APIKey string `yaml:"api_key"`
@@ -190,9 +194,12 @@ func DefaultConfig() *Config {
 			Backend:    "mistralrs",
 			Providers:  []ProviderConfig{},
 			MistralRS: MistralRSConfig{
-				ForceCPU:   false,
-				MaxNumSeqs: 32,
-				AutoISQ:    "",
+				ForceCPU:            false,
+				MaxNumSeqs:          32,
+				AutoISQ:             "",
+				PagedAttnBlockSize:  0,
+				PagedAttnGPUMemCtx:  0,
+				PagedAttnCacheDType: "",
 			},
 		},
 		Context: ContextConfig{
@@ -282,6 +289,33 @@ func (c *Config) validate() error {
 	if c.Runtime.MistralRS.MaxNumSeqs <= 0 {
 		return fmt.Errorf("invalid runtime.mistralrs.max_num_seqs %d: must be greater than 0", c.Runtime.MistralRS.MaxNumSeqs)
 	}
+	if c.Runtime.MistralRS.PagedAttnBlockSize < 0 {
+		return fmt.Errorf("invalid runtime.mistralrs.paged_attn_block_size %d: must be zero or greater", c.Runtime.MistralRS.PagedAttnBlockSize)
+	}
+	if c.Runtime.MistralRS.PagedAttnGPUMemCtx < 0 {
+		return fmt.Errorf("invalid runtime.mistralrs.paged_attn_gpu_mem_ctx %d: must be zero or greater", c.Runtime.MistralRS.PagedAttnGPUMemCtx)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Runtime.MistralRS.PagedAttnCacheDType)) {
+	case "", "f16", "f8e4m3":
+		c.Runtime.MistralRS.PagedAttnCacheDType = strings.ToLower(strings.TrimSpace(c.Runtime.MistralRS.PagedAttnCacheDType))
+	default:
+		return fmt.Errorf("invalid runtime.mistralrs.paged_attn_cache_dtype %q: must be one of f16, f8e4m3", c.Runtime.MistralRS.PagedAttnCacheDType)
+	}
+
+	validProviderPresets := map[string]struct{}{
+		"":          {},
+		"openai":    {},
+		"lemonade":  {},
+		"llama-cpp": {},
+		"ollama":    {},
+	}
+	for i := range c.Runtime.Providers {
+		preset := normalizeProviderPreset(c.Runtime.Providers[i].Preset)
+		if _, ok := validProviderPresets[preset]; !ok {
+			return fmt.Errorf("invalid runtime.providers[%d].preset %q: must be one of openai, lemonade, llama-cpp, ollama", i, c.Runtime.Providers[i].Preset)
+		}
+		c.Runtime.Providers[i].Preset = preset
+	}
 
 	validEmbeddingProviders := []string{"fastembed", "mock"}
 	embeddingProviderValid := false
@@ -301,6 +335,16 @@ func (c *Config) validate() error {
 	}
 
 	return nil
+}
+
+func normalizeProviderPreset(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch normalized {
+	case "llamacpp", "llama_cpp", "llama.cpp":
+		return "llama-cpp"
+	default:
+		return normalized
+	}
 }
 
 func normalizeBackendName(name string) string {

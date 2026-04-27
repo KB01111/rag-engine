@@ -47,13 +47,25 @@ runtime:
     force_cpu: false
     # max_num_seqs must be greater than 0 (default: 32)
     max_num_seqs: 32
+    # Explicit ISQ type. Supported values include q4_0, q4k, q5_0, q5k, q6k, q8_0, hqq4, hqq8, f8e4m3.
+    # Legacy aliases "4" and "8" map to q4k and q8_0.
     auto_isq: ""
+    # CUDA-only PagedAttention settings. Leave empty/0 for default CPU-safe builds.
+    paged_attn_block_size: 0
+    paged_attn_gpu_mem_ctx: 0
+    paged_attn_cache_dtype: ""
   providers:
     # Optional sidecar validation path: run `mistralrs serve --port 1234 -m <model>` and use this provider.
     - name: "mistralrs-sidecar"
+      preset: ""
       type: "openai-compatible"
       url: "http://127.0.0.1:1234/v1"
       api_key: ""
+    # AMD/NPU sidecars use the same OpenAI-compatible provider seam.
+    # - name: "lemonade"
+    #   preset: "lemonade"
+    # - name: "llama-rocm"
+    #   preset: "llama-cpp"
 
 huggingface:
   enabled: true

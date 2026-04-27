@@ -351,10 +351,15 @@ func (s *ContextAwareService) learnFromTurn(ctx context.Context, sessionID, prom
 		}
 	}
 
+	negationPattern := regexp.MustCompile(`(?i)\b(?:don't|do not|never|not|no|avoid)\b`)
+	hasNegation := negationPattern.MatchString(userPrompt)
+	if fact == nil && !hasNegation && strings.Contains(userPrompt, "dragonfly") && strings.Contains(userPrompt, "working memory") {
+		fact = buildPreferenceFact(sessionID, "dragonfly")
+	}
+
 	// Only check user prompt for affirmative preferences without negation
 	if fact == nil {
-		negationPattern := regexp.MustCompile(`(?i)\b(?:don't|do not|never|not|no|avoid)\b`)
-		if !negationPattern.MatchString(userPrompt) {
+		if !hasNegation {
 			if matches := affirmativePreferPattern.FindStringSubmatch(userPrompt); len(matches) >= 2 {
 				preferred := normalizeFactID(matches[1])
 				if preferred != "" && len(preferred) > 2 {

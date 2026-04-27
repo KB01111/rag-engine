@@ -1,0 +1,58 @@
+package api
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+)
+
+func TestHTTPInferenceStreamSerializesEventsAndHonorsCancel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &httpInferenceStream{
+		ctx:    ctx,
+		writer: ginCtx.Writer,
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs <- stream.writeEvent("token", map[string]string{"token": "hello"})
+	}()
+	go func() {
+		defer wg.Done()
+		errs <- stream.writeComment("keepalive")
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("write failed: %v", err)
+		}
+	}
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected stream to start with 200, got %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "event: token") {
+		t.Fatalf("missing token event: %q", body)
+	}
+	if !strings.Contains(body, ":keepalive\n\n") {
+		t.Fatalf("missing keepalive comment: %q", body)
+	}
+
+	cancel()
+	if err := stream.writeEvent("token", map[string]string{"token": "late"}); err == nil {
+		t.Fatal("expected canceled context error")
+	}
+}

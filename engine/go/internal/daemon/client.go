@@ -13,8 +13,12 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+const defaultCountCacheTTL = 2 * time.Second
 
 type Client struct {
 	conn     *grpc.ClientConn
@@ -26,6 +30,19 @@ type Client struct {
 
 	mcpMu          sync.RWMutex
 	mcpConnections map[string]struct{}
+
+	counts        countCache
+	countCacheTTL time.Duration
+}
+
+type countCache struct {
+	mu                   sync.Mutex
+	loadedModelCount     int
+	loadedModelExpires   time.Time
+	documentCount        int64
+	documentCountExpires time.Time
+	activeRunCount       int
+	activeRunExpires     time.Time
 }
 
 // NewClient creates and returns a Client connected to the daemon at addr.
@@ -49,6 +66,15 @@ func NewClient(ctx context.Context, addr string) (*Client, error) {
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(64<<20),
+			grpc.MaxCallSendMsgSize(64<<20),
+		),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                30 * time.Second,
+			Timeout:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	)
 	if err != nil {
 		return nil, err
@@ -62,6 +88,7 @@ func NewClient(ctx context.Context, addr string) (*Client, error) {
 		training:       pb.NewTrainingClient(conn),
 		mcp:            pb.NewMCPClient(conn),
 		mcpConnections: make(map[string]struct{}),
+		countCacheTTL:  defaultCountCacheTTL,
 	}, nil
 }
 
@@ -91,29 +118,35 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) GetStatus(ctx context.Context, req *emptypb.Empty) (*pb.RuntimeStatus, error) {
-	return c.runtime.GetStatus(ctx, req)
+	return c.runtime.GetStatus(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) ListModels(ctx context.Context, req *emptypb.Empty) (*pb.ModelList, error) {
-	return c.runtime.ListModels(ctx, req)
+	return c.runtime.ListModels(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) LoadModel(ctx context.Context, req *pb.LoadModelRequest) (*pb.ModelInfo, error) {
-	return c.runtime.LoadModel(ctx, req)
+	return c.runtime.LoadModel(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) UnloadModel(ctx context.Context, req *pb.UnloadModelRequest) (*emptypb.Empty, error) {
-	return c.runtime.UnloadModel(ctx, req)
+	return c.runtime.UnloadModel(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) StreamInference(ctx context.Context, stream pb.Runtime_StreamInferenceServer) error {
+	ctx = withOutgoingRequestID(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	group, groupCtx := errgroup.WithContext(ctx)
 
 	clientStream, err := c.runtime.StreamInference(groupCtx)
 	if err != nil {
 		return err
 	}
-	defer clientStream.CloseSend()
+	defer func() {
+		cancel()
+		_ = clientStream.CloseSend()
+	}()
 
 	group.Go(func() error {
 		for {
@@ -125,12 +158,15 @@ func (c *Client) StreamInference(ctx context.Context, stream pb.Runtime_StreamIn
 
 			req, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
+				cancel()
 				return clientStream.CloseSend()
 			}
 			if err != nil {
+				cancel()
 				return err
 			}
 			if err := clientStream.Send(req); err != nil {
+				cancel()
 				return err
 			}
 		}
@@ -148,9 +184,11 @@ func (c *Client) StreamInference(ctx context.Context, stream pb.Runtime_StreamIn
 				return nil
 			}
 			if err != nil {
+				cancel()
 				return err
 			}
 			if err := stream.Send(resp); err != nil {
+				cancel()
 				return err
 			}
 		}
@@ -160,6 +198,10 @@ func (c *Client) StreamInference(ctx context.Context, stream pb.Runtime_StreamIn
 }
 
 func (c *Client) LoadedModelCount() int {
+	if count, ok := c.cachedLoadedModelCount(); ok {
+		return count
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -167,30 +209,36 @@ func (c *Client) LoadedModelCount() int {
 	if err != nil {
 		return 0
 	}
-	return len(status.LoadedModels)
+	count := len(status.LoadedModels)
+	c.storeLoadedModelCount(count)
+	return count
 }
 
 func (c *Client) UpsertDocument(ctx context.Context, req *pb.UpsertRequest) (*pb.UpsertResponse, error) {
-	return c.rag.UpsertDocument(ctx, req)
+	return c.rag.UpsertDocument(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) DeleteDocument(ctx context.Context, req *pb.DeleteRequest) (*emptypb.Empty, error) {
-	return c.rag.DeleteDocument(ctx, req)
+	return c.rag.DeleteDocument(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) Search(ctx context.Context, req *pb.SearchRequest) (*pb.SearchResponse, error) {
-	return c.rag.Search(ctx, req)
+	return c.rag.Search(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) GetRagStatus(ctx context.Context, req *emptypb.Empty) (*pb.RagStatus, error) {
-	return c.rag.GetRagStatus(ctx, req)
+	return c.rag.GetRagStatus(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) ListDocuments(ctx context.Context, req *emptypb.Empty) (*pb.DocumentList, error) {
-	return c.rag.ListDocuments(ctx, req)
+	return c.rag.ListDocuments(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) DocumentCount() int64 {
+	if count, ok := c.cachedDocumentCount(); ok {
+		return count
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -198,79 +246,80 @@ func (c *Client) DocumentCount() int64 {
 	if err != nil {
 		return 0
 	}
+	c.storeDocumentCount(status.DocumentCount)
 	return status.DocumentCount
 }
 
 func (c *Client) GetContextStatus(ctx context.Context, req *emptypb.Empty) (*pb.ContextStatus, error) {
-	return c.context.GetContextStatus(ctx, req)
+	return c.context.GetContextStatus(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) ListResources(ctx context.Context, req *emptypb.Empty) (*pb.ContextResourceList, error) {
-	return c.context.ListResources(ctx, req)
+	return c.context.ListResources(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) UpsertResource(ctx context.Context, req *pb.ContextUpsertResourceRequest) (*pb.ContextUpsertResourceResponse, error) {
-	return c.context.UpsertResource(ctx, req)
+	return c.context.UpsertResource(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) DeleteResource(ctx context.Context, req *pb.ContextDeleteResourceRequest) (*emptypb.Empty, error) {
-	return c.context.DeleteResource(ctx, req)
+	return c.context.DeleteResource(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) SearchContext(ctx context.Context, req *pb.ContextSearchRequest) (*pb.ContextSearchResponse, error) {
-	return c.context.SearchContext(ctx, req)
+	return c.context.SearchContext(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) SyncWorkspace(ctx context.Context, req *pb.ContextWorkspaceSyncRequest) (*pb.ContextWorkspaceSyncResponse, error) {
-	return c.context.SyncWorkspace(ctx, req)
+	return c.context.SyncWorkspace(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) ListFiles(ctx context.Context, req *pb.ContextFileListRequest) (*pb.ContextFileListResponse, error) {
-	return c.context.ListFiles(ctx, req)
+	return c.context.ListFiles(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) ReadFile(ctx context.Context, req *pb.ContextFileReadRequest) (*pb.ContextFileReadResponse, error) {
-	return c.context.ReadFile(ctx, req)
+	return c.context.ReadFile(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) WriteFile(ctx context.Context, req *pb.ContextFileWriteRequest) (*pb.ContextFileWriteResponse, error) {
-	return c.context.WriteFile(ctx, req)
+	return c.context.WriteFile(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) DeleteFile(ctx context.Context, req *pb.ContextFileDeleteRequest) (*pb.ContextFileDeleteResponse, error) {
-	return c.context.DeleteFile(ctx, req)
+	return c.context.DeleteFile(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) MoveFile(ctx context.Context, req *pb.ContextFileMoveRequest) (*pb.ContextFileMoveResponse, error) {
-	return c.context.MoveFile(ctx, req)
+	return c.context.MoveFile(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) AppendSession(ctx context.Context, req *pb.ContextSessionAppendRequest) (*pb.ContextSessionHistory, error) {
-	return c.context.AppendSession(ctx, req)
+	return c.context.AppendSession(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) GetSession(ctx context.Context, req *pb.ContextSessionGetRequest) (*pb.ContextSessionHistory, error) {
-	return c.context.GetSession(ctx, req)
+	return c.context.GetSession(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) StartRun(ctx context.Context, req *pb.TrainingRunRequest) (*pb.TrainingRun, error) {
-	return c.training.StartRun(ctx, req)
+	return c.training.StartRun(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) CancelRun(ctx context.Context, req *pb.CancelRequest) (*emptypb.Empty, error) {
-	return c.training.CancelRun(ctx, req)
+	return c.training.CancelRun(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) ListRuns(ctx context.Context, req *emptypb.Empty) (*pb.TrainingRunList, error) {
-	return c.training.ListRuns(ctx, req)
+	return c.training.ListRuns(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) ListArtifacts(ctx context.Context, req *pb.ArtifactsRequest) (*pb.ArtifactList, error) {
-	return c.training.ListArtifacts(ctx, req)
+	return c.training.ListArtifacts(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) StreamLogs(req *pb.LogsRequest, stream pb.Training_StreamLogsServer) error {
-	clientStream, err := c.training.StreamLogs(stream.Context(), req)
+	clientStream, err := c.training.StreamLogs(withOutgoingRequestID(stream.Context()), req)
 	if err != nil {
 		return err
 	}
@@ -290,6 +339,10 @@ func (c *Client) StreamLogs(req *pb.LogsRequest, stream pb.Training_StreamLogsSe
 }
 
 func (c *Client) ActiveRunCount() int {
+	if count, ok := c.cachedActiveRunCount(); ok {
+		return count
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -304,11 +357,12 @@ func (c *Client) ActiveRunCount() int {
 			count++
 		}
 	}
+	c.storeActiveRunCount(count)
 	return count
 }
 
 func (c *Client) Connect(ctx context.Context, req *pb.MCPConnectionRequest) (*pb.MCPConnection, error) {
-	connection, err := c.mcp.Connect(ctx, req)
+	connection, err := c.mcp.Connect(withOutgoingRequestID(ctx), req)
 	if err != nil {
 		return nil, err
 	}
@@ -319,7 +373,7 @@ func (c *Client) Connect(ctx context.Context, req *pb.MCPConnectionRequest) (*pb
 }
 
 func (c *Client) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*emptypb.Empty, error) {
-	response, err := c.mcp.Disconnect(ctx, req)
+	response, err := c.mcp.Disconnect(withOutgoingRequestID(ctx), req)
 	if err != nil {
 		return nil, err
 	}
@@ -330,15 +384,86 @@ func (c *Client) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*em
 }
 
 func (c *Client) ListTools(ctx context.Context, req *pb.MCPConnectionRequest) (*pb.ToolList, error) {
-	return c.mcp.ListTools(ctx, req)
+	return c.mcp.ListTools(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) CallTool(ctx context.Context, req *pb.CallToolRequest) (*pb.CallToolResponse, error) {
-	return c.mcp.CallTool(ctx, req)
+	return c.mcp.CallTool(withOutgoingRequestID(ctx), req)
 }
 
 func (c *Client) ConnectionCount() int {
 	c.mcpMu.RLock()
 	defer c.mcpMu.RUnlock()
 	return len(c.mcpConnections)
+}
+
+func (c *Client) cacheTTL() time.Duration {
+	if c.countCacheTTL > 0 {
+		return c.countCacheTTL
+	}
+	return defaultCountCacheTTL
+}
+
+func (c *Client) cachedLoadedModelCount() (int, bool) {
+	c.counts.mu.Lock()
+	defer c.counts.mu.Unlock()
+	if time.Now().Before(c.counts.loadedModelExpires) {
+		return c.counts.loadedModelCount, true
+	}
+	return 0, false
+}
+
+func (c *Client) storeLoadedModelCount(count int) {
+	c.counts.mu.Lock()
+	defer c.counts.mu.Unlock()
+	c.counts.loadedModelCount = count
+	c.counts.loadedModelExpires = time.Now().Add(c.cacheTTL())
+}
+
+func (c *Client) cachedDocumentCount() (int64, bool) {
+	c.counts.mu.Lock()
+	defer c.counts.mu.Unlock()
+	if time.Now().Before(c.counts.documentCountExpires) {
+		return c.counts.documentCount, true
+	}
+	return 0, false
+}
+
+func (c *Client) storeDocumentCount(count int64) {
+	c.counts.mu.Lock()
+	defer c.counts.mu.Unlock()
+	c.counts.documentCount = count
+	c.counts.documentCountExpires = time.Now().Add(c.cacheTTL())
+}
+
+func (c *Client) cachedActiveRunCount() (int, bool) {
+	c.counts.mu.Lock()
+	defer c.counts.mu.Unlock()
+	if time.Now().Before(c.counts.activeRunExpires) {
+		return c.counts.activeRunCount, true
+	}
+	return 0, false
+}
+
+func (c *Client) storeActiveRunCount(count int) {
+	c.counts.mu.Lock()
+	defer c.counts.mu.Unlock()
+	c.counts.activeRunCount = count
+	c.counts.activeRunExpires = time.Now().Add(c.cacheTTL())
+}
+
+func withOutgoingRequestID(ctx context.Context) context.Context {
+	if md, ok := metadata.FromOutgoingContext(ctx); ok && len(md.Get("x-request-id")) > 0 {
+		return ctx
+	}
+	id := ""
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if values := md.Get("x-request-id"); len(values) > 0 {
+			id = values[0]
+		}
+	}
+	if id == "" {
+		return ctx
+	}
+	return metadata.AppendToOutgoingContext(ctx, "x-request-id", id)
 }

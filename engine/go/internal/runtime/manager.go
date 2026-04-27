@@ -20,6 +20,7 @@ import (
 	"github.com/ai-engine/go/internal/config"
 	"github.com/ai-engine/go/internal/hub"
 	pb "github.com/ai-engine/proto/go"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -91,8 +92,8 @@ type openAIStreamChunk struct {
 }
 
 func NewManager(cfg *config.Config) *Manager {
-	httpClient := &http.Client{Timeout: 45 * time.Second}
-	streamHttpClient := &http.Client{}
+	httpClient := newProviderHTTPClient(45 * time.Second)
+	streamHttpClient := newProviderHTTPClient(0)
 	providers := make(map[string]*openAICompatibleProvider)
 	for _, providerCfg := range cfg.Runtime.Providers {
 		provider, err := newOpenAICompatibleProvider(providerCfg, httpClient, streamHttpClient)
@@ -108,6 +109,19 @@ func NewManager(cfg *config.Config) *Manager {
 		config:    cfg,
 		http:      httpClient,
 		providers: providers,
+	}
+}
+
+func newProviderHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			MaxIdleConns:        64,
+			MaxIdleConnsPerHost: 8,
+			IdleConnTimeout:     90 * time.Second,
+			DisableCompression:  false,
+		},
 	}
 }
 
@@ -493,6 +507,7 @@ func newOpenAICompatibleProvider(cfg config.ProviderConfig, httpClient *http.Cli
 	if name == "" {
 		return nil, fmt.Errorf("provider name is required")
 	}
+	cfg = applyProviderPreset(cfg)
 	baseURL := strings.TrimSpace(cfg.URL)
 	if baseURL == "" {
 		return nil, fmt.Errorf("provider url is required for %s", name)
@@ -524,6 +539,41 @@ func newOpenAICompatibleProvider(cfg config.ProviderConfig, httpClient *http.Cli
 	}, nil
 }
 
+func applyProviderPreset(cfg config.ProviderConfig) config.ProviderConfig {
+	preset := strings.ToLower(strings.TrimSpace(cfg.Preset))
+	switch preset {
+	case "openai":
+		if cfg.Type == "" {
+			cfg.Type = "openai-compatible"
+		}
+		if cfg.URL == "" {
+			cfg.URL = "https://api.openai.com/v1"
+		}
+	case "lemonade":
+		if cfg.Type == "" {
+			cfg.Type = "openai-compatible"
+		}
+		if cfg.URL == "" {
+			cfg.URL = "http://127.0.0.1:8000/api/v1"
+		}
+	case "llama-cpp":
+		if cfg.Type == "" {
+			cfg.Type = "openai-compatible"
+		}
+		if cfg.URL == "" {
+			cfg.URL = "http://127.0.0.1:8080/v1"
+		}
+	case "ollama":
+		if cfg.Type == "" {
+			cfg.Type = "openai-compatible"
+		}
+		if cfg.URL == "" {
+			cfg.URL = "http://127.0.0.1:11434/v1"
+		}
+	}
+	return cfg
+}
+
 func (p *openAICompatibleProvider) ListModels(ctx context.Context) ([]*pb.ModelInfo, error) {
 	endpoint, err := p.endpoint("models")
 	if err != nil {
@@ -534,7 +584,7 @@ func (p *openAICompatibleProvider) ListModels(ctx context.Context) ([]*pb.ModelI
 	if err != nil {
 		return nil, err
 	}
-	p.decorate(req)
+	p.decorate(ctx, req)
 
 	resp, err := p.http.Do(req)
 	if err != nil {
@@ -602,16 +652,9 @@ func (p *openAICompatibleProvider) StreamInference(
 		return fmt.Errorf("marshal inference payload: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	resp, err := p.doStreamRequest(ctx, endpoint, body)
 	if err != nil {
 		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	p.decorate(httpReq)
-
-	resp, err := p.streamHttp.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("stream inference with provider %s: %w", p.name, err)
 	}
 	defer resp.Body.Close()
 
@@ -628,6 +671,53 @@ func (p *openAICompatibleProvider) StreamInference(
 	return streamJSONResponse(resp.Body, p.name, modelID, send)
 }
 
+func (p *openAICompatibleProvider) doStreamRequest(ctx context.Context, endpoint string, body []byte) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		p.decorate(ctx, httpReq)
+
+		resp, err := p.streamHttp.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("stream inference with provider %s: %w", p.name, err)
+			if attempt == 0 {
+				sleepWithJitter(ctx, 75*time.Millisecond)
+				continue
+			}
+			return nil, lastErr
+		}
+		if shouldRetryProviderStatus(resp.StatusCode) && attempt == 0 {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+			_ = resp.Body.Close()
+			sleepWithJitter(ctx, 75*time.Millisecond)
+			continue
+		}
+		return resp, nil
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("stream inference with provider %s failed", p.name)
+}
+
+func shouldRetryProviderStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
+func sleepWithJitter(ctx context.Context, base time.Duration) {
+	jitter := time.Duration(time.Now().UnixNano() % int64(50*time.Millisecond))
+	timer := time.NewTimer(base + jitter)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
 func (p *openAICompatibleProvider) endpoint(resource string) (string, error) {
 	base, err := url.Parse(p.baseURL)
 	if err != nil {
@@ -635,7 +725,7 @@ func (p *openAICompatibleProvider) endpoint(resource string) (string, error) {
 	}
 
 	cleanPath := strings.TrimRight(base.Path, "/")
-	if strings.HasSuffix(cleanPath, "/v1") {
+	if strings.HasSuffix(cleanPath, "/v1") || strings.HasSuffix(cleanPath, "/api/v1") {
 		base.Path = cleanPath + "/" + strings.TrimLeft(resource, "/")
 	} else if cleanPath == "" {
 		base.Path = "/v1/" + strings.TrimLeft(resource, "/")
@@ -646,10 +736,27 @@ func (p *openAICompatibleProvider) endpoint(resource string) (string, error) {
 	return base.String(), nil
 }
 
-func (p *openAICompatibleProvider) decorate(req *http.Request) {
+func (p *openAICompatibleProvider) decorate(ctx context.Context, req *http.Request) {
 	if p.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
+	if id := requestIDFromContext(ctx); id != "" {
+		req.Header.Set("X-Request-ID", id)
+	}
+}
+
+func requestIDFromContext(ctx context.Context) string {
+	if md, ok := metadata.FromOutgoingContext(ctx); ok {
+		if values := md.Get("x-request-id"); len(values) > 0 {
+			return values[0]
+		}
+	}
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if values := md.Get("x-request-id"); len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
 }
 
 func streamLocalFallback(
@@ -779,10 +886,17 @@ func streamJSONResponse(
 
 func buildMessages(req *pb.InferenceRequest) []map[string]string {
 	messages := make([]map[string]string, 0, 2)
+	systemParts := make([]string, 0, 2)
+	if systemPrompt := strings.TrimSpace(req.GetSystemPrompt()); systemPrompt != "" {
+		systemParts = append(systemParts, systemPrompt)
+	}
 	if len(req.GetContextRefs()) > 0 {
+		systemParts = append(systemParts, "Context references:\n- "+strings.Join(req.GetContextRefs(), "\n- "))
+	}
+	if len(systemParts) > 0 {
 		messages = append(messages, map[string]string{
 			"role":    "system",
-			"content": "Context references:\n- " + strings.Join(req.GetContextRefs(), "\n- "),
+			"content": strings.Join(systemParts, "\n\n"),
 		})
 	}
 	messages = append(messages, map[string]string{
