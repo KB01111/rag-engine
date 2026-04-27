@@ -521,7 +521,7 @@ mod mistralrs_backend {
         if parameters.seed.is_some() {
             return Err(RuntimeError::InvalidParameter {
                 parameter: "seed".to_string(),
-                details: "seed is not supported by embedded mistralrs 0.8.1".to_string(),
+                details: "seed is not supported by embedded mistralrs".to_string(),
             }
             .into());
         }

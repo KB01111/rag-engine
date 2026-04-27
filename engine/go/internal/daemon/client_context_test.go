@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -255,4 +257,80 @@ func TestWithOutgoingRequestIDCopiesIncomingMetadata(t *testing.T) {
 	md, ok := metadata.FromOutgoingContext(got)
 	require.True(t, ok)
 	require.Equal(t, []string{"rid-123"}, md.Get("x-request-id"))
+}
+
+type runtimeStreamStub struct {
+	pb.UnimplementedRuntimeServer
+	canceledBeforeSend atomic.Bool
+}
+
+func (s *runtimeStreamStub) StreamInference(stream pb.Runtime_StreamInferenceServer) error {
+	if _, err := stream.Recv(); err != nil {
+		return err
+	}
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+		return err
+	}
+
+	select {
+	case <-stream.Context().Done():
+		s.canceledBeforeSend.Store(true)
+		return stream.Context().Err()
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	return stream.Send(&pb.InferenceResponse{Token: "ok", Complete: true})
+}
+
+type serverInferenceStreamStub struct {
+	pb.Runtime_StreamInferenceServer
+	ctx      context.Context
+	requests []*pb.InferenceRequest
+	sent     []*pb.InferenceResponse
+}
+
+func (s *serverInferenceStreamStub) Context() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
+}
+
+func (s *serverInferenceStreamStub) Recv() (*pb.InferenceRequest, error) {
+	if len(s.requests) == 0 {
+		return nil, io.EOF
+	}
+	req := s.requests[0]
+	s.requests = s.requests[1:]
+	return req, nil
+}
+
+func (s *serverInferenceStreamStub) Send(resp *pb.InferenceResponse) error {
+	s.sent = append(s.sent, resp)
+	return nil
+}
+
+func TestStreamInferenceHalfCloseDoesNotCancelReceiveSide(t *testing.T) {
+	server := grpc.NewServer()
+	runtimeStub := &runtimeStreamStub{}
+	pb.RegisterRuntimeServer(server, runtimeStub)
+	conn := dialBufConn(t, server)
+
+	client := &Client{
+		conn:           conn,
+		runtime:        pb.NewRuntimeClient(conn),
+		mcpConnections: make(map[string]struct{}),
+	}
+	stream := &serverInferenceStreamStub{
+		ctx: context.Background(),
+		requests: []*pb.InferenceRequest{
+			{ModelId: "local.gguf", Prompt: "hi"},
+		},
+	}
+
+	require.NoError(t, client.StreamInference(context.Background(), stream))
+	require.False(t, runtimeStub.canceledBeforeSend.Load())
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, "ok", stream.sent[0].Token)
+	require.True(t, stream.sent[0].Complete)
 }
