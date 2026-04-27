@@ -63,12 +63,8 @@ impl ModelMetadata {
         match serde_json::from_str(raw) {
             Ok(metadata) => metadata,
             Err(err) => {
-                let preview = if raw.len() > 100 {
-                    format!("{}...", &raw[..raw.floor_char_boundary(100)])
-                } else {
-                    raw.to_string()
-                };
-                eprintln!("warning: failed to parse model metadata JSON: {}, preview: {}", err, preview);
+                let length = raw.chars().count();
+                eprintln!("warning: failed to parse model metadata JSON: {} (input length: {} chars)", err, length);
                 Self::default()
             }
         }
@@ -898,7 +894,7 @@ mod openai_backend {
 
             let mut builder = CreateChatCompletionRequestArgs::default();
             // Use deployment name if provided (Azure pattern), otherwise the model id.
-            let target_model = cloud.deployment.clone().unwrap_or_else(|| model.name.clone());
+            let target_model = cloud.deployment.clone().unwrap_or_else(|| model.id.clone());
             builder.model(target_model);
             builder.messages(Self::build_messages(&request)?);
             builder.stream(true);
