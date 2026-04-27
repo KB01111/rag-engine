@@ -68,8 +68,8 @@ if defined GOPATH_DIR (
     if exist "%GOPATH_DIR%\bin\protoc-gen-go.exe" set "PROTOC_GEN_GO=%GOPATH_DIR%\bin\protoc-gen-go.exe"
     if exist "%GOPATH_DIR%\bin\protoc-gen-go-grpc.exe" set "PROTOC_GEN_GO_GRPC=%GOPATH_DIR%\bin\protoc-gen-go-grpc.exe"
 )
-if exist "%USERPROFILE%\go\bin\protoc-gen-go.exe" set "PROTOC_GEN_GO=%USERPROFILE%\go\bin\protoc-gen-go.exe"
-if exist "%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe" set "PROTOC_GEN_GO_GRPC=%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe"
+if "%PROTOC_GEN_GO%"=="protoc-gen-go" if exist "%USERPROFILE%\go\bin\protoc-gen-go.exe" set "PROTOC_GEN_GO=%USERPROFILE%\go\bin\protoc-gen-go.exe"
+if "%PROTOC_GEN_GO_GRPC%"=="protoc-gen-go-grpc" if exist "%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe" set "PROTOC_GEN_GO_GRPC=%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe"
 
 if exist "%PROTO_DIR%\engine.proto" (
     echo Generating proto files...

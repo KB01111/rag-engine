@@ -60,7 +60,18 @@ impl ModelMetadata {
         if raw.trim().is_empty() {
             return Self::default();
         }
-        serde_json::from_str(raw).unwrap_or_default()
+        match serde_json::from_str(raw) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                let preview = if raw.len() > 100 {
+                    format!("{}...", &raw[..100])
+                } else {
+                    raw.to_string()
+                };
+                eprintln!("warning: failed to parse model metadata JSON: {}, preview: {}", err, preview);
+                Self::default()
+            }
+        }
     }
 
     fn to_json(&self) -> String {
@@ -228,8 +239,11 @@ impl RuntimeEngine {
         let backend_name = self
             .cloud_backend
             .as_ref()
-            .map(|b| b.name().to_string())
-            .unwrap_or_else(|| "openai".to_string());
+            .ok_or_else(|| RuntimeError::CloudBackendUnavailable {
+                model_id: model_id.clone(),
+            })?
+            .name()
+            .to_string();
         let record = ModelRecord {
             id: model_id.clone(),
             name: display_name,
@@ -826,6 +840,9 @@ mod openai_backend {
                     cloud.base_url.trim_end_matches('/')
                 ));
             }
+            for (key, value) in &cloud.extra_headers {
+                config = config.with_header(key, value)?;
+            }
             Ok(Client::with_config(config))
         }
 
@@ -895,6 +912,13 @@ mod openai_backend {
                 builder.max_tokens(m as u32);
             }
             if let Some(s) = parameters.seed {
+                if s > i64::MAX as u64 {
+                    return Err(RuntimeError::InvalidParameter {
+                        parameter: "seed".to_string(),
+                        details: format!("seed value {} exceeds maximum allowed value {}", s, i64::MAX),
+                    }
+                    .into());
+                }
                 builder.seed(s as i64);
             }
             if !parameters.stop.is_empty() {
@@ -906,8 +930,15 @@ mod openai_backend {
             let req = builder.build()?;
             let metrics = runtime_metrics(self.name(), model, &request, &parameters);
             let stream = client.chat().create_stream(req).await?;
-            Ok(Box::pin(stream.filter_map(move |result| {
+
+            use std::sync::Arc;
+            use tokio::sync::Mutex;
+            let error_flag = Arc::new(Mutex::new(false));
+            let error_flag_clone = error_flag.clone();
+
+            let transformed_stream = stream.filter_map(move |result| {
                 let metrics = metrics.clone();
+                let error_flag = error_flag.clone();
                 async move {
                     match result {
                         Ok(resp) => {
@@ -938,16 +969,26 @@ mod openai_backend {
                                 }))
                             }
                         }
-                        Err(e) => Some(Err(anyhow!("openai stream error: {e}"))),
+                        Err(e) => {
+                            *error_flag.lock().await = true;
+                            Some(Err(anyhow!("openai stream error: {e}")))
+                        }
                     }
                 }
-            })).chain(stream::once(async move {
-                Ok(InferenceChunk {
-                    token: String::new(),
-                    complete: true,
-                    metrics: HashMap::new(),
-                })
-            })))
+            }).chain(stream::once(async move {
+                if !*error_flag_clone.lock().await {
+                    Ok(InferenceChunk {
+                        token: String::new(),
+                        complete: true,
+                        metrics: HashMap::new(),
+                    })
+                } else {
+                    // Don't emit completion chunk if there was an error
+                    Err(anyhow!("stream completed with errors"))
+                }
+            }));
+
+            Ok(Box::pin(transformed_stream))
         }
     }
 
