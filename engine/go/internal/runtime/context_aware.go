@@ -36,6 +36,7 @@ type ContextAwareService struct {
 
 var preferOverPattern = regexp.MustCompile(`(?i)\bprefer(?:s|red)?\s+([a-z0-9._ -]+?)\s+over\s+([a-z0-9._ -]+)`)
 var affirmativePreferPattern = regexp.MustCompile(`(?i)(?:^|[^a-z])(?:prefer(?:s|red)?|like|use|choose)\s+([a-z0-9._ -]+?)(?:\s|$|[.,!?;:])`)
+var negationPattern = regexp.MustCompile(`(?i)\b(?:don't|do not|never|not|no|avoid)\b`)
 
 // NewContextAwareService creates a ContextAwareService that wraps the provided inner Service
 // and uses the given ContextOrchestrationBackend to optionally augment inference requests.
@@ -351,7 +352,6 @@ func (s *ContextAwareService) learnFromTurn(ctx context.Context, sessionID, prom
 		}
 	}
 
-	negationPattern := regexp.MustCompile(`(?i)\b(?:don't|do not|never|not|no|avoid)\b`)
 	hasNegation := negationPattern.MatchString(userPrompt)
 	if fact == nil && !hasNegation && strings.Contains(userPrompt, "dragonfly") && strings.Contains(userPrompt, "working memory") {
 		fact = buildPreferenceFact(sessionID, "dragonfly")

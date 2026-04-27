@@ -290,7 +290,7 @@ func (s *recordingRuntime) LoadedModelCount() int {
 }
 
 func (s *recordingRuntime) StreamInference(ctx context.Context, stream pb.Runtime_StreamInferenceServer) error {
-	if md, ok := metadata.FromOutgoingContext(ctx); ok {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		if values := md.Get("x-request-id"); len(values) > 0 {
 			s.requestID = values[0]
 		}

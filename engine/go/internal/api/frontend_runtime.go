@@ -138,15 +138,16 @@ func (s *Server) handleStreamRuntimeInference(c *gin.Context) {
 		},
 	}
 	stopHeartbeat := stream.startHeartbeat(15 * time.Second)
-	defer stopHeartbeat()
 
 	err := s.supervisor.Runtime.StreamInference(withRequestID(c.Request.Context(), c), stream)
+	stopHeartbeat()
 	if err == nil {
 		return
 	}
 
-	s.log.Warn().Err(err).Str("request_id", requestID(c)).Str("model_id", req.ModelID).Bool("stream_started", stream.started).Msg("stream inference failed")
-	if stream.started {
+	streamStarted := stream.isStarted()
+	s.log.Warn().Err(err).Str("request_id", requestID(c)).Str("model_id", req.ModelID).Bool("stream_started", streamStarted).Msg("stream inference failed")
+	if streamStarted {
 		_ = stream.sendError(apiErrorBackendUnavailable, "inference stream error")
 		return
 	}
@@ -181,6 +182,12 @@ func (s *httpInferenceStream) Send(resp *pb.InferenceResponse) error {
 		event = "complete"
 	}
 	return s.writeEvent(event, resp)
+}
+
+func (s *httpInferenceStream) isStarted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.started
 }
 
 func (s *httpInferenceStream) SetHeader(md metadata.MD) error {

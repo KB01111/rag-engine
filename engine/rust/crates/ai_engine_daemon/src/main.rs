@@ -394,7 +394,7 @@ impl Runtime for EngineService {
 
     async fn get_status(&self, request: Request<()>) -> Result<Response<RuntimeStatus>, Status> {
         let span = span_for_request("runtime.get_status", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let models = self
             .state
             .runtime
@@ -422,7 +422,7 @@ impl Runtime for EngineService {
 
     async fn list_models(&self, request: Request<()>) -> Result<Response<ModelList>, Status> {
         let span = span_for_request("runtime.list_models", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let models = self
             .state
             .runtime
@@ -440,7 +440,7 @@ impl Runtime for EngineService {
         request: Request<LoadModelRequest>,
     ) -> Result<Response<ModelInfo>, Status> {
         let span = span_for_request("runtime.load_model", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let info = self
             .state
@@ -456,7 +456,7 @@ impl Runtime for EngineService {
         request: Request<engine::UnloadModelRequest>,
     ) -> Result<Response<()>, Status> {
         let span = span_for_request("runtime.unload_model", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         self.state
             .runtime
             .unload_model(&request.into_inner().model_id)
@@ -470,7 +470,7 @@ impl Runtime for EngineService {
         request: Request<tonic::Streaming<InferenceRequest>>,
     ) -> Result<Response<Self::StreamInferenceStream>, Status> {
         let span = span_for_request("runtime.stream_inference", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let mut stream = request.into_inner();
         let first = stream
             .message()
@@ -513,7 +513,7 @@ impl Rag for EngineService {
         request: Request<UpsertRequest>,
     ) -> Result<Response<UpsertResponse>, Status> {
         let span = span_for_request("rag.upsert_document", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         if request.content.trim().is_empty() {
             return Err(Status::invalid_argument("content is required"));
@@ -595,7 +595,7 @@ impl Rag for EngineService {
         request: Request<DeleteRequest>,
     ) -> Result<Response<()>, Status> {
         let span = span_for_request("rag.delete_document", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         self.state
             .store
             .delete_document(&request.into_inner().document_id)
@@ -609,7 +609,7 @@ impl Rag for EngineService {
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
         let span = span_for_request("rag.search", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         if request.query.trim().is_empty() {
             return Err(Status::invalid_argument("query is required"));
@@ -655,7 +655,7 @@ impl Rag for EngineService {
 
     async fn get_rag_status(&self, request: Request<()>) -> Result<Response<RagStatus>, Status> {
         let span = span_for_request("rag.get_status", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let documents = self
             .state
             .store
@@ -689,7 +689,7 @@ impl Rag for EngineService {
 
     async fn list_documents(&self, request: Request<()>) -> Result<Response<DocumentList>, Status> {
         let span = span_for_request("rag.list_documents", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let documents = self
             .state
             .store
@@ -732,7 +732,7 @@ impl Training for EngineService {
         request: Request<TrainingRunRequest>,
     ) -> Result<Response<TrainingRun>, Status> {
         let span = span_for_request("training.start_run", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let config_json = serde_json::to_string(&request.config).map_err(internal_status)?;
         let run = self
@@ -751,7 +751,7 @@ impl Training for EngineService {
 
     async fn cancel_run(&self, request: Request<CancelRequest>) -> Result<Response<()>, Status> {
         let span = span_for_request("training.cancel_run", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         self.state
             .training
             .cancel_run(&request.into_inner().run_id)
@@ -762,7 +762,7 @@ impl Training for EngineService {
 
     async fn list_runs(&self, request: Request<()>) -> Result<Response<TrainingRunList>, Status> {
         let span = span_for_request("training.list_runs", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let runs = self
             .state
             .training
@@ -780,7 +780,7 @@ impl Training for EngineService {
         request: Request<engine::ArtifactsRequest>,
     ) -> Result<Response<ArtifactList>, Status> {
         let span = span_for_request("training.list_artifacts", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let artifacts = self
             .state
             .training
@@ -821,7 +821,7 @@ impl Training for EngineService {
         request: Request<LogsRequest>,
     ) -> Result<Response<Self::StreamLogsStream>, Status> {
         let span = span_for_request("training.stream_logs", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let training = self.state.training.clone();
 
@@ -869,7 +869,7 @@ impl Mcp for EngineService {
         request: Request<McpConnectionRequest>,
     ) -> Result<Response<McpConnection>, Status> {
         let span = span_for_request("mcp.connect", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let connection_id = format!("conn-{}", stable_id(&request.server_url));
         let auth_json = serde_json::to_string(&request.auth).map_err(internal_status)?;
@@ -904,7 +904,7 @@ impl Mcp for EngineService {
         request: Request<DisconnectRequest>,
     ) -> Result<Response<()>, Status> {
         let span = span_for_request("mcp.disconnect", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         self.state
             .store
             .delete_mcp_connection(&request.into_inner().connection_id)
@@ -918,7 +918,7 @@ impl Mcp for EngineService {
         request: Request<McpConnectionRequest>,
     ) -> Result<Response<ToolList>, Status> {
         let span = span_for_request("mcp.list_tools", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let Some(connection) = self
             .find_connection_by_url(&request.server_url)
@@ -938,7 +938,7 @@ impl Mcp for EngineService {
         request: Request<CallToolRequest>,
     ) -> Result<Response<CallToolResponse>, Status> {
         let span = span_for_request("mcp.call_tool", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let Some(connection) = self
             .find_connection_by_id(&request.connection_id)
@@ -1946,7 +1946,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<()>,
     ) -> Result<Response<engine::ContextStatus>, Status> {
         let span = span_for_request("context.get_status", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let status = self.engine.status().await.map_err(internal_status)?;
         Ok(Response::new(engine::ContextStatus {
             document_count: status.document_count,
@@ -1982,7 +1982,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<()>,
     ) -> Result<Response<engine::ContextResourceList>, Status> {
         let span = span_for_request("context.list_resources", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let resources = self
             .engine
             .list_resources()
@@ -2029,7 +2029,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextUpsertResourceRequest>,
     ) -> Result<Response<engine::ContextUpsertResourceResponse>, Status> {
         let span = span_for_request("context.upsert_resource", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let outcome = self
             .engine
@@ -2080,7 +2080,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextDeleteResourceRequest>,
     ) -> Result<Response<()>, Status> {
         let span = span_for_request("context.delete_resource", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         self.engine
             .delete_resource(&request.into_inner().uri)
             .await
@@ -2115,7 +2115,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextSearchRequest>,
     ) -> Result<Response<engine::ContextSearchResponse>, Status> {
         let span = span_for_request("context.search", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let started_at = Instant::now();
         let request = request.into_inner();
         let bounded_top_k = if request.top_k > 0 {
@@ -2194,7 +2194,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextWorkspaceSyncRequest>,
     ) -> Result<Response<engine::ContextWorkspaceSyncResponse>, Status> {
         let span = span_for_request("context.sync_workspace", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let outcome = self
             .engine
@@ -2235,7 +2235,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextFileListRequest>,
     ) -> Result<Response<engine::ContextFileListResponse>, Status> {
         let span = span_for_request("context.list_files", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let entries = self
             .engine
@@ -2272,7 +2272,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextFileReadRequest>,
     ) -> Result<Response<engine::ContextFileReadResponse>, Status> {
         let span = span_for_request("context.read_file", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let path = PathBuf::from(&request.path);
         let content = self
@@ -2325,7 +2325,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextFileWriteRequest>,
     ) -> Result<Response<engine::ContextFileWriteResponse>, Status> {
         let span = span_for_request("context.write_file", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let version = self
             .engine
@@ -2369,7 +2369,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextFileDeleteRequest>,
     ) -> Result<Response<engine::ContextFileDeleteResponse>, Status> {
         let span = span_for_request("context.delete_file", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let deleted = self
             .engine
@@ -2410,7 +2410,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextFileMoveRequest>,
     ) -> Result<Response<engine::ContextFileMoveResponse>, Status> {
         let span = span_for_request("context.move_file", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let version = self
             .engine
@@ -2462,7 +2462,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextSessionAppendRequest>,
     ) -> Result<Response<engine::ContextSessionHistory>, Status> {
         let span = span_for_request("context.append_session", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let session_id = request.session_id.clone();
         self.engine
@@ -2505,7 +2505,7 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextSessionGetRequest>,
     ) -> Result<Response<engine::ContextSessionHistory>, Status> {
         let span = span_for_request("context.get_session", &request);
-        let _guard = span.enter();
+        span.in_scope(|| tracing::trace!("grpc request received"));
         let request = request.into_inner();
         let entries = self
             .engine

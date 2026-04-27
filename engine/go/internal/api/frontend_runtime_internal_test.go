@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"google.golang.org/grpc/metadata"
 )
 
 func TestHTTPInferenceStreamSerializesEventsAndHonorsCancel(t *testing.T) {
@@ -54,5 +55,22 @@ func TestHTTPInferenceStreamSerializesEventsAndHonorsCancel(t *testing.T) {
 	cancel()
 	if err := stream.writeEvent("token", map[string]string{"token": "late"}); err == nil {
 		t.Fatal("expected canceled context error")
+	}
+}
+
+func TestWithRequestIDAttachesIncomingAndOutgoingMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Set("request_id", "rid-42")
+
+	ctx := withRequestID(context.Background(), ginCtx)
+
+	incoming, ok := metadata.FromIncomingContext(ctx)
+	if !ok || len(incoming.Get("x-request-id")) != 1 || incoming.Get("x-request-id")[0] != "rid-42" {
+		t.Fatalf("incoming request id not attached: %v", incoming)
+	}
+	outgoing, ok := metadata.FromOutgoingContext(ctx)
+	if !ok || len(outgoing.Get("x-request-id")) != 1 || outgoing.Get("x-request-id")[0] != "rid-42" {
+		t.Fatalf("outgoing request id not attached: %v", outgoing)
 	}
 }

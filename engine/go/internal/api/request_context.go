@@ -12,5 +12,6 @@ func withRequestID(ctx context.Context, c *gin.Context) context.Context {
 	if id == "" {
 		return ctx
 	}
-	return metadata.AppendToOutgoingContext(ctx, "x-request-id", id)
+	ctx = metadata.AppendToOutgoingContext(ctx, "x-request-id", id)
+	return metadata.NewIncomingContext(ctx, metadata.Pairs("x-request-id", id))
 }
