@@ -167,6 +167,7 @@ func (s *FrontendGatewaySuite) TestCapabilitiesAndStagedStatuses() {
 	s.Equal(http.StatusOK, resp.Code)
 	s.Contains(resp.Body.String(), `"execution_mode"`)
 	s.Contains(resp.Body.String(), `"runtime"`)
+	s.Contains(resp.Body.String(), `"streaming":"grpc"`)
 	s.Contains(resp.Body.String(), `"staged":true`)
 	s.Contains(resp.Body.String(), `mcp.describe_connection`)
 
