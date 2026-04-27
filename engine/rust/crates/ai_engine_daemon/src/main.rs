@@ -869,7 +869,8 @@ impl Mcp for EngineService {
         request: Request<McpConnectionRequest>,
     ) -> Result<Response<McpConnection>, Status> {
         let span = span_for_request("mcp.connect", &request);
-        span.in_scope(|| tracing::trace!("grpc request received"));
+        let _guard = span.enter();
+        tracing::trace!("grpc request received");
         let request = request.into_inner();
         let connection_id = format!("conn-{}", stable_id(&request.server_url));
         let auth_json = serde_json::to_string(&request.auth).map_err(internal_status)?;
