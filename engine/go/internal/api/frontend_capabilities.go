@@ -24,7 +24,7 @@ func (s *Server) handleCapabilities(c *gin.Context) {
 		"services": gin.H{
 			"runtime": gin.H{
 				"ready":     serviceReady(health),
-				"streaming": "sse",
+				"streaming": "grpc",
 			},
 			"rag": gin.H{
 				"ready": serviceReady(health) && contextReady,
