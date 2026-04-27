@@ -422,7 +422,8 @@ impl Runtime for EngineService {
 
     async fn list_models(&self, request: Request<()>) -> Result<Response<ModelList>, Status> {
         let span = span_for_request("runtime.list_models", &request);
-        span.in_scope(|| tracing::trace!("grpc request received"));
+        let _guard = span.enter();
+        tracing::trace!("grpc request received");
         let models = self
             .state
             .runtime
