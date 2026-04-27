@@ -905,7 +905,11 @@ mod openai_backend {
                 builder.top_p(p);
             }
             if let Some(m) = parameters.max_tokens {
-                builder.max_tokens(m as u32);
+                let max_tokens = u32::try_from(m).map_err(|_| RuntimeError::InvalidParameter {
+                    parameter: "max_tokens".to_string(),
+                    details: format!("max_tokens value {} exceeds maximum allowed value {}", m, u32::MAX),
+                })?;
+                builder.max_tokens(max_tokens);
             }
             if let Some(s) = parameters.seed {
                 if s > i64::MAX as u64 {
