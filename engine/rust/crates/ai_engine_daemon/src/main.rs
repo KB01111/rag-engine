@@ -393,46 +393,54 @@ impl Runtime for EngineService {
     type StreamInferenceStream = InferenceStream;
 
     async fn get_status(&self, request: Request<()>) -> Result<Response<RuntimeStatus>, Status> {
+        use tracing::Instrument;
         let span = span_for_request("runtime.get_status", &request);
-        let _guard = span.enter();
-        let models = self
-            .state
-            .runtime
-            .list_models()
-            .await
-            .map_err(internal_status)?;
-        let resources = self.state.runtime.system_resources();
-        let loaded = models
-            .into_iter()
-            .filter(|model| model.status == "loaded")
-            .map(model_info)
-            .collect::<Vec<_>>();
+        async move {
+            let models = self
+                .state
+                .runtime
+                .list_models()
+                .await
+                .map_err(internal_status)?;
+            let resources = self.state.runtime.system_resources();
+            let loaded = models
+                .into_iter()
+                .filter(|model| model.status == "loaded")
+                .map(model_info)
+                .collect::<Vec<_>>();
 
-        Ok(Response::new(RuntimeStatus {
-            version: "1.0.0".to_string(),
-            loaded_models: loaded,
-            resources: Some(SystemResources {
-                cpu_percent: resources.cpu_percent as f64,
-                memory_used_bytes: resources.memory_used_bytes,
-                memory_total_bytes: resources.memory_total_bytes,
-            }),
-            healthy: true,
-        }))
+            Ok(Response::new(RuntimeStatus {
+                version: "1.0.0".to_string(),
+                loaded_models: loaded,
+                resources: Some(SystemResources {
+                    cpu_percent: resources.cpu_percent as f64,
+                    memory_used_bytes: resources.memory_used_bytes,
+                    memory_total_bytes: resources.memory_total_bytes,
+                }),
+                healthy: true,
+            }))
+        }
+        .instrument(span)
+        .await
     }
 
     async fn list_models(&self, request: Request<()>) -> Result<Response<ModelList>, Status> {
+        use tracing::Instrument;
         let span = span_for_request("runtime.list_models", &request);
-        let _guard = span.enter();
-        let models = self
-            .state
-            .runtime
-            .list_models()
-            .await
-            .map_err(internal_status)?
-            .into_iter()
-            .map(model_info)
-            .collect();
-        Ok(Response::new(ModelList { models }))
+        async move {
+            let models = self
+                .state
+                .runtime
+                .list_models()
+                .await
+                .map_err(internal_status)?
+                .into_iter()
+                .map(model_info)
+                .collect();
+            Ok(Response::new(ModelList { models }))
+        }
+        .instrument(span)
+        .await
     }
 
     async fn load_model(
@@ -654,72 +662,80 @@ impl Rag for EngineService {
     }
 
     async fn get_rag_status(&self, request: Request<()>) -> Result<Response<RagStatus>, Status> {
+        use tracing::Instrument;
         let span = span_for_request("rag.get_status", &request);
-        let _guard = span.enter();
-        let documents = self
-            .state
-            .store
-            .list_documents()
-            .await
-            .map_err(internal_status)?;
-        let chunks = self
-            .state
-            .store
-            .list_chunks()
-            .await
-            .map_err(internal_status)?;
-        let index_size_bytes = chunks
-            .iter()
-            .map(|chunk| (chunk.vector.len() * std::mem::size_of::<f32>()) as i64)
-            .sum();
-        let (requires_reindex, reindex_reasons) = self.state.reindex_status(&chunks);
+        async move {
+            let documents = self
+                .state
+                .store
+                .list_documents()
+                .await
+                .map_err(internal_status)?;
+            let chunks = self
+                .state
+                .store
+                .list_chunks()
+                .await
+                .map_err(internal_status)?;
+            let index_size_bytes = chunks
+                .iter()
+                .map(|chunk| (chunk.vector.len() * std::mem::size_of::<f32>()) as i64)
+                .sum();
+            let (requires_reindex, reindex_reasons) = self.state.reindex_status(&chunks);
 
-        Ok(Response::new(RagStatus {
-            document_count: documents.len() as i64,
-            chunk_count: chunks.len() as i64,
-            index_size_bytes,
-            embedding_model: self.state.embedding.model().to_string(),
-            embedding_provider: self.state.embedding.name().to_string(),
-            embedding_dimension: self.state.embedding.dimension() as i32,
-            embedding_version: self.state.embedding.version().to_string(),
-            requires_reindex,
-            reindex_reasons,
-        }))
+            Ok(Response::new(RagStatus {
+                document_count: documents.len() as i64,
+                chunk_count: chunks.len() as i64,
+                index_size_bytes,
+                embedding_model: self.state.embedding.model().to_string(),
+                embedding_provider: self.state.embedding.name().to_string(),
+                embedding_dimension: self.state.embedding.dimension() as i32,
+                embedding_version: self.state.embedding.version().to_string(),
+                requires_reindex,
+                reindex_reasons,
+            }))
+        }
+        .instrument(span)
+        .await
     }
 
     async fn list_documents(&self, request: Request<()>) -> Result<Response<DocumentList>, Status> {
+        use tracing::Instrument;
         let span = span_for_request("rag.list_documents", &request);
-        let _guard = span.enter();
-        let documents = self
-            .state
-            .store
-            .list_documents()
-            .await
-            .map_err(internal_status)?;
-        let chunks = self
-            .state
-            .store
-            .list_chunks()
-            .await
-            .map_err(internal_status)?;
+        async move {
+            let documents = self
+                .state
+                .store
+                .list_documents()
+                .await
+                .map_err(internal_status)?;
+            let chunks = self
+                .state
+                .store
+                .list_chunks()
+                .await
+                .map_err(internal_status)?;
 
-        let infos = documents
-            .into_iter()
-            .map(|document| {
-                let chunk_count = chunks
-                    .iter()
-                    .filter(|chunk| chunk.document_id == document.id)
-                    .count() as i64;
-                DocumentInfo {
-                    id: document.id,
-                    title: document.title,
-                    chunk_count,
-                    created_at: Some(timestamp(document.created_at)),
-                    updated_at: Some(timestamp(document.updated_at)),
-                }
-            })
-            .collect();
-        Ok(Response::new(DocumentList { documents: infos }))
+            let infos = documents
+                .into_iter()
+                .map(|document| {
+                    let chunk_count = chunks
+                        .iter()
+                        .filter(|chunk| chunk.document_id == document.id)
+                        .count() as i64;
+                    DocumentInfo {
+                        id: document.id,
+                        title: document.title,
+                        chunk_count,
+                        created_at: Some(timestamp(document.created_at)),
+                        updated_at: Some(timestamp(document.updated_at)),
+                    }
+                })
+                .collect();
+            Ok(Response::new(DocumentList { documents: infos }))
+        }
+        .instrument(span)
+        .await
     }
 }
 
@@ -750,29 +766,37 @@ impl Training for EngineService {
     }
 
     async fn cancel_run(&self, request: Request<CancelRequest>) -> Result<Response<()>, Status> {
+        use tracing::Instrument;
         let span = span_for_request("training.cancel_run", &request);
-        let _guard = span.enter();
-        self.state
-            .training
-            .cancel_run(&request.into_inner().run_id)
-            .await
-            .map_err(not_found_status)?;
-        Ok(Response::new(()))
+        async move {
+            self.state
+                .training
+                .cancel_run(&request.into_inner().run_id)
+                .await
+                .map_err(not_found_status)?;
+            Ok(Response::new(()))
+        }
+        .instrument(span)
+        .await
     }
 
     async fn list_runs(&self, request: Request<()>) -> Result<Response<TrainingRunList>, Status> {
+        use tracing::Instrument;
         let span = span_for_request("training.list_runs", &request);
-        let _guard = span.enter();
-        let runs = self
-            .state
-            .training
-            .list_runs()
-            .await
-            .map_err(internal_status)?
-            .into_iter()
-            .map(training_run)
-            .collect();
-        Ok(Response::new(TrainingRunList { runs }))
+        async move {
+            let runs = self
+                .state
+                .training
+                .list_runs()
+                .await
+                .map_err(internal_status)?
+                .into_iter()
+                .map(training_run)
+                .collect();
+            Ok(Response::new(TrainingRunList { runs }))
+        }
+        .instrument(span)
+        .await
     }
 
     async fn list_artifacts(

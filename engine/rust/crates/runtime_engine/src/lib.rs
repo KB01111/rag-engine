@@ -1144,8 +1144,14 @@ mod tests {
 
 impl LoadModelOptions {
     pub fn parse(input: &HashMap<String, String>) -> Result<Self> {
-        Ok(Self {
-            max_num_seqs: parse_optional_usize(input, "max_num_seqs")?,
-        })
+        let max_num_seqs = parse_optional_usize(input, "max_num_seqs")?;
+        if let Some(0) = max_num_seqs {
+            return Err(RuntimeError::InvalidParameter {
+                parameter: "max_num_seqs".to_string(),
+                details: "max_num_seqs must be greater than 0".to_string(),
+            }
+            .into());
+        }
+        Ok(Self { max_num_seqs })
     }
 }

@@ -672,25 +672,37 @@ func (p *openAICompatibleProvider) StreamInference(
 }
 
 func (p *openAICompatibleProvider) doStreamRequest(ctx context.Context, endpoint string, body []byte) (*http.Response, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	p.decorate(ctx, httpReq)
+
+	// Check if request has an idempotency guarantee
+	hasIdempotencyKey := httpReq.Header.Get("Idempotency-Key") != "" || httpReq.Header.Get("X-Idempotency-Key") != ""
+
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			return nil, err
+	maxAttempts := 1
+	if hasIdempotencyKey {
+		maxAttempts = 2
+	}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			httpReq.Body = io.NopCloser(bytes.NewReader(body))
 		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		p.decorate(ctx, httpReq)
 
 		resp, err := p.streamHttp.Do(httpReq)
 		if err != nil {
 			lastErr = fmt.Errorf("stream inference with provider %s: %w", p.name, err)
-			if attempt == 0 {
+			if hasIdempotencyKey && attempt < maxAttempts-1 {
 				sleepWithJitter(ctx, 75*time.Millisecond)
 				continue
 			}
 			return nil, lastErr
 		}
-		if shouldRetryProviderStatus(resp.StatusCode) && attempt == 0 {
+		if shouldRetryProviderStatus(resp.StatusCode) && hasIdempotencyKey && attempt < maxAttempts-1 {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
 			_ = resp.Body.Close()
 			sleepWithJitter(ctx, 75*time.Millisecond)

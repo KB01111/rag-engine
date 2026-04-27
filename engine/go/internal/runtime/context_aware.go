@@ -344,16 +344,19 @@ func (s *ContextAwareService) learnFromTurn(ctx context.Context, sessionID, prom
 	combined := strings.ToLower(strings.TrimSpace(prompt + "\n" + assistantReply))
 	userPrompt := strings.ToLower(strings.TrimSpace(prompt))
 
-	if matches := preferOverPattern.FindStringSubmatch(combined); len(matches) == 3 {
-		preferred := normalizeFactID(matches[1])
-		if preferred != "" {
-			fact = buildPreferenceFact(sessionID, preferred)
+	negationPattern := regexp.MustCompile(`(?i)\b(?:don't|do not|never|not|no|avoid)\b`)
+	hasNegation := negationPattern.MatchString(userPrompt)
+
+	if !hasNegation {
+		if matches := preferOverPattern.FindStringSubmatch(combined); len(matches) == 3 {
+			preferred := normalizeFactID(matches[1])
+			if preferred != "" {
+				fact = buildPreferenceFact(sessionID, preferred)
+			}
 		}
 	}
 
-	negationPattern := regexp.MustCompile(`(?i)\b(?:don't|do not|never|not|no|avoid)\b`)
-	hasNegation := negationPattern.MatchString(userPrompt)
-	if fact == nil && !hasNegation && strings.Contains(userPrompt, "dragonfly") && strings.Contains(userPrompt, "working memory") {
+	if fact == nil && !hasNegation && inferDragonflyPreference(userPrompt) {
 		fact = buildPreferenceFact(sessionID, "dragonfly")
 	}
 
@@ -380,6 +383,17 @@ func (s *ContextAwareService) learnFromTurn(ctx context.Context, sessionID, prom
 			Str("session_id", sessionID).
 			Msg("failed to upsert learned fact to context")
 	}
+}
+
+// inferDragonflyPreference checks if the user prompt contains an explicit positive preference signal
+// for dragonfly working memory. It requires both "dragonfly" and "working memory" to be present
+// along with a preference verb/phrase like "prefer", "like", "want", "use", "enable", or "turn on".
+func inferDragonflyPreference(userPrompt string) bool {
+	if !strings.Contains(userPrompt, "dragonfly") || !strings.Contains(userPrompt, "working memory") {
+		return false
+	}
+	preferenceSignal := regexp.MustCompile(`(?i)\b(?:prefer|like|want|would like|use|enable|turn on)\b`)
+	return preferenceSignal.MatchString(userPrompt)
 }
 
 // buildPreferenceFact constructs an UpsertResourceRequest representing a user preference

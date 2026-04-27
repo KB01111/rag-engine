@@ -337,9 +337,6 @@ func (s *Supervisor) daemonEnv() []string {
 		fmt.Sprintf("AI_ENGINE_MISTRALRS_FORCE_CPU=%t", s.config.Runtime.MistralRS.ForceCPU),
 		fmt.Sprintf("AI_ENGINE_MISTRALRS_MAX_NUM_SEQS=%d", s.config.Runtime.MistralRS.MaxNumSeqs),
 		fmt.Sprintf("AI_ENGINE_MISTRALRS_AUTO_ISQ=%s", s.config.Runtime.MistralRS.AutoISQ),
-		fmt.Sprintf("AI_ENGINE_MISTRALRS_PAGED_ATTN_BLOCK_SIZE=%d", s.config.Runtime.MistralRS.PagedAttnBlockSize),
-		fmt.Sprintf("AI_ENGINE_MISTRALRS_PAGED_ATTN_GPU_MEM_CTX=%d", s.config.Runtime.MistralRS.PagedAttnGPUMemCtx),
-		fmt.Sprintf("AI_ENGINE_MISTRALRS_PAGED_ATTN_CACHE_DTYPE=%s", s.config.Runtime.MistralRS.PagedAttnCacheDType),
 		fmt.Sprintf("AI_ENGINE_EMBEDDING_PROVIDER=%s", s.config.RAG.EmbeddingProvider),
 		fmt.Sprintf("AI_ENGINE_EMBEDDING_MODEL=%s", s.config.RAG.EmbeddingModel),
 		fmt.Sprintf("AI_ENGINE_EMBEDDING_CACHE_DIR=%s", s.config.RAG.EmbeddingCacheDir),
@@ -347,6 +344,15 @@ func (s *Supervisor) daemonEnv() []string {
 		fmt.Sprintf("AI_ENGINE_TRAINING_DIR=%s", s.config.Training.WorkingDir),
 		fmt.Sprintf("AI_ENGINE_LLAMA_CLI=%s", s.config.Daemon.LlamaCLI),
 		fmt.Sprintf("AI_ENGINE_TRAINING_CLI=%s", s.config.Daemon.TrainingCLI),
+	}
+	if s.config.Runtime.MistralRS.PagedAttnBlockSize > 0 {
+		env = append(env, fmt.Sprintf("AI_ENGINE_MISTRALRS_PAGED_ATTN_BLOCK_SIZE=%d", s.config.Runtime.MistralRS.PagedAttnBlockSize))
+	}
+	if s.config.Runtime.MistralRS.PagedAttnGPUMemCtx > 0 {
+		env = append(env, fmt.Sprintf("AI_ENGINE_MISTRALRS_PAGED_ATTN_GPU_MEM_CTX=%d", s.config.Runtime.MistralRS.PagedAttnGPUMemCtx))
+	}
+	if s.config.Runtime.MistralRS.PagedAttnCacheDType != "" {
+		env = append(env, fmt.Sprintf("AI_ENGINE_MISTRALRS_PAGED_ATTN_CACHE_DTYPE=%s", s.config.Runtime.MistralRS.PagedAttnCacheDType))
 	}
 	if s.config.Context.Enabled {
 		env = append(env, fmt.Sprintf("CONTEXT_DATA_DIR=%s", s.config.Context.DataDir))
