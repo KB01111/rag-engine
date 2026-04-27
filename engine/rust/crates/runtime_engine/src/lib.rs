@@ -64,7 +64,7 @@ impl ModelMetadata {
             Ok(metadata) => metadata,
             Err(err) => {
                 let preview = if raw.len() > 100 {
-                    format!("{}...", &raw[..100])
+                    format!("{}...", &raw[..raw.floor_char_boundary(100)])
                 } else {
                     raw.to_string()
                 };
