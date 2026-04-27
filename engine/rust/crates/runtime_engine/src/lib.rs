@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::{stream, Stream, StreamExt};
+use serde::{Deserialize, Serialize};
 use storage::{EngineStore, ModelRecord};
 use tokio::sync::RwLock;
 
@@ -19,8 +20,56 @@ pub enum RuntimeError {
     InvalidParameter { parameter: String, details: String },
     #[error("model not found: {model_id}")]
     ModelNotFound { model_id: String },
+    #[error("cloud backend not configured for model {model_id}")]
+    CloudBackendUnavailable { model_id: String },
     #[error("{0}")]
     Other(#[from] anyhow::Error),
+}
+
+/// Persisted-as-JSON configuration for a cloud-hosted model.
+///
+/// Stashed inside `ModelRecord.metadata_json` under the `cloud` key so we
+/// don't need to evolve the storage schema for v1. When `cloud` is present,
+/// the engine routes inference through the cloud backend instead of the
+/// local one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CloudModelConfig {
+    pub provider: String,
+    pub base_url: String,
+    pub api_key_env: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra_headers: HashMap<String, String>,
+    /// Model id of a fallback model to retry once when this model fails to
+    /// start streaming (load failure, context overflow, OOM-like errors).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ModelMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cloud: Option<CloudModelConfig>,
+    #[serde(default, flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ModelMetadata {
+    fn parse(raw: &str) -> Self {
+        if raw.trim().is_empty() {
+            return Self::default();
+        }
+        serde_json::from_str(raw).unwrap_or_default()
+    }
+
+    fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
+pub(crate) fn cloud_config_from_metadata(metadata_json: &str) -> Option<CloudModelConfig> {
+    ModelMetadata::parse(metadata_json).cloud
 }
 
 #[derive(Debug, Clone, Default)]
@@ -38,6 +87,7 @@ pub struct RuntimeEngine {
     store: EngineStore,
     models_path: PathBuf,
     backend: Arc<dyn RuntimeBackend>,
+    cloud_backend: Option<Arc<dyn RuntimeBackend>>,
     mistralrs_config: MistralRsConfig,
 }
 
@@ -106,10 +156,12 @@ impl RuntimeEngine {
         mistralrs_config: MistralRsConfig,
     ) -> Self {
         let backend = create_backend(backend.into(), mistralrs_config.clone());
+        let cloud_backend = create_openai_backend();
         Self {
             store,
             models_path: models_path.into(),
             backend,
+            cloud_backend,
             mistralrs_config,
         }
     }
@@ -123,12 +175,73 @@ impl RuntimeEngine {
             store,
             models_path: models_path.into(),
             backend,
+            cloud_backend: None,
             mistralrs_config: MistralRsConfig::default(),
         }
     }
 
+    /// Set or replace the cloud backend used for models that have a
+    /// `CloudModelConfig` in their metadata. Useful in tests for injecting a
+    /// stub backend pointed at a wiremock server.
+    pub fn with_cloud_backend(mut self, cloud_backend: Arc<dyn RuntimeBackend>) -> Self {
+        self.cloud_backend = Some(cloud_backend);
+        self
+    }
+
     pub fn backend_name(&self) -> &str {
         self.backend.name()
+    }
+
+    pub fn cloud_backend_name(&self) -> Option<&str> {
+        self.cloud_backend.as_ref().map(|b| b.name())
+    }
+
+    /// Pick the backend that should service requests for `model`. If the
+    /// model carries a `CloudModelConfig` in its metadata, dispatch to the
+    /// cloud backend; otherwise fall back to the configured local backend.
+    fn select_backend(&self, model: &ModelRecord) -> Result<Arc<dyn RuntimeBackend>> {
+        if cloud_config_from_metadata(&model.metadata_json).is_some() {
+            return self
+                .cloud_backend
+                .clone()
+                .ok_or_else(|| RuntimeError::CloudBackendUnavailable {
+                    model_id: model.id.clone(),
+                }
+                .into());
+        }
+        Ok(self.backend.clone())
+    }
+
+    /// Register (or update) a cloud-hosted model in the store. The model
+    /// becomes addressable by `model_id` for inference. Cloud-config is
+    /// persisted in `metadata_json` so backend selection survives restarts.
+    pub async fn register_cloud_model(
+        &self,
+        model_id: impl Into<String>,
+        display_name: impl Into<String>,
+        config: CloudModelConfig,
+    ) -> Result<ModelRecord> {
+        let model_id = model_id.into();
+        let display_name = display_name.into();
+        let mut metadata = ModelMetadata::default();
+        metadata.cloud = Some(config);
+        let backend_name = self
+            .cloud_backend
+            .as_ref()
+            .map(|b| b.name().to_string())
+            .unwrap_or_else(|| "openai".to_string());
+        let record = ModelRecord {
+            id: model_id.clone(),
+            name: display_name,
+            path: String::new(),
+            backend: backend_name,
+            status: "registered".to_string(),
+            metadata_json: metadata.to_json(),
+            size_bytes: 0,
+            updated_at: now(),
+        };
+        self.store.upsert_model(record.clone()).await?;
+        Ok(record)
     }
 
     pub async fn list_models(&self) -> Result<Vec<ModelRecord>> {
@@ -164,9 +277,10 @@ impl RuntimeEngine {
         mut model: ModelRecord,
         options: LoadModelOptions,
     ) -> Result<ModelRecord> {
-        self.backend.load_model(&model, options).await?;
+        let backend = self.select_backend(&model)?;
+        backend.load_model(&model, options).await?;
         model.status = "loaded".to_string();
-        model.backend = self.backend.name().to_string();
+        model.backend = backend.name().to_string();
         model.updated_at = now();
         self.store.upsert_model(model.clone()).await?;
         Ok(model)
@@ -181,9 +295,10 @@ impl RuntimeEngine {
             .into());
         };
 
-        self.backend.unload_model(model_id).await?;
+        let backend = self.select_backend(model)?;
+        backend.unload_model(model_id).await?;
         model.status = "discovered".to_string();
-        model.backend = self.backend.name().to_string();
+        model.backend = backend.name().to_string();
         model.updated_at = now();
         self.store.upsert_model(model.clone()).await?;
         Ok(())
@@ -203,9 +318,43 @@ impl RuntimeEngine {
     ) -> Result<InferenceStream> {
         let parameters = RuntimeParameters::parse(&request.parameters)?;
         let model = self.ensure_loaded_model(&request.model_id).await?;
-        self.backend
+        let backend = self.select_backend(&model)?;
+        let outcome = backend
+            .stream_inference(&model, request.clone(), parameters.clone())
+            .await;
+        match outcome {
+            Ok(stream) => Ok(stream),
+            Err(err) => {
+                let fallback_id =
+                    cloud_config_from_metadata(&model.metadata_json).and_then(|c| c.fallback_model_id);
+                if let Some(fallback_id) = fallback_id {
+                    self.try_fallback(request, fallback_id, err).await
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    async fn try_fallback(
+        &self,
+        mut request: RuntimeInferenceRequest,
+        fallback_id: String,
+        original_error: anyhow::Error,
+    ) -> Result<InferenceStream> {
+        request.model_id = fallback_id;
+        let parameters = RuntimeParameters::parse(&request.parameters)?;
+        let model = self
+            .ensure_loaded_model(&request.model_id)
+            .await
+            .map_err(|e| anyhow!("primary failed: {original_error}; fallback resolution failed: {e}"))?;
+        let backend = self
+            .select_backend(&model)
+            .map_err(|e| anyhow!("primary failed: {original_error}; fallback backend select failed: {e}"))?;
+        backend
             .stream_inference(&model, request, parameters)
             .await
+            .map_err(|e| anyhow!("primary failed: {original_error}; fallback also failed: {e}"))
     }
 
     async fn ensure_loaded_model(&self, model_id: &str) -> Result<ModelRecord> {
@@ -631,6 +780,190 @@ mod mistralrs_backend {
             _ => None,
         }
     }
+}
+
+#[cfg(feature = "openai-backend")]
+mod openai_backend {
+    use super::*;
+    use async_openai::{
+        config::OpenAIConfig,
+        types::chat::{
+            ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+            ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
+        },
+        Client,
+    };
+    use std::env;
+
+    /// Stateless cloud LLM backend backed by `async-openai`. Each request
+    /// reads its routing details (base url, api key env var, deployment
+    /// override, extra headers) from the model record's `metadata_json`.
+    /// Nothing is loaded or persisted server-side; `load_model`/`unload_model`
+    /// are therefore no-ops.
+    pub struct OpenAiBackend;
+
+    impl OpenAiBackend {
+        pub fn new() -> Self {
+            Self
+        }
+
+        fn build_client(cloud: &CloudModelConfig) -> Result<Client<OpenAIConfig>> {
+            let api_key = env::var(&cloud.api_key_env).map_err(|_| {
+                anyhow!(
+                    "missing api key: env var {} is not set for cloud model",
+                    cloud.api_key_env
+                )
+            })?;
+            let mut config = OpenAIConfig::new()
+                .with_api_base(cloud.base_url.clone())
+                .with_api_key(api_key);
+            if let Some(deployment) = cloud.deployment.as_deref() {
+                // Azure-style "deployment" lives in the path; we surface it
+                // via api_base override for v1. Native AzureConfig support is
+                // tracked separately.
+                config = config.with_api_base(format!(
+                    "{}/deployments/{deployment}",
+                    cloud.base_url.trim_end_matches('/')
+                ));
+            }
+            Ok(Client::with_config(config))
+        }
+
+        fn build_messages(request: &RuntimeInferenceRequest) -> Result<Vec<ChatCompletionRequestMessage>> {
+            let mut messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+            let (system, user) = build_message_parts(request);
+            if let Some(system) = system {
+                let msg = ChatCompletionRequestSystemMessageArgs::default()
+                    .content(system)
+                    .build()?;
+                messages.push(msg.into());
+            }
+            let user_msg = ChatCompletionRequestUserMessageArgs::default()
+                .content(user)
+                .build()?;
+            messages.push(user_msg.into());
+            Ok(messages)
+        }
+    }
+
+    #[async_trait]
+    impl RuntimeBackend for OpenAiBackend {
+        fn name(&self) -> &str {
+            "openai"
+        }
+
+        async fn list_models(&self, models: Vec<ModelRecord>) -> Result<Vec<ModelRecord>> {
+            Ok(models)
+        }
+
+        async fn load_model(&self, _model: &ModelRecord, _options: LoadModelOptions) -> Result<()> {
+            // Cloud models are stateless - nothing to load.
+            Ok(())
+        }
+
+        async fn unload_model(&self, _model_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn stream_inference(
+            &self,
+            model: &ModelRecord,
+            request: RuntimeInferenceRequest,
+            parameters: RuntimeParameters,
+        ) -> Result<InferenceStream> {
+            let cloud = cloud_config_from_metadata(&model.metadata_json).ok_or_else(|| {
+                anyhow!(
+                    "openai backend invoked for model {} without CloudModelConfig",
+                    model.id
+                )
+            })?;
+            let client = Self::build_client(&cloud)?;
+
+            let mut builder = CreateChatCompletionRequestArgs::default();
+            // Use deployment name if provided (Azure pattern), otherwise the model id.
+            let target_model = cloud.deployment.clone().unwrap_or_else(|| model.name.clone());
+            builder.model(target_model);
+            builder.messages(Self::build_messages(&request)?);
+            builder.stream(true);
+            if let Some(t) = parameters.temperature {
+                builder.temperature(t);
+            }
+            if let Some(p) = parameters.top_p {
+                builder.top_p(p);
+            }
+            if let Some(m) = parameters.max_tokens {
+                builder.max_tokens(m as u32);
+            }
+            if let Some(s) = parameters.seed {
+                builder.seed(s as i64);
+            }
+            if !parameters.stop.is_empty() {
+                builder.stop(parameters.stop.clone());
+            }
+            // top_k and repetition_penalty are not part of the OpenAI chat API;
+            // they are silently dropped. truncate_sequence is also unused here.
+
+            let req = builder.build()?;
+            let metrics = runtime_metrics(self.name(), model, &request, &parameters);
+            let stream = client.chat().create_stream(req).await?;
+            Ok(Box::pin(stream.filter_map(move |result| {
+                let metrics = metrics.clone();
+                async move {
+                    match result {
+                        Ok(resp) => {
+                            let token = resp
+                                .choices
+                                .into_iter()
+                                .filter_map(|c| c.delta.content)
+                                .collect::<Vec<_>>()
+                                .join("");
+                            let mut chunk_metrics = metrics.clone();
+                            if let Some(usage) = resp.usage {
+                                chunk_metrics.insert(
+                                    "prompt_tokens".to_string(),
+                                    usage.prompt_tokens.to_string(),
+                                );
+                                chunk_metrics.insert(
+                                    "completion_tokens".to_string(),
+                                    usage.completion_tokens.to_string(),
+                                );
+                            }
+                            if token.is_empty() {
+                                None
+                            } else {
+                                Some(Ok(InferenceChunk {
+                                    token,
+                                    complete: false,
+                                    metrics: chunk_metrics,
+                                }))
+                            }
+                        }
+                        Err(e) => Some(Err(anyhow!("openai stream error: {e}"))),
+                    }
+                }
+            })).chain(stream::once(async move {
+                Ok(InferenceChunk {
+                    token: String::new(),
+                    complete: true,
+                    metrics: HashMap::new(),
+                })
+            })))
+        }
+    }
+
+    pub fn backend() -> Arc<dyn RuntimeBackend> {
+        Arc::new(OpenAiBackend::new())
+    }
+}
+
+#[cfg(feature = "openai-backend")]
+fn create_openai_backend() -> Option<Arc<dyn RuntimeBackend>> {
+    Some(openai_backend::backend())
+}
+
+#[cfg(not(feature = "openai-backend"))]
+fn create_openai_backend() -> Option<Arc<dyn RuntimeBackend>> {
+    None
 }
 
 fn create_backend(name: String, config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
@@ -1139,6 +1472,224 @@ mod tests {
                 metrics: HashMap::new(),
             })])))
         }
+    }
+
+    #[derive(Default)]
+    struct FailingBackend {
+        attempts: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl RuntimeBackend for FailingBackend {
+        fn name(&self) -> &str {
+            "failing"
+        }
+        async fn list_models(&self, models: Vec<ModelRecord>) -> Result<Vec<ModelRecord>> {
+            Ok(models)
+        }
+        async fn load_model(&self, _: &ModelRecord, _: LoadModelOptions) -> Result<()> {
+            Ok(())
+        }
+        async fn unload_model(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn stream_inference(
+            &self,
+            _: &ModelRecord,
+            _: RuntimeInferenceRequest,
+            _: RuntimeParameters,
+        ) -> Result<InferenceStream> {
+            *self.attempts.lock().unwrap() += 1;
+            Err(anyhow!("simulated backend failure"))
+        }
+    }
+
+    #[test]
+    fn cloud_config_round_trips_through_metadata_json() {
+        let cfg = CloudModelConfig {
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key_env: "OPENAI_API_KEY".into(),
+            deployment: None,
+            extra_headers: HashMap::new(),
+            fallback_model_id: Some("local.gguf".into()),
+        };
+        let mut metadata = ModelMetadata::default();
+        metadata.cloud = Some(cfg.clone());
+        let json = metadata.to_json();
+
+        let parsed = cloud_config_from_metadata(&json).unwrap();
+        assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn cloud_config_absent_when_metadata_has_no_cloud_field() {
+        assert!(cloud_config_from_metadata("{}").is_none());
+        assert!(cloud_config_from_metadata("").is_none());
+        assert!(cloud_config_from_metadata("{\"unrelated\":\"value\"}").is_none());
+    }
+
+    #[tokio::test]
+    async fn register_cloud_model_persists_record_with_cloud_metadata() {
+        let (engine, _s, _m) = test_engine("mock").await;
+        let cloud_backend = Arc::new(RecordingBackend::default());
+        let engine = engine.with_cloud_backend(cloud_backend.clone());
+
+        let cfg = CloudModelConfig {
+            provider: "openai".into(),
+            base_url: "https://example/v1".into(),
+            api_key_env: "TEST_OPENAI_KEY".into(),
+            deployment: None,
+            extra_headers: HashMap::new(),
+            fallback_model_id: None,
+        };
+        let record = engine
+            .register_cloud_model("gpt-4o", "GPT-4o", cfg.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(record.id, "gpt-4o");
+        assert_eq!(record.backend, "recording");
+        assert_eq!(record.status, "registered");
+        assert_eq!(cloud_config_from_metadata(&record.metadata_json).unwrap(), cfg);
+    }
+
+    #[tokio::test]
+    async fn select_backend_routes_cloud_model_to_cloud_backend() {
+        let (engine, _s, _m) = test_engine("mock").await;
+        let cloud_backend = Arc::new(RecordingBackend::default());
+        let engine = engine.with_cloud_backend(cloud_backend.clone());
+
+        let cfg = CloudModelConfig {
+            provider: "openai".into(),
+            base_url: "https://example/v1".into(),
+            api_key_env: "TEST_OPENAI_KEY".into(),
+            deployment: None,
+            extra_headers: HashMap::new(),
+            fallback_model_id: None,
+        };
+        engine
+            .register_cloud_model("gpt-4o", "GPT-4o", cfg)
+            .await
+            .unwrap();
+
+        let _chunks = engine
+            .stream_inference(RuntimeInferenceRequest {
+                model_id: "gpt-4o".to_string(),
+                prompt: "hi".to_string(),
+                system_prompt: None,
+                parameters: HashMap::from([("temperature".to_string(), "0.3".to_string())]),
+                context_refs: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        // The recording (cloud) backend should have observed the call.
+        let observed = cloud_backend.last_parameters.lock().unwrap().clone().unwrap();
+        assert_eq!(observed.temperature, Some(0.3));
+    }
+
+    #[tokio::test]
+    async fn stream_inference_errors_when_cloud_backend_is_missing() {
+        let (engine, _s, _m) = test_engine("mock").await;
+        // No cloud backend installed.
+        let cfg = CloudModelConfig {
+            provider: "openai".into(),
+            base_url: "https://example/v1".into(),
+            api_key_env: "TEST_OPENAI_KEY".into(),
+            deployment: None,
+            extra_headers: HashMap::new(),
+            fallback_model_id: None,
+        };
+        engine
+            .register_cloud_model("gpt-4o", "GPT-4o", cfg)
+            .await
+            .unwrap();
+
+        let err = engine
+            .stream_inference(RuntimeInferenceRequest {
+                model_id: "gpt-4o".to_string(),
+                prompt: "hi".to_string(),
+                system_prompt: None,
+                parameters: HashMap::new(),
+                context_refs: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("cloud backend not configured"));
+    }
+
+    #[tokio::test]
+    async fn fallback_kicks_in_when_primary_cloud_call_fails() {
+        let (engine, _s, _m) = test_engine("mock").await;
+        let failing = Arc::new(FailingBackend::default());
+        let engine = engine.with_cloud_backend(failing.clone());
+
+        // Register a cloud "primary" pointing to fallback = local.gguf (which mock backend handles).
+        let cfg = CloudModelConfig {
+            provider: "openai".into(),
+            base_url: "https://example/v1".into(),
+            api_key_env: "TEST_OPENAI_KEY".into(),
+            deployment: None,
+            extra_headers: HashMap::new(),
+            fallback_model_id: Some("local.gguf".into()),
+        };
+        engine
+            .register_cloud_model("flaky-cloud", "Flaky Cloud", cfg)
+            .await
+            .unwrap();
+
+        let chunks = engine
+            .stream_inference(RuntimeInferenceRequest {
+                model_id: "flaky-cloud".to_string(),
+                prompt: "hello world".to_string(),
+                system_prompt: None,
+                parameters: HashMap::new(),
+                context_refs: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(*failing.attempts.lock().unwrap(), 1);
+        // Mock backend produced tokens for "hello world".
+        let tokens: Vec<String> = chunks.iter().map(|c| c.token.clone()).collect();
+        assert!(tokens.iter().any(|t| t == "hello"));
+        assert!(chunks.last().unwrap().complete);
+    }
+
+    #[tokio::test]
+    async fn fallback_not_attempted_when_unset() {
+        let (engine, _s, _m) = test_engine("mock").await;
+        let failing = Arc::new(FailingBackend::default());
+        let engine = engine.with_cloud_backend(failing.clone());
+
+        let cfg = CloudModelConfig {
+            provider: "openai".into(),
+            base_url: "https://example/v1".into(),
+            api_key_env: "TEST_OPENAI_KEY".into(),
+            deployment: None,
+            extra_headers: HashMap::new(),
+            fallback_model_id: None,
+        };
+        engine
+            .register_cloud_model("only-cloud", "Only Cloud", cfg)
+            .await
+            .unwrap();
+
+        let err = engine
+            .stream_inference(RuntimeInferenceRequest {
+                model_id: "only-cloud".to_string(),
+                prompt: "hi".to_string(),
+                system_prompt: None,
+                parameters: HashMap::new(),
+                context_refs: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("simulated backend failure"));
+        assert_eq!(*failing.attempts.lock().unwrap(), 1);
     }
 }
 
