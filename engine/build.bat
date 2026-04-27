@@ -35,12 +35,6 @@ if not exist "%PROTOC%" (
 
 set "PROTOCEXE=%PROTOC%"
 
-set "PROTOC_GEN_GO=protoc-gen-go"
-if exist "%USERPROFILE%\go\bin\protoc-gen-go.exe" set "PROTOC_GEN_GO=%USERPROFILE%\go\bin\protoc-gen-go.exe"
-
-set "PROTOC_GEN_GO_GRPC=protoc-gen-go-grpc"
-if exist "%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe" set "PROTOC_GEN_GO_GRPC=%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe"
-
 cd /d "%GO_DIR%"
 call "%GOEXE%" mod download
 if errorlevel 1 (
@@ -62,6 +56,20 @@ if errorlevel 1 (
     echo Failed to install protoc-gen-go-grpc
     exit /b 1
 )
+
+REM Resolve absolute paths to the protoc plugin binaries AFTER go install
+REM has placed them on disk. protoc on Windows passes plugin values to
+REM CreateProcess as-is and won't append .exe, so the bare name fails even
+REM when the binary is on PATH. Prefer GOPATH_DIR\bin (canonical), fall
+REM back to %USERPROFILE%\go\bin, finally to the bare name.
+set "PROTOC_GEN_GO=protoc-gen-go"
+set "PROTOC_GEN_GO_GRPC=protoc-gen-go-grpc"
+if defined GOPATH_DIR (
+    if exist "%GOPATH_DIR%\bin\protoc-gen-go.exe" set "PROTOC_GEN_GO=%GOPATH_DIR%\bin\protoc-gen-go.exe"
+    if exist "%GOPATH_DIR%\bin\protoc-gen-go-grpc.exe" set "PROTOC_GEN_GO_GRPC=%GOPATH_DIR%\bin\protoc-gen-go-grpc.exe"
+)
+if exist "%USERPROFILE%\go\bin\protoc-gen-go.exe" set "PROTOC_GEN_GO=%USERPROFILE%\go\bin\protoc-gen-go.exe"
+if exist "%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe" set "PROTOC_GEN_GO_GRPC=%USERPROFILE%\go\bin\protoc-gen-go-grpc.exe"
 
 if exist "%PROTO_DIR%\engine.proto" (
     echo Generating proto files...
