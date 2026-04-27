@@ -10,6 +10,12 @@ the browser/Electron-friendly gateway.
 | --- | --- | --- |
 | `GET` | `/api/v1/runtime/status` | Runtime health, loaded models, resources, and execution mode |
 | `GET` | `/api/v1/runtime/models` | Discovered local/provider models |
+| `GET` | `/api/v1/runtime/hub/search` | Search compatible public Hugging Face models |
+| `GET` | `/api/v1/runtime/hub/model` | Inspect one Hugging Face model and file choices |
+| `POST` | `/api/v1/runtime/hub/downloads` | Start a Hugging Face model-file download |
+| `GET` | `/api/v1/runtime/hub/downloads` | List active/recent Hugging Face downloads |
+| `GET` | `/api/v1/runtime/hub/downloads/:id/events` | Stream download progress with SSE |
+| `DELETE` | `/api/v1/runtime/hub/downloads/:id` | Cancel an active download |
 | `POST` | `/api/v1/runtime/models/load` | Mark/load a model for use |
 | `POST` | `/api/v1/runtime/models/unload` | Unload a model |
 | `POST` | `/api/v1/runtime/inference/stream` | Stream inference tokens with SSE |
@@ -66,6 +72,58 @@ accidentally resend requests. To reduce spurious reconnects, consider periodic
 server-side keep-alive (e.g., comment or ping events) or shorter server
 timeouts to cleanly close idle streams. See the `event: token`, `event:
 complete`, and `event: error` examples above for the expected event shapes.
+
+### Hugging Face Model Browser
+
+The Hub integration is backend-managed. The frontend can browse compatible
+public artifacts, download a selected file into `runtime.models_path`, then load
+the downloaded local model through the normal runtime load endpoint.
+
+Search:
+
+```http
+GET /api/v1/runtime/hub/search?query=llama&author=TheBloke&sort=downloads&limit=20
+```
+
+If the response includes `next_cursor`, request the next page by passing it back
+as `cursor=<next_cursor>`. The cursor is opaque; clients should not parse it.
+
+By default, search returns only v1-compatible public models:
+
+- the repository is not private or gated,
+- at least one visible file has `.gguf`, `.ggml`, or `.bin`,
+- license metadata is visible enough to show in the UI.
+
+Model detail:
+
+```http
+GET /api/v1/runtime/hub/model?repo_id=acme%2Ftiny
+```
+
+Download:
+
+```json
+{
+  "repo_id": "acme/tiny",
+  "filename": "tiny.Q4_K_M.gguf",
+  "revision": "main"
+}
+```
+
+Download events use the same SSE framing:
+
+```text
+event: progress
+data: {"id":"...","status":"downloading","downloaded_bytes":1048576,"size_bytes":734003200}
+
+event: complete
+data: {"id":"...","status":"completed","target_path":"..."}
+```
+
+Downloaded files are written atomically with a `.partial` temporary file and a
+`.hf.json` sidecar manifest. `/api/v1/runtime/models` surfaces those models
+with `metadata.source=huggingface`, `repo_id`, `license`, `revision`, and
+`downloaded=true`.
 
 ## RAG
 
@@ -149,8 +207,9 @@ New frontend gateway endpoints return errors in this shape:
 }
 ```
 
-Known codes are `invalid_request`, `not_found`, `backend_unavailable`, and
-`internal_error`.
+Known codes are `invalid_request`, `not_found`, `backend_unavailable`,
+`internal_error`, `unsupported_model_format`, `download_too_large`, and
+`hf_token_required`.
 
 ## CORS
 

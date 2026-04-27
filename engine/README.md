@@ -13,6 +13,7 @@ The packaged WinUI integration path is:
 For this v1 surface:
 
 - `Runtime` and `RAG` are the supported frontend services.
+- The HTTP frontend gateway also exposes a Hugging Face model browser/downloader for public GGUF/GGML/BIN artifacts.
 - `Training` and `MCP` are disabled by default and return `UNIMPLEMENTED` from the Go control plane.
 - The daemon is required by default. If no daemon binary or command is available, startup fails fast instead of silently falling back to in-memory managers.
 - RAG uses FastEmbed locally by default and reports embedding metadata plus reindex status through `RagStatus`.
@@ -97,6 +98,7 @@ internal service contract.
 - `LoadModel` - Load a model into memory
 - `UnloadModel` - Unload a model
 - `StreamInference` - Stream inference responses through the daemon-backed runtime path
+- HTTP Hub endpoints - Search Hugging Face, download compatible public artifacts, then load the downloaded local file
 
 The preferred local runtime backend is embedded `mistral.rs`. Configure it with:
 
@@ -123,6 +125,25 @@ runtime:
 ```
 
 When model loading fails, run `mistralrs doctor` first to check CUDA/Metal/MKL, Hugging Face, and local model environment issues before changing engine code.
+
+Hugging Face browsing/downloading is handled by the Go control plane and remains
+local-runtime-first. v1 accepts public `.gguf`, `.ggml`, and `.bin` artifacts
+only; gated/private/token-required repositories are rejected until token support
+is intentionally added.
+
+```yaml
+huggingface:
+  enabled: true
+  endpoint: "https://huggingface.co"
+  max_download_bytes: 0
+  compatible_extensions:
+    - ".gguf"
+    - ".ggml"
+    - ".bin"
+```
+
+Downloaded models land under `runtime.models_path` with a `.hf.json` manifest
+and appear in `ListModels` with Hugging Face metadata.
 
 ### RAG Service
 - `UpsertDocument` - Add/update documents
@@ -175,6 +196,7 @@ See `config.example.yaml` for configuration options:
 - Server host/port (HTTP and gRPC)
 - Daemon host/port plus binary auto-detection
 - Runtime model path and memory limits
+- Hugging Face public model browsing and download limits
 - Context service URL, binary path, data dir, and managed roots
 - RAG settings (chunk size, overlap, embedding provider/model/cache)
 - Training working directory and job limits

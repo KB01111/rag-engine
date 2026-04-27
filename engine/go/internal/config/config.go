@@ -12,16 +12,17 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Daemon   DaemonConfig   `yaml:"daemon"`
-	Services ServicesConfig `yaml:"services"`
-	Storage  StorageConfig  `yaml:"storage"`
-	Runtime  RuntimeConfig  `yaml:"runtime"`
-	Context  ContextConfig  `yaml:"context"`
-	RAG      RAGConfig      `yaml:"rag"`
-	Training TrainingConfig `yaml:"training"`
-	MCP      MCPConfig      `yaml:"mcp"`
-	Logging  LoggingConfig  `yaml:"logging"`
+	Server      ServerConfig      `yaml:"server"`
+	Daemon      DaemonConfig      `yaml:"daemon"`
+	Services    ServicesConfig    `yaml:"services"`
+	Storage     StorageConfig     `yaml:"storage"`
+	Runtime     RuntimeConfig     `yaml:"runtime"`
+	Context     ContextConfig     `yaml:"context"`
+	RAG         RAGConfig         `yaml:"rag"`
+	Training    TrainingConfig    `yaml:"training"`
+	MCP         MCPConfig         `yaml:"mcp"`
+	HuggingFace HuggingFaceConfig `yaml:"huggingface"`
+	Logging     LoggingConfig     `yaml:"logging"`
 }
 
 type ServerConfig struct {
@@ -46,6 +47,13 @@ type RuntimeConfig struct {
 	Backend    string           `yaml:"backend"`
 	Providers  []ProviderConfig `yaml:"providers"`
 	MistralRS  MistralRSConfig  `yaml:"mistralrs"`
+}
+
+type HuggingFaceConfig struct {
+	Enabled              bool     `yaml:"enabled"`
+	Endpoint             string   `yaml:"endpoint"`
+	MaxDownloadBytes     int64    `yaml:"max_download_bytes"`
+	CompatibleExtensions []string `yaml:"compatible_extensions"`
 }
 
 type MistralRSConfig struct {
@@ -214,6 +222,16 @@ func DefaultConfig() *Config {
 		MCP: MCPConfig{
 			Timeout: 30 * time.Second,
 			Retries: 3,
+		},
+		HuggingFace: HuggingFaceConfig{
+			Enabled:          true,
+			Endpoint:         "https://huggingface.co",
+			MaxDownloadBytes: 0,
+			CompatibleExtensions: []string{
+				".gguf",
+				".ggml",
+				".bin",
+			},
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
