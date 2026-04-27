@@ -3,13 +3,16 @@ package daemon
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	pb "github.com/ai-engine/proto/go"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -171,4 +174,85 @@ func (s *clientContextSuite) TestClientContextRPCs() {
 
 func TestClientContextSuite(t *testing.T) {
 	suite.Run(t, new(clientContextSuite))
+}
+
+type runtimeCountStub struct {
+	pb.UnimplementedRuntimeServer
+	calls atomic.Int32
+}
+
+func (s *runtimeCountStub) GetStatus(context.Context, *emptypb.Empty) (*pb.RuntimeStatus, error) {
+	s.calls.Add(1)
+	return &pb.RuntimeStatus{
+		LoadedModels: []*pb.ModelInfo{{Id: "loaded.gguf", Loaded: true}},
+		Healthy:      true,
+	}, nil
+}
+
+type ragCountStub struct {
+	pb.UnimplementedRagServer
+	calls atomic.Int32
+}
+
+func (s *ragCountStub) GetRagStatus(context.Context, *emptypb.Empty) (*pb.RagStatus, error) {
+	s.calls.Add(1)
+	return &pb.RagStatus{DocumentCount: 7}, nil
+}
+
+type trainingCountStub struct {
+	pb.UnimplementedTrainingServer
+	calls atomic.Int32
+}
+
+func (s *trainingCountStub) ListRuns(context.Context, *emptypb.Empty) (*pb.TrainingRunList, error) {
+	s.calls.Add(1)
+	return &pb.TrainingRunList{
+		Runs: []*pb.TrainingRun{
+			{Id: "1", Status: "queued"},
+			{Id: "2", Status: "running"},
+			{Id: "3", Status: "completed"},
+		},
+	}, nil
+}
+
+func TestCountHelpersUseTTLCache(t *testing.T) {
+	server := grpc.NewServer()
+	runtimeStub := &runtimeCountStub{}
+	ragStub := &ragCountStub{}
+	trainingStub := &trainingCountStub{}
+	pb.RegisterRuntimeServer(server, runtimeStub)
+	pb.RegisterRagServer(server, ragStub)
+	pb.RegisterTrainingServer(server, trainingStub)
+	conn := dialBufConn(t, server)
+
+	client := &Client{
+		conn:           conn,
+		runtime:        pb.NewRuntimeClient(conn),
+		rag:            pb.NewRagClient(conn),
+		training:       pb.NewTrainingClient(conn),
+		mcpConnections: make(map[string]struct{}),
+		countCacheTTL:  2 * time.Second,
+	}
+
+	require.Equal(t, 1, client.LoadedModelCount())
+	require.Equal(t, 1, client.LoadedModelCount())
+	require.Equal(t, int32(1), runtimeStub.calls.Load())
+
+	require.EqualValues(t, 7, client.DocumentCount())
+	require.EqualValues(t, 7, client.DocumentCount())
+	require.Equal(t, int32(1), ragStub.calls.Load())
+
+	require.Equal(t, 2, client.ActiveRunCount())
+	require.Equal(t, 2, client.ActiveRunCount())
+	require.Equal(t, int32(1), trainingStub.calls.Load())
+}
+
+func TestWithOutgoingRequestIDCopiesIncomingMetadata(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-request-id", "rid-123"))
+
+	got := withOutgoingRequestID(ctx)
+
+	md, ok := metadata.FromOutgoingContext(got)
+	require.True(t, ok)
+	require.Equal(t, []string{"rid-123"}, md.Get("x-request-id"))
 }

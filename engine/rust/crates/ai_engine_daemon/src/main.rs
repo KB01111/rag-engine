@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use chunking::ChunkingConfig;
@@ -11,7 +11,9 @@ use context_engine::{
     OpenVikingBridgeConfig, ResourceLayer, ResourceUpsertRequest,
     SearchRequest as ContextSearchRequestModel, SessionEventRequest,
 };
-use embedding::{create_default_engine, create_engine, EmbeddingConfig, EmbeddingEngine};
+use embedding::{
+    create_default_engine, create_engine, Embedding, EmbeddingConfig, EmbeddingEngine,
+};
 use prost_types::{value, Struct, Timestamp, Value};
 use runtime_engine::{RuntimeEngine, RuntimeInferenceRequest};
 use serde::{Deserialize, Serialize};
@@ -19,10 +21,11 @@ use storage::{
     ChunkSearchQuery, DocumentRecord, EngineStore, MCPConnectionRecord, ModelRecord, SearchMode,
     VectorRecord,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{transport::Server, Request, Response, Status};
 use tonic_health::server::health_reporter;
+use tracing_subscriber::EnvFilter;
 use training_engine::TrainingEngine;
 use uuid::Uuid;
 
@@ -63,6 +66,7 @@ struct AppState {
     runtime: RuntimeEngine,
     training: TrainingEngine,
     embedding: Arc<EmbeddingEngine>,
+    query_batcher: EmbeddingQueryBatcher,
     chunking: ChunkingConfig,
 }
 
@@ -119,6 +123,92 @@ impl AppState {
 }
 
 #[derive(Clone)]
+struct EmbeddingQueryBatcher {
+    tx: Option<mpsc::Sender<EmbeddingQueryJob>>,
+    embedding: Arc<EmbeddingEngine>,
+}
+
+struct EmbeddingQueryJob {
+    query: String,
+    reply: oneshot::Sender<Result<Embedding, String>>,
+}
+
+impl EmbeddingQueryBatcher {
+    fn new(embedding: Arc<EmbeddingEngine>) -> Self {
+        let max_batch_size = parse_optional_usize_env("AI_ENGINE_EMBEDDING_QUERY_BATCH_SIZE")
+            .unwrap_or(16)
+            .min(16);
+        if max_batch_size <= 1 {
+            return Self {
+                tx: None,
+                embedding,
+            };
+        }
+
+        let (tx, mut rx) = mpsc::channel::<EmbeddingQueryJob>(128);
+        let worker_embedding = embedding.clone();
+        tokio::spawn(async move {
+            while let Some(first) = rx.recv().await {
+                let mut jobs = vec![first];
+                let window = tokio::time::sleep(Duration::from_millis(5));
+                tokio::pin!(window);
+                while jobs.len() < max_batch_size {
+                    tokio::select! {
+                        maybe_job = rx.recv() => {
+                            let Some(job) = maybe_job else {
+                                break;
+                            };
+                            jobs.push(job);
+                        }
+                        _ = &mut window => break,
+                    }
+                }
+
+                let texts = jobs.iter().map(|job| job.query.clone()).collect::<Vec<_>>();
+                let embedding = worker_embedding.clone();
+                let result = tokio::task::spawn_blocking(move || embedding.embed(&texts))
+                    .await
+                    .map_err(|err| err.to_string())
+                    .and_then(|result| result.map_err(|err| err.to_string()));
+
+                match result {
+                    Ok(embeddings) => {
+                        for (job, embedding) in jobs.into_iter().zip(embeddings.into_iter()) {
+                            let _ = job.reply.send(Ok(embedding));
+                        }
+                    }
+                    Err(err) => {
+                        for job in jobs {
+                            let _ = job.reply.send(Err(err.clone()));
+                        }
+                    }
+                }
+            }
+        });
+        Self {
+            tx: Some(tx),
+            embedding,
+        }
+    }
+
+    async fn embed(&self, query: String) -> Result<Embedding, Status> {
+        let Some(tx) = &self.tx else {
+            let embedding = self.embedding.clone();
+            return tokio::task::spawn_blocking(move || embedding.embed_single(&query))
+                .await
+                .map_err(internal_status)?
+                .map_err(internal_status);
+        };
+
+        let (reply, rx) = oneshot::channel();
+        tx.send(EmbeddingQueryJob { query, reply })
+            .await
+            .map_err(internal_status)?;
+        rx.await.map_err(internal_status)?.map_err(internal_status)
+    }
+}
+
+#[derive(Clone)]
 struct EngineService {
     state: AppState,
 }
@@ -170,6 +260,7 @@ struct ActiveConnection {
 /// ```
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_tracing();
     let addr =
         std::env::var("AI_ENGINE_DAEMON_ADDR").unwrap_or_else(|_| "127.0.0.1:50061".to_string());
     let lancedb_uri =
@@ -194,9 +285,17 @@ async fn main() -> Result<()> {
     let auto_isq = std::env::var("AI_ENGINE_MISTRALRS_AUTO_ISQ")
         .ok()
         .filter(|v| !v.is_empty());
+    let paged_attn_block_size =
+        parse_optional_usize_env("AI_ENGINE_MISTRALRS_PAGED_ATTN_BLOCK_SIZE");
+    let paged_attn_gpu_mem_ctx =
+        parse_optional_usize_env("AI_ENGINE_MISTRALRS_PAGED_ATTN_GPU_MEM_CTX");
+    let paged_attn_cache_dtype = std::env::var("AI_ENGINE_MISTRALRS_PAGED_ATTN_CACHE_DTYPE")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
 
     let store = EngineStore::new(lancedb_uri);
     let embedding_engine = Arc::new(create_engine(embedding_config_from_env())?);
+    let query_batcher = EmbeddingQueryBatcher::new(embedding_engine.clone());
     let context_service = ContextGrpcService {
         engine: open_context_engine_from_env().await?,
     };
@@ -212,10 +311,14 @@ async fn main() -> Result<()> {
                     force_cpu,
                     max_num_seqs,
                     auto_isq,
+                    paged_attn_block_size,
+                    paged_attn_gpu_mem_ctx,
+                    paged_attn_cache_dtype,
                 },
             ),
             training: TrainingEngine::new(store.clone(), training_dir, backend),
             embedding: embedding_engine,
+            query_batcher,
             chunking: ChunkingConfig::default(),
         },
     };
@@ -238,6 +341,8 @@ async fn main() -> Result<()> {
         .await;
 
     Server::builder()
+        .http2_keepalive_interval(Some(Duration::from_secs(30)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(10)))
         .add_service(health_service)
         .add_service(RuntimeServer::new(service.clone()))
         .add_service(RagServer::new(service.clone()))
@@ -251,57 +356,104 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .json()
+        .try_init();
+}
+
+fn parse_optional_usize_env(key: &str) -> Option<usize> {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn span_for_request<T>(rpc: &'static str, request: &Request<T>) -> tracing::Span {
+    let request_id = request_id_from_metadata(request);
+    tracing::info_span!(
+        "grpc_request",
+        rpc = rpc,
+        request_id = request_id.as_deref().unwrap_or("")
+    )
+}
+
+fn request_id_from_metadata<T>(request: &Request<T>) -> Option<String> {
+    request
+        .metadata()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string)
+}
+
 #[tonic::async_trait]
 impl Runtime for EngineService {
     type StreamInferenceStream = InferenceStream;
 
-    async fn get_status(&self, _request: Request<()>) -> Result<Response<RuntimeStatus>, Status> {
-        let models = self
-            .state
-            .runtime
-            .list_models()
-            .await
-            .map_err(internal_status)?;
-        let resources = self.state.runtime.system_resources();
-        let loaded = models
-            .into_iter()
-            .filter(|model| model.status == "loaded")
-            .map(model_info)
-            .collect::<Vec<_>>();
+    async fn get_status(&self, request: Request<()>) -> Result<Response<RuntimeStatus>, Status> {
+        use tracing::Instrument;
+        let span = span_for_request("runtime.get_status", &request);
+        async move {
+            let models = self
+                .state
+                .runtime
+                .list_models()
+                .await
+                .map_err(internal_status)?;
+            let resources = self.state.runtime.system_resources();
+            let loaded = models
+                .into_iter()
+                .filter(|model| model.status == "loaded")
+                .map(model_info)
+                .collect::<Vec<_>>();
 
-        Ok(Response::new(RuntimeStatus {
-            version: "1.0.0".to_string(),
-            loaded_models: loaded,
-            resources: Some(SystemResources {
-                cpu_percent: resources.cpu_percent as f64,
-                memory_used_bytes: resources.memory_used_bytes,
-                memory_total_bytes: resources.memory_total_bytes,
-            }),
-            healthy: true,
-        }))
+            Ok(Response::new(RuntimeStatus {
+                version: "1.0.0".to_string(),
+                loaded_models: loaded,
+                resources: Some(SystemResources {
+                    cpu_percent: resources.cpu_percent as f64,
+                    memory_used_bytes: resources.memory_used_bytes,
+                    memory_total_bytes: resources.memory_total_bytes,
+                }),
+                healthy: true,
+            }))
+        }
+        .instrument(span)
+        .await
     }
 
-    async fn list_models(&self, _request: Request<()>) -> Result<Response<ModelList>, Status> {
-        let models = self
-            .state
-            .runtime
-            .list_models()
-            .await
-            .map_err(internal_status)?
-            .into_iter()
-            .map(model_info)
-            .collect();
-        Ok(Response::new(ModelList { models }))
+    async fn list_models(&self, request: Request<()>) -> Result<Response<ModelList>, Status> {
+        use tracing::Instrument;
+        let span = span_for_request("runtime.list_models", &request);
+        async move {
+            let models = self
+                .state
+                .runtime
+                .list_models()
+                .await
+                .map_err(internal_status)?
+                .into_iter()
+                .map(model_info)
+                .collect();
+            Ok(Response::new(ModelList { models }))
+        }
+        .instrument(span)
+        .await
     }
 
     async fn load_model(
         &self,
         request: Request<LoadModelRequest>,
     ) -> Result<Response<ModelInfo>, Status> {
+        let span = span_for_request("runtime.load_model", &request);
+        let _guard = span.enter();
+        let request = request.into_inner();
         let info = self
             .state
             .runtime
-            .load_model(&request.into_inner().model_id)
+            .load_model_with_options(&request.model_id, request.options)
             .await
             .map_err(load_model_status)?;
         Ok(Response::new(model_info(info)))
@@ -311,6 +463,8 @@ impl Runtime for EngineService {
         &self,
         request: Request<engine::UnloadModelRequest>,
     ) -> Result<Response<()>, Status> {
+        let span = span_for_request("runtime.unload_model", &request);
+        let _guard = span.enter();
         self.state
             .runtime
             .unload_model(&request.into_inner().model_id)
@@ -323,6 +477,8 @@ impl Runtime for EngineService {
         &self,
         request: Request<tonic::Streaming<InferenceRequest>>,
     ) -> Result<Response<Self::StreamInferenceStream>, Status> {
+        let span = span_for_request("runtime.stream_inference", &request);
+        let _guard = span.enter();
         let mut stream = request.into_inner();
         let first = stream
             .message()
@@ -338,6 +494,7 @@ impl Runtime for EngineService {
             .stream_inference_stream(RuntimeInferenceRequest {
                 model_id: first.model_id,
                 prompt: first.prompt,
+                system_prompt: first.system_prompt,
                 parameters: first.parameters,
                 context_refs: first.context_refs,
             })
@@ -363,6 +520,8 @@ impl Rag for EngineService {
         &self,
         request: Request<UpsertRequest>,
     ) -> Result<Response<UpsertResponse>, Status> {
+        let span = span_for_request("rag.upsert_document", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         if request.content.trim().is_empty() {
             return Err(Status::invalid_argument("content is required"));
@@ -387,11 +546,12 @@ impl Rag for EngineService {
             .iter()
             .map(|chunk| chunk.text.clone())
             .collect::<Vec<_>>();
-        let embeddings = self
-            .state
-            .embedding
-            .embed(&chunk_texts)
+        let embedding = self.state.embedding.clone();
+        let chunk_texts_owned = chunk_texts.clone();
+        let embeddings = tokio::task::spawn_blocking(move || embedding.embed(&chunk_texts_owned))
+            .await
             .map_err(internal_status)?;
+        let embeddings = embeddings.map_err(internal_status)?;
 
         // Verify embeddings and chunks have matching lengths
         if embeddings.len() != chunks.len() {
@@ -442,6 +602,8 @@ impl Rag for EngineService {
         &self,
         request: Request<DeleteRequest>,
     ) -> Result<Response<()>, Status> {
+        let span = span_for_request("rag.delete_document", &request);
+        let _guard = span.enter();
         self.state
             .store
             .delete_document(&request.into_inner().document_id)
@@ -454,6 +616,8 @@ impl Rag for EngineService {
         &self,
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
+        let span = span_for_request("rag.search", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         if request.query.trim().is_empty() {
             return Err(Status::invalid_argument("query is required"));
@@ -461,9 +625,9 @@ impl Rag for EngineService {
         let started = Instant::now();
         let query_embedding = self
             .state
-            .embedding
-            .embed_single(&request.query)
-            .map_err(internal_status)?;
+            .query_batcher
+            .embed(request.query.clone())
+            .await?;
         let top_k = if request.top_k <= 0 {
             10
         } else {
@@ -497,72 +661,81 @@ impl Rag for EngineService {
         }))
     }
 
-    async fn get_rag_status(&self, _request: Request<()>) -> Result<Response<RagStatus>, Status> {
-        let documents = self
-            .state
-            .store
-            .list_documents()
-            .await
-            .map_err(internal_status)?;
-        let chunks = self
-            .state
-            .store
-            .list_chunks()
-            .await
-            .map_err(internal_status)?;
-        let index_size_bytes = chunks
-            .iter()
-            .map(|chunk| (chunk.vector.len() * std::mem::size_of::<f32>()) as i64)
-            .sum();
-        let (requires_reindex, reindex_reasons) = self.state.reindex_status(&chunks);
+    async fn get_rag_status(&self, request: Request<()>) -> Result<Response<RagStatus>, Status> {
+        use tracing::Instrument;
+        let span = span_for_request("rag.get_status", &request);
+        async move {
+            let documents = self
+                .state
+                .store
+                .list_documents()
+                .await
+                .map_err(internal_status)?;
+            let chunks = self
+                .state
+                .store
+                .list_chunks()
+                .await
+                .map_err(internal_status)?;
+            let index_size_bytes = chunks
+                .iter()
+                .map(|chunk| (chunk.vector.len() * std::mem::size_of::<f32>()) as i64)
+                .sum();
+            let (requires_reindex, reindex_reasons) = self.state.reindex_status(&chunks);
 
-        Ok(Response::new(RagStatus {
-            document_count: documents.len() as i64,
-            chunk_count: chunks.len() as i64,
-            index_size_bytes,
-            embedding_model: self.state.embedding.model().to_string(),
-            embedding_provider: self.state.embedding.name().to_string(),
-            embedding_dimension: self.state.embedding.dimension() as i32,
-            embedding_version: self.state.embedding.version().to_string(),
-            requires_reindex,
-            reindex_reasons,
-        }))
+            Ok(Response::new(RagStatus {
+                document_count: documents.len() as i64,
+                chunk_count: chunks.len() as i64,
+                index_size_bytes,
+                embedding_model: self.state.embedding.model().to_string(),
+                embedding_provider: self.state.embedding.name().to_string(),
+                embedding_dimension: self.state.embedding.dimension() as i32,
+                embedding_version: self.state.embedding.version().to_string(),
+                requires_reindex,
+                reindex_reasons,
+            }))
+        }
+        .instrument(span)
+        .await
     }
 
-    async fn list_documents(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<DocumentList>, Status> {
-        let documents = self
-            .state
-            .store
-            .list_documents()
-            .await
-            .map_err(internal_status)?;
-        let chunks = self
-            .state
-            .store
-            .list_chunks()
-            .await
-            .map_err(internal_status)?;
+    async fn list_documents(&self, request: Request<()>) -> Result<Response<DocumentList>, Status> {
+        use tracing::Instrument;
+        let span = span_for_request("rag.list_documents", &request);
+        async move {
+            let documents = self
+                .state
+                .store
+                .list_documents()
+                .await
+                .map_err(internal_status)?;
+            let chunks = self
+                .state
+                .store
+                .list_chunks()
+                .await
+                .map_err(internal_status)?;
 
-        let infos = documents
-            .into_iter()
-            .map(|document| {
-                let chunk_count = chunks
-                    .iter()
-                    .filter(|chunk| chunk.document_id == document.id)
-                    .count() as i64;
-                DocumentInfo {
-                    id: document.id,
-                    title: document.title,
-                    chunk_count,
-                    created_at: Some(timestamp(document.created_at)),
-                    updated_at: Some(timestamp(document.updated_at)),
-                }
-            })
-            .collect();
-        Ok(Response::new(DocumentList { documents: infos }))
+            let infos = documents
+                .into_iter()
+                .map(|document| {
+                    let chunk_count = chunks
+                        .iter()
+                        .filter(|chunk| chunk.document_id == document.id)
+                        .count() as i64;
+                    DocumentInfo {
+                        id: document.id,
+                        title: document.title,
+                        chunk_count,
+                        created_at: Some(timestamp(document.created_at)),
+                        updated_at: Some(timestamp(document.updated_at)),
+                    }
+                })
+                .collect();
+            Ok(Response::new(DocumentList { documents: infos }))
+        }
+        .instrument(span)
+        .await
     }
 }
 
@@ -574,6 +747,8 @@ impl Training for EngineService {
         &self,
         request: Request<TrainingRunRequest>,
     ) -> Result<Response<TrainingRun>, Status> {
+        let span = span_for_request("training.start_run", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let config_json = serde_json::to_string(&request.config).map_err(internal_status)?;
         let run = self
@@ -591,31 +766,45 @@ impl Training for EngineService {
     }
 
     async fn cancel_run(&self, request: Request<CancelRequest>) -> Result<Response<()>, Status> {
-        self.state
-            .training
-            .cancel_run(&request.into_inner().run_id)
-            .await
-            .map_err(not_found_status)?;
-        Ok(Response::new(()))
+        use tracing::Instrument;
+        let span = span_for_request("training.cancel_run", &request);
+        async move {
+            self.state
+                .training
+                .cancel_run(&request.into_inner().run_id)
+                .await
+                .map_err(not_found_status)?;
+            Ok(Response::new(()))
+        }
+        .instrument(span)
+        .await
     }
 
-    async fn list_runs(&self, _request: Request<()>) -> Result<Response<TrainingRunList>, Status> {
-        let runs = self
-            .state
-            .training
-            .list_runs()
-            .await
-            .map_err(internal_status)?
-            .into_iter()
-            .map(training_run)
-            .collect();
-        Ok(Response::new(TrainingRunList { runs }))
+    async fn list_runs(&self, request: Request<()>) -> Result<Response<TrainingRunList>, Status> {
+        use tracing::Instrument;
+        let span = span_for_request("training.list_runs", &request);
+        async move {
+            let runs = self
+                .state
+                .training
+                .list_runs()
+                .await
+                .map_err(internal_status)?
+                .into_iter()
+                .map(training_run)
+                .collect();
+            Ok(Response::new(TrainingRunList { runs }))
+        }
+        .instrument(span)
+        .await
     }
 
     async fn list_artifacts(
         &self,
         request: Request<engine::ArtifactsRequest>,
     ) -> Result<Response<ArtifactList>, Status> {
+        let span = span_for_request("training.list_artifacts", &request);
+        let _guard = span.enter();
         let artifacts = self
             .state
             .training
@@ -655,6 +844,8 @@ impl Training for EngineService {
         &self,
         request: Request<LogsRequest>,
     ) -> Result<Response<Self::StreamLogsStream>, Status> {
+        let span = span_for_request("training.stream_logs", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let training = self.state.training.clone();
 
@@ -701,6 +892,8 @@ impl Mcp for EngineService {
         &self,
         request: Request<McpConnectionRequest>,
     ) -> Result<Response<McpConnection>, Status> {
+        let span = span_for_request("mcp.connect", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let connection_id = format!("conn-{}", stable_id(&request.server_url));
         let auth_json = serde_json::to_string(&request.auth).map_err(internal_status)?;
@@ -734,6 +927,8 @@ impl Mcp for EngineService {
         &self,
         request: Request<DisconnectRequest>,
     ) -> Result<Response<()>, Status> {
+        let span = span_for_request("mcp.disconnect", &request);
+        let _guard = span.enter();
         self.state
             .store
             .delete_mcp_connection(&request.into_inner().connection_id)
@@ -746,6 +941,8 @@ impl Mcp for EngineService {
         &self,
         request: Request<McpConnectionRequest>,
     ) -> Result<Response<ToolList>, Status> {
+        let span = span_for_request("mcp.list_tools", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let Some(connection) = self
             .find_connection_by_url(&request.server_url)
@@ -764,6 +961,8 @@ impl Mcp for EngineService {
         &self,
         request: Request<CallToolRequest>,
     ) -> Result<Response<CallToolResponse>, Status> {
+        let span = span_for_request("mcp.call_tool", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let Some(connection) = self
             .find_connection_by_id(&request.connection_id)
@@ -1532,6 +1731,7 @@ mod tests {
                     runtime_engine::MistralRsConfig::default(),
                 ),
                 training: TrainingEngine::new(store.clone(), training_dir, "llama.cpp"),
+                query_batcher: EmbeddingQueryBatcher::new(embedding_engine.clone()),
                 embedding: embedding_engine,
                 chunking: ChunkingConfig::default(),
             },
@@ -1767,8 +1967,10 @@ impl ContextRpc for ContextGrpcService {
     /// ```
     async fn get_context_status(
         &self,
-        _request: Request<()>,
+        request: Request<()>,
     ) -> Result<Response<engine::ContextStatus>, Status> {
+        let span = span_for_request("context.get_status", &request);
+        let _guard = span.enter();
         let status = self.engine.status().await.map_err(internal_status)?;
         Ok(Response::new(engine::ContextStatus {
             document_count: status.document_count,
@@ -1801,8 +2003,10 @@ impl ContextRpc for ContextGrpcService {
     /// ```
     async fn list_resources(
         &self,
-        _request: Request<()>,
+        request: Request<()>,
     ) -> Result<Response<engine::ContextResourceList>, Status> {
+        let span = span_for_request("context.list_resources", &request);
+        let _guard = span.enter();
         let resources = self
             .engine
             .list_resources()
@@ -1848,6 +2052,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextUpsertResourceRequest>,
     ) -> Result<Response<engine::ContextUpsertResourceResponse>, Status> {
+        let span = span_for_request("context.upsert_resource", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let outcome = self
             .engine
@@ -1897,6 +2103,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextDeleteResourceRequest>,
     ) -> Result<Response<()>, Status> {
+        let span = span_for_request("context.delete_resource", &request);
+        let _guard = span.enter();
         self.engine
             .delete_resource(&request.into_inner().uri)
             .await
@@ -1930,6 +2138,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextSearchRequest>,
     ) -> Result<Response<engine::ContextSearchResponse>, Status> {
+        let span = span_for_request("context.search", &request);
+        let _guard = span.enter();
         let started_at = Instant::now();
         let request = request.into_inner();
         let bounded_top_k = if request.top_k > 0 {
@@ -2007,6 +2217,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextWorkspaceSyncRequest>,
     ) -> Result<Response<engine::ContextWorkspaceSyncResponse>, Status> {
+        let span = span_for_request("context.sync_workspace", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let outcome = self
             .engine
@@ -2046,6 +2258,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextFileListRequest>,
     ) -> Result<Response<engine::ContextFileListResponse>, Status> {
+        let span = span_for_request("context.list_files", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let entries = self
             .engine
@@ -2081,6 +2295,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextFileReadRequest>,
     ) -> Result<Response<engine::ContextFileReadResponse>, Status> {
+        let span = span_for_request("context.read_file", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let path = PathBuf::from(&request.path);
         let content = self
@@ -2132,6 +2348,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextFileWriteRequest>,
     ) -> Result<Response<engine::ContextFileWriteResponse>, Status> {
+        let span = span_for_request("context.write_file", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let version = self
             .engine
@@ -2174,6 +2392,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextFileDeleteRequest>,
     ) -> Result<Response<engine::ContextFileDeleteResponse>, Status> {
+        let span = span_for_request("context.delete_file", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let deleted = self
             .engine
@@ -2213,6 +2433,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextFileMoveRequest>,
     ) -> Result<Response<engine::ContextFileMoveResponse>, Status> {
+        let span = span_for_request("context.move_file", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let version = self
             .engine
@@ -2263,6 +2485,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextSessionAppendRequest>,
     ) -> Result<Response<engine::ContextSessionHistory>, Status> {
+        let span = span_for_request("context.append_session", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let session_id = request.session_id.clone();
         self.engine
@@ -2304,6 +2528,8 @@ impl ContextRpc for ContextGrpcService {
         &self,
         request: Request<engine::ContextSessionGetRequest>,
     ) -> Result<Response<engine::ContextSessionHistory>, Status> {
+        let span = span_for_request("context.get_session", &request);
+        let _guard = span.enter();
         let request = request.into_inner();
         let entries = self
             .engine

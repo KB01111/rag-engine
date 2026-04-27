@@ -96,6 +96,7 @@ message InferenceRequest {
   map<string, string> parameters = 3;
   string provider = 4;
   repeated string context_refs = 5;
+  optional string system_prompt = 6;
 }
 
 message InferenceResponse {

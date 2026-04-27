@@ -526,7 +526,7 @@ func (s *Server) handleListModels(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	models, err := s.supervisor.Runtime.ListModels(ctx, &emptypb.Empty{})
+	models, err := s.supervisor.Runtime.ListModels(withRequestID(ctx, c), &emptypb.Empty{})
 	if err != nil {
 		s.log.Error().Err(err).Str("request_id", requestID(c)).Msg("Failed to list models")
 		backendError(c, err)

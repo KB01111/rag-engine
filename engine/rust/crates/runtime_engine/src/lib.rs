@@ -28,6 +28,9 @@ pub struct MistralRsConfig {
     pub force_cpu: bool,
     pub max_num_seqs: Option<usize>,
     pub auto_isq: Option<String>,
+    pub paged_attn_block_size: Option<usize>,
+    pub paged_attn_gpu_mem_ctx: Option<usize>,
+    pub paged_attn_cache_dtype: Option<String>,
 }
 
 #[derive(Clone)]
@@ -42,8 +45,14 @@ pub struct RuntimeEngine {
 pub struct RuntimeInferenceRequest {
     pub model_id: String,
     pub prompt: String,
+    pub system_prompt: Option<String>,
     pub parameters: HashMap<String, String>,
     pub context_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LoadModelOptions {
+    pub max_num_seqs: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,7 +78,7 @@ pub struct RuntimeParameters {
 pub trait RuntimeBackend: Send + Sync {
     fn name(&self) -> &str;
     async fn list_models(&self, models: Vec<ModelRecord>) -> Result<Vec<ModelRecord>>;
-    async fn load_model(&self, model: &ModelRecord) -> Result<()>;
+    async fn load_model(&self, model: &ModelRecord, options: LoadModelOptions) -> Result<()>;
     async fn unload_model(&self, model_id: &str) -> Result<()>;
     async fn stream_inference(
         &self,
@@ -130,6 +139,14 @@ impl RuntimeEngine {
     }
 
     pub async fn load_model(&self, model_id: &str) -> Result<ModelRecord> {
+        self.load_model_with_options(model_id, HashMap::new()).await
+    }
+
+    pub async fn load_model_with_options(
+        &self,
+        model_id: &str,
+        options: HashMap<String, String>,
+    ) -> Result<ModelRecord> {
         let mut models = self.list_models().await?;
         let Some(model) = models.iter_mut().find(|model| model.id == model_id) else {
             return Err(RuntimeError::ModelNotFound {
@@ -138,11 +155,16 @@ impl RuntimeEngine {
             .into());
         };
 
-        self.load_model_from_record(model.clone()).await
+        self.load_model_from_record(model.clone(), LoadModelOptions::parse(&options)?)
+            .await
     }
 
-    async fn load_model_from_record(&self, mut model: ModelRecord) -> Result<ModelRecord> {
-        self.backend.load_model(&model).await?;
+    async fn load_model_from_record(
+        &self,
+        mut model: ModelRecord,
+        options: LoadModelOptions,
+    ) -> Result<ModelRecord> {
+        self.backend.load_model(&model, options).await?;
         model.status = "loaded".to_string();
         model.backend = self.backend.name().to_string();
         model.updated_at = now();
@@ -199,7 +221,8 @@ impl RuntimeEngine {
             return Ok(model);
         }
 
-        self.load_model_from_record(model).await
+        self.load_model_from_record(model, LoadModelOptions::default())
+            .await
     }
 
     async fn discover_models(&self) -> Result<()> {
@@ -294,7 +317,7 @@ impl RuntimeBackend for MockBackend {
         Ok(models)
     }
 
-    async fn load_model(&self, _model: &ModelRecord) -> Result<()> {
+    async fn load_model(&self, _model: &ModelRecord, _options: LoadModelOptions) -> Result<()> {
         Ok(())
     }
 
@@ -341,7 +364,7 @@ impl RuntimeBackend for UnavailableBackend {
         Ok(models)
     }
 
-    async fn load_model(&self, _model: &ModelRecord) -> Result<()> {
+    async fn load_model(&self, _model: &ModelRecord, _options: LoadModelOptions) -> Result<()> {
         Err(anyhow!("{}", self.message))
     }
 
@@ -363,9 +386,11 @@ impl RuntimeBackend for UnavailableBackend {
 mod mistralrs_backend {
     use super::*;
     use mistralrs::{
-        ChatCompletionChunkResponse, IsqBits, Model, ModelBuilder, Response, TextMessageRole,
-        TextMessages,
+        ChatCompletionChunkResponse, IsqType, Model, ModelBuilder, RequestBuilder, Response,
+        SamplingParams, StopTokens, TextMessageRole,
     };
+    #[cfg(feature = "mistralrs-cuda")]
+    use mistralrs::{MemoryGpuConfig, PagedAttentionMetaBuilder, PagedCacheType};
 
     pub struct MistralRsBackend {
         models: RwLock<HashMap<String, Arc<Model>>>,
@@ -395,24 +420,48 @@ mod mistralrs_backend {
             }
 
             // Load the model using the shared builder
-            let loaded = Arc::new(self.build_model(&model.path).await?);
+            let loaded = Arc::new(self.build_model(&model.path, &self.config).await?);
             models.insert(model.id.clone(), loaded.clone());
             Ok(loaded)
         }
 
-        async fn build_model(&self, model_path: &str) -> Result<Model> {
+        fn config_with_options(&self, options: &LoadModelOptions) -> MistralRsConfig {
+            let mut config = self.config.clone();
+            if let Some(max_num_seqs) = options.max_num_seqs {
+                config.max_num_seqs = Some(max_num_seqs);
+            }
+            config
+        }
+
+        async fn build_model(&self, model_path: &str, config: &MistralRsConfig) -> Result<Model> {
             let mut builder = ModelBuilder::new(model_path.to_string());
 
             // Apply MistralRS configuration
-            if self.config.force_cpu {
+            if config.force_cpu {
                 builder = builder.with_force_cpu();
             }
-            if let Some(max_num_seqs) = self.config.max_num_seqs {
+            if let Some(max_num_seqs) = config.max_num_seqs {
                 builder = builder.with_max_num_seqs(max_num_seqs);
             }
-            if let Some(ref auto_isq) = self.config.auto_isq {
-                let isq_bits = parse_isq_bits(auto_isq)?;
-                builder = builder.with_auto_isq(isq_bits);
+            if let Some(ref auto_isq) = config.auto_isq {
+                let isq_type = parse_isq_type(auto_isq)?;
+                builder = builder.with_isq(isq_type);
+            }
+
+            #[cfg(feature = "mistralrs-cuda")]
+            {
+                if paged_attention_configured(config) {
+                    let context_size = config.paged_attn_gpu_mem_ctx.unwrap_or(8192);
+                    let cache_type =
+                        parse_paged_cache_type(config.paged_attn_cache_dtype.as_deref())?;
+                    let mut paged = PagedAttentionMetaBuilder::default()
+                        .with_gpu_memory(MemoryGpuConfig::ContextSize(context_size))
+                        .with_paged_cache_type(cache_type);
+                    if let Some(block_size) = config.paged_attn_block_size {
+                        paged = paged.with_block_size(block_size);
+                    }
+                    builder = builder.with_paged_attn(paged.build()?);
+                }
             }
 
             builder.build().await
@@ -429,8 +478,9 @@ mod mistralrs_backend {
             Ok(models)
         }
 
-        async fn load_model(&self, model: &ModelRecord) -> Result<()> {
-            let loaded = self.build_model(&model.path).await?;
+        async fn load_model(&self, model: &ModelRecord, options: LoadModelOptions) -> Result<()> {
+            let config = self.config_with_options(&options);
+            let loaded = self.build_model(&model.path, &config).await?;
             self.models
                 .write()
                 .await
@@ -449,10 +499,16 @@ mod mistralrs_backend {
             request: RuntimeInferenceRequest,
             parameters: RuntimeParameters,
         ) -> Result<InferenceStream> {
+            validate_embedded_parameters(&parameters)?;
             let loaded = self.get_or_load(model).await?;
-            let messages =
-                TextMessages::new().add_message(TextMessageRole::User, build_prompt(&request));
-            let stream = loaded.stream_chat_request(messages).await?;
+            let (system_message, user_message) = build_message_parts(&request);
+            let mut builder =
+                RequestBuilder::new().set_sampling(build_sampling_params(&parameters));
+            if let Some(system_message) = system_message {
+                builder = builder.add_message(TextMessageRole::System, system_message);
+            }
+            builder = builder.add_message(TextMessageRole::User, user_message);
+            let stream = loaded.stream_chat_request(builder).await?;
             let metrics = runtime_metrics(self.name(), model, &request, &parameters);
             Ok(Box::pin(stream.filter_map(move |response| {
                 let metrics = metrics.clone();
@@ -461,18 +517,70 @@ mod mistralrs_backend {
         }
     }
 
+    pub(super) fn validate_embedded_parameters(parameters: &RuntimeParameters) -> Result<()> {
+        if parameters.seed.is_some() {
+            return Err(RuntimeError::InvalidParameter {
+                parameter: "seed".to_string(),
+                details: "seed is not supported by embedded mistralrs 0.8.1".to_string(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     pub fn backend(config: MistralRsConfig) -> Arc<dyn RuntimeBackend> {
         Arc::new(MistralRsBackend::new(config))
     }
 
-    fn parse_isq_bits(value: &str) -> Result<IsqBits> {
+    pub(super) fn parse_isq_type(value: &str) -> Result<IsqType> {
         match value.trim().to_lowercase().as_str() {
-            "four" | "4" | "q4" => Ok(IsqBits::Four),
-            "eight" | "8" | "q8" => Ok(IsqBits::Eight),
+            "4" | "q4" | "q4k" => Ok(IsqType::Q4K),
+            "q4_0" | "q4-0" => Ok(IsqType::Q4_0),
+            "q5_0" | "q5-0" => Ok(IsqType::Q5_0),
+            "q5k" => Ok(IsqType::Q5K),
+            "q6k" => Ok(IsqType::Q6K),
+            "8" | "q8" | "q8_0" | "q8-0" => Ok(IsqType::Q8_0),
+            "hqq4" => Ok(IsqType::HQQ4),
+            "hqq8" => Ok(IsqType::HQQ8),
+            "f8e4m3" | "fp8" => Ok(IsqType::F8E4M3),
             other => Err(RuntimeError::InvalidParameter {
                 parameter: "auto_isq".to_string(),
                 details: format!(
-                    "unsupported ISQ value {other:?}, expected 'four', 'eight', 'q4', or 'q8'"
+                    "unsupported ISQ value {other:?}, expected q4_0, q4k, q5_0, q5k, q6k, q8_0, hqq4, hqq8, or f8e4m3"
+                ),
+            }
+            .into()),
+        }
+    }
+
+    pub(super) fn build_sampling_params(parameters: &RuntimeParameters) -> SamplingParams {
+        let mut sampling = SamplingParams::neutral();
+        sampling.temperature = parameters.temperature.map(f64::from);
+        sampling.top_p = parameters.top_p.map(f64::from);
+        sampling.top_k = parameters.top_k;
+        sampling.max_len = parameters.max_tokens;
+        sampling.repetition_penalty = parameters.repetition_penalty;
+        if !parameters.stop.is_empty() {
+            sampling.stop_toks = Some(StopTokens::Seqs(parameters.stop.clone()));
+        }
+        sampling
+    }
+
+    fn paged_attention_configured(config: &MistralRsConfig) -> bool {
+        config.paged_attn_block_size.is_some()
+            || config.paged_attn_gpu_mem_ctx.is_some()
+            || config.paged_attn_cache_dtype.is_some()
+    }
+
+    #[cfg(feature = "mistralrs-cuda")]
+    fn parse_paged_cache_type(value: Option<&str>) -> Result<PagedCacheType> {
+        match value.unwrap_or("auto").trim().to_lowercase().as_str() {
+            "" | "auto" | "f16" => Ok(PagedCacheType::Auto),
+            "f8e4m3" | "fp8" => Ok(PagedCacheType::F8E4M3),
+            other => Err(RuntimeError::InvalidParameter {
+                parameter: "paged_attn_cache_dtype".to_string(),
+                details: format!(
+                    "unsupported PagedAttention cache dtype {other:?}, expected f16 or f8e4m3"
                 ),
             }
             .into()),
@@ -500,11 +608,22 @@ mod mistralrs_backend {
                     }))
                 }
             }
-            Response::Done(_) => Some(Ok(InferenceChunk {
-                token: String::new(),
-                complete: true,
-                metrics,
-            })),
+            Response::Done(done) => {
+                let mut metrics = metrics;
+                metrics.insert(
+                    "prompt_tok_per_sec".to_string(),
+                    done.usage.avg_prompt_tok_per_sec.to_string(),
+                );
+                metrics.insert(
+                    "completion_tok_per_sec".to_string(),
+                    done.usage.avg_compl_tok_per_sec.to_string(),
+                );
+                Some(Ok(InferenceChunk {
+                    token: String::new(),
+                    complete: true,
+                    metrics,
+                }))
+            }
             Response::ModelError(message, _) => Some(Err(anyhow!(message))),
             Response::CompletionModelError(message, _) => Some(Err(anyhow!(message))),
             Response::ValidationError(err) => Some(Err(err.into())),
@@ -566,15 +685,28 @@ fn runtime_metrics(
     metrics
 }
 
-fn build_prompt(request: &RuntimeInferenceRequest) -> String {
-    if request.context_refs.is_empty() {
-        return request.prompt.clone();
+fn build_message_parts(request: &RuntimeInferenceRequest) -> (Option<String>, String) {
+    let mut system_parts = Vec::new();
+    if let Some(system_prompt) = request
+        .system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        system_parts.push(system_prompt.to_string());
     }
-    format!(
-        "Context references:\n- {}\n\n{}",
-        request.context_refs.join("\n- "),
-        request.prompt
-    )
+    if !request.context_refs.is_empty() {
+        system_parts.push(format!(
+            "Context references:\n- {}",
+            request.context_refs.join("\n- ")
+        ));
+    }
+    let system = if system_parts.is_empty() {
+        None
+    } else {
+        Some(system_parts.join("\n\n"))
+    };
+    (system, request.prompt.clone())
 }
 
 fn mock_tokens(prompt: &str) -> Vec<String> {
@@ -701,6 +833,7 @@ fn now() -> i64 {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::Mutex;
 
     use tempfile::tempdir;
 
@@ -765,6 +898,7 @@ mod tests {
             .stream_inference(RuntimeInferenceRequest {
                 model_id: "local.gguf".to_string(),
                 prompt: "hello world".to_string(),
+                system_prompt: None,
                 parameters: HashMap::new(),
                 context_refs: vec!["viking://resources/doc".to_string()],
             })
@@ -791,6 +925,7 @@ mod tests {
             .stream_inference(RuntimeInferenceRequest {
                 model_id: "local.gguf".to_string(),
                 prompt: "lazy".to_string(),
+                system_prompt: None,
                 parameters: HashMap::new(),
                 context_refs: Vec::new(),
             })
@@ -816,6 +951,7 @@ mod tests {
             .stream_inference(RuntimeInferenceRequest {
                 model_id: "missing.gguf".to_string(),
                 prompt: "hello".to_string(),
+                system_prompt: None,
                 parameters: HashMap::new(),
                 context_refs: Vec::new(),
             })
@@ -834,6 +970,7 @@ mod tests {
             .stream_inference(RuntimeInferenceRequest {
                 model_id: "local.gguf".to_string(),
                 prompt: "hello".to_string(),
+                system_prompt: None,
                 parameters: HashMap::from([("temperature".to_string(), "warm".to_string())]),
                 context_refs: Vec::new(),
             })
@@ -865,5 +1002,156 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("invalid runtime parameter stop"));
+    }
+
+    #[tokio::test]
+    async fn sampling_params_reach_backend() {
+        let store_dir = tempdir().unwrap();
+        let model_dir = tempdir().unwrap();
+        tokio::fs::write(model_dir.path().join("local.gguf"), b"model")
+            .await
+            .unwrap();
+        let backend = Arc::new(RecordingBackend::default());
+        let engine = RuntimeEngine::with_backend(
+            EngineStore::new(store_dir.path().to_string_lossy().to_string()),
+            model_dir.path(),
+            backend.clone(),
+        );
+
+        let chunks = engine
+            .stream_inference(RuntimeInferenceRequest {
+                model_id: "local.gguf".to_string(),
+                prompt: "hello".to_string(),
+                system_prompt: None,
+                parameters: HashMap::from([
+                    ("temperature".to_string(), "0.1".to_string()),
+                    ("max_tokens".to_string(), "8".to_string()),
+                    ("stop".to_string(), "[\"</s>\"]".to_string()),
+                ]),
+                context_refs: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        assert!(chunks.last().unwrap().complete);
+        let parameters = backend.last_parameters.lock().unwrap().clone().unwrap();
+        assert_eq!(parameters.temperature, Some(0.1));
+        assert_eq!(parameters.max_tokens, Some(8));
+        assert_eq!(parameters.stop, vec!["</s>"]);
+    }
+
+    #[test]
+    fn system_prompt_and_context_refs_are_split_from_user_prompt() {
+        let request = RuntimeInferenceRequest {
+            model_id: "local.gguf".to_string(),
+            prompt: "What changed?".to_string(),
+            system_prompt: Some("Use terse answers.".to_string()),
+            parameters: HashMap::new(),
+            context_refs: vec!["viking://resources/doc-a".to_string()],
+        };
+
+        let (system, user) = build_message_parts(&request);
+
+        assert_eq!(user, "What changed?");
+        let system = system.unwrap();
+        assert!(system.contains("Use terse answers."));
+        assert!(system.contains("viking://resources/doc-a"));
+    }
+
+    #[cfg(feature = "mistralrs-backend")]
+    #[test]
+    fn isq_parser_accepts_q4k_q8_0_hqq8() {
+        assert!(mistralrs_backend::parse_isq_type("q4k").is_ok());
+        assert!(mistralrs_backend::parse_isq_type("q8_0").is_ok());
+        assert!(mistralrs_backend::parse_isq_type("hqq8").is_ok());
+        assert!(mistralrs_backend::parse_isq_type("8").is_ok());
+    }
+
+    #[cfg(feature = "mistralrs-backend")]
+    #[test]
+    fn embedded_mistralrs_rejects_seed() {
+        let error = mistralrs_backend::validate_embedded_parameters(&RuntimeParameters {
+            seed: Some(7),
+            ..RuntimeParameters::default()
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("seed is not supported"));
+    }
+
+    #[cfg(feature = "mistralrs-backend")]
+    #[test]
+    fn sampling_params_map_runtime_parameters() {
+        let sampling = mistralrs_backend::build_sampling_params(&RuntimeParameters {
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+            top_k: Some(32),
+            max_tokens: Some(8),
+            stop: vec!["</s>".to_string()],
+            repetition_penalty: Some(1.1),
+            ..RuntimeParameters::default()
+        });
+
+        assert!((sampling.temperature.unwrap() - 0.1).abs() < 0.000001);
+        assert!((sampling.top_p.unwrap() - 0.9).abs() < 0.000001);
+        assert_eq!(sampling.top_k, Some(32));
+        assert_eq!(sampling.max_len, Some(8));
+        assert_eq!(sampling.repetition_penalty, Some(1.1));
+        match sampling.stop_toks {
+            Some(mistralrs::StopTokens::Seqs(values)) => assert_eq!(values, vec!["</s>"]),
+            other => panic!("unexpected stop tokens: {other:?}"),
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingBackend {
+        last_parameters: Mutex<Option<RuntimeParameters>>,
+    }
+
+    #[async_trait]
+    impl RuntimeBackend for RecordingBackend {
+        fn name(&self) -> &str {
+            "recording"
+        }
+
+        async fn list_models(&self, models: Vec<ModelRecord>) -> Result<Vec<ModelRecord>> {
+            Ok(models)
+        }
+
+        async fn load_model(&self, _model: &ModelRecord, _options: LoadModelOptions) -> Result<()> {
+            Ok(())
+        }
+
+        async fn unload_model(&self, _model_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn stream_inference(
+            &self,
+            _model: &ModelRecord,
+            _request: RuntimeInferenceRequest,
+            parameters: RuntimeParameters,
+        ) -> Result<InferenceStream> {
+            *self.last_parameters.lock().unwrap() = Some(parameters);
+            Ok(Box::pin(stream::iter([Ok(InferenceChunk {
+                token: String::new(),
+                complete: true,
+                metrics: HashMap::new(),
+            })])))
+        }
+    }
+}
+
+impl LoadModelOptions {
+    pub fn parse(input: &HashMap<String, String>) -> Result<Self> {
+        let max_num_seqs = parse_optional_usize(input, "max_num_seqs")?;
+        if let Some(0) = max_num_seqs {
+            return Err(RuntimeError::InvalidParameter {
+                parameter: "max_num_seqs".to_string(),
+                details: "max_num_seqs must be greater than 0".to_string(),
+            }
+            .into());
+        }
+        Ok(Self { max_num_seqs })
     }
 }

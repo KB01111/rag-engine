@@ -133,6 +133,108 @@ func TestManagerTestSuite(t *testing.T) {
 	suite.Run(t, &ManagerTestSuite{})
 }
 
+func TestProviderMessagesIncludeSystemPromptAndContextRefs(t *testing.T) {
+	req := &pb.InferenceRequest{
+		Prompt:       "What changed?",
+		SystemPrompt: protoString("You are concise."),
+		ContextRefs:  []string{"viking://resources/doc-a", "viking://resources/doc-b"},
+	}
+
+	messages := buildMessages(req)
+
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+	if messages[0]["role"] != "system" {
+		t.Fatalf("expected first message to be system, got %q", messages[0]["role"])
+	}
+	if !strings.Contains(messages[0]["content"], "You are concise.") {
+		t.Fatalf("system message missing explicit system prompt: %q", messages[0]["content"])
+	}
+	if !strings.Contains(messages[0]["content"], "viking://resources/doc-a") {
+		t.Fatalf("system message missing context ref: %q", messages[0]["content"])
+	}
+	if messages[1]["role"] != "user" || messages[1]["content"] != "What changed?" {
+		t.Fatalf("unexpected user message: %#v", messages[1])
+	}
+}
+
+func TestProviderPresetAndRequestIDHeaderRetry(t *testing.T) {
+	var attempts int
+	var requestIDs []string
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requestIDs = append(requestIDs, r.Header.Get("X-Request-ID"))
+			if r.URL.Path != "/api/v1/chat/completions" {
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Status:     "404 Not Found",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("not found")),
+					Request:    r,
+				}, nil
+			}
+			attempts++
+			if attempts == 1 {
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Status:     "429 Too Many Requests",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("try again")),
+					Request:    r,
+				}, nil
+			}
+			header := make(http.Header)
+			header.Set("Content-Type", "application/json")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"total_tokens":1}}`)),
+				Request:    r,
+			}, nil
+		}),
+	}
+
+	provider, err := newOpenAICompatibleProvider(config.ProviderConfig{
+		Name:   "lemonade",
+		Preset: "lemonade",
+		URL:    "http://provider.test/api/v1",
+	}, client, client)
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-request-id", "req-123")
+	var sent []*pb.InferenceResponse
+	err = provider.StreamInference(ctx, "model-a", &pb.InferenceRequest{Prompt: "hi"}, func(resp *pb.InferenceResponse) error {
+		sent = append(sent, resp)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream inference: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+	if got := strings.Join(requestIDs, ","); got != "req-123,req-123" {
+		t.Fatalf("unexpected request IDs: %v", requestIDs)
+	}
+	if len(sent) == 0 || sent[0].Token != "ok" {
+		t.Fatalf("unexpected sent responses: %#v", sent)
+	}
+}
+
+func protoString(value string) *string {
+	return &value
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 type inferenceStreamStub struct {
 	ctx      context.Context
 	requests []*pb.InferenceRequest

@@ -15,7 +15,7 @@ func (s *Server) handleRAGStatus(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	status, err := s.supervisor.RAG.GetRagStatus(ctx, &emptypb.Empty{})
+	status, err := s.supervisor.RAG.GetRagStatus(withRequestID(ctx, c), &emptypb.Empty{})
 	if err != nil {
 		s.log.Warn().Err(err).Str("request_id", requestID(c)).Msg("rag status failed")
 		backendError(c, err)
@@ -31,7 +31,7 @@ func (s *Server) handleListRAGDocuments(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
-	documents, err := s.supervisor.RAG.ListDocuments(ctx, &emptypb.Empty{})
+	documents, err := s.supervisor.RAG.ListDocuments(withRequestID(ctx, c), &emptypb.Empty{})
 	if err != nil {
 		s.log.Warn().Err(err).Str("request_id", requestID(c)).Msg("list rag documents failed")
 		backendError(c, err)
@@ -54,7 +54,7 @@ func (s *Server) handleUpsertRAGDocument(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	resp, err := s.supervisor.RAG.UpsertDocument(ctx, &req)
+	resp, err := s.supervisor.RAG.UpsertDocument(withRequestID(ctx, c), &req)
 	if err != nil {
 		s.log.Warn().Err(err).Str("request_id", requestID(c)).Str("document_id", req.GetDocumentId()).Msg("upsert rag document failed")
 		backendError(c, err)
@@ -73,7 +73,7 @@ func (s *Server) handleDeleteRAGDocument(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
-	if _, err := s.supervisor.RAG.DeleteDocument(ctx, &pb.DeleteRequest{DocumentId: documentID}); err != nil {
+	if _, err := s.supervisor.RAG.DeleteDocument(withRequestID(ctx, c), &pb.DeleteRequest{DocumentId: documentID}); err != nil {
 		s.log.Warn().Err(err).Str("request_id", requestID(c)).Str("document_id", documentID).Msg("delete rag document failed")
 		backendError(c, err)
 		return
@@ -98,7 +98,7 @@ func (s *Server) handleSearchRAG(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
 
-	resp, err := s.supervisor.RAG.Search(ctx, &req)
+	resp, err := s.supervisor.RAG.Search(withRequestID(ctx, c), &req)
 	if err != nil {
 		s.log.Warn().Err(err).Str("request_id", requestID(c)).Msg("rag search failed")
 		backendError(c, err)

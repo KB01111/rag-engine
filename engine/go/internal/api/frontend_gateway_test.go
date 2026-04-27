@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/suite"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -95,6 +96,24 @@ func (s *FrontendGatewaySuite) TestRuntimeInferenceStreamsTokenAndCompleteEvents
 	s.Contains(resp.Body.String(), "event: token")
 	s.Contains(resp.Body.String(), "event: complete")
 	s.Contains(resp.Body.String(), `"complete":true`)
+}
+
+func (s *FrontendGatewaySuite) TestRuntimeInferenceForwardsSystemPromptAndRequestID() {
+	recorder := &recordingRuntime{}
+	s.sup.Runtime = recorder
+
+	body := bytes.NewReader([]byte(`{"model_id":"demo.gguf","prompt":"hello frontend","system_prompt":"answer tersely"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runtime/inference/stream", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "rid-42")
+	resp := httptest.NewRecorder()
+
+	s.router.ServeHTTP(resp, req)
+
+	s.Equal(http.StatusOK, resp.Code)
+	s.Require().NotNil(recorder.seen)
+	s.Equal("answer tersely", recorder.seen.GetSystemPrompt())
+	s.Equal("rid-42", recorder.requestID)
 }
 
 func (s *FrontendGatewaySuite) TestRuntimeInferenceWritesErrorEventAfterStreamStarts() {
@@ -244,6 +263,45 @@ func (s *streamThenErrorRuntime) StreamInference(_ context.Context, stream pb.Ru
 		return err
 	}
 	return errors.New("backend boom")
+}
+
+type recordingRuntime struct {
+	seen      *pb.InferenceRequest
+	requestID string
+}
+
+func (s *recordingRuntime) GetStatus(context.Context, *emptypb.Empty) (*pb.RuntimeStatus, error) {
+	return &pb.RuntimeStatus{Healthy: true}, nil
+}
+
+func (s *recordingRuntime) ListModels(context.Context, *emptypb.Empty) (*pb.ModelList, error) {
+	return &pb.ModelList{}, nil
+}
+
+func (s *recordingRuntime) LoadModel(context.Context, *pb.LoadModelRequest) (*pb.ModelInfo, error) {
+	return &pb.ModelInfo{}, nil
+}
+
+func (s *recordingRuntime) UnloadModel(context.Context, *pb.UnloadModelRequest) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
+
+func (s *recordingRuntime) LoadedModelCount() int {
+	return 0
+}
+
+func (s *recordingRuntime) StreamInference(ctx context.Context, stream pb.Runtime_StreamInferenceServer) error {
+	if md, ok := metadata.FromOutgoingContext(ctx); ok {
+		if values := md.Get("x-request-id"); len(values) > 0 {
+			s.requestID = values[0]
+		}
+	}
+	req, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	s.seen = req
+	return stream.Send(&pb.InferenceResponse{Complete: true})
 }
 
 type fakeRAGService struct{}

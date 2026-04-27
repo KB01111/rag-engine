@@ -154,7 +154,10 @@ runtime:
   mistralrs:
     force_cpu: true
     max_num_seqs: 4
-    auto_isq: "q4"
+    auto_isq: "q4k"
+    paged_attn_block_size: 32
+    paged_attn_gpu_mem_ctx: 8192
+    paged_attn_cache_dtype: "f8e4m3"
 `), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -173,8 +176,42 @@ runtime:
 	if cfg.Runtime.MistralRS.MaxNumSeqs != 4 {
 		t.Fatalf("expected runtime.mistralrs.max_num_seqs 4, got %d", cfg.Runtime.MistralRS.MaxNumSeqs)
 	}
-	if cfg.Runtime.MistralRS.AutoISQ != "q4" {
-		t.Fatalf("expected runtime.mistralrs.auto_isq q4, got %q", cfg.Runtime.MistralRS.AutoISQ)
+	if cfg.Runtime.MistralRS.AutoISQ != "q4k" {
+		t.Fatalf("expected runtime.mistralrs.auto_isq q4k, got %q", cfg.Runtime.MistralRS.AutoISQ)
+	}
+	if cfg.Runtime.MistralRS.PagedAttnBlockSize != 32 {
+		t.Fatalf("expected paged_attn_block_size 32, got %d", cfg.Runtime.MistralRS.PagedAttnBlockSize)
+	}
+	if cfg.Runtime.MistralRS.PagedAttnGPUMemCtx != 8192 {
+		t.Fatalf("expected paged_attn_gpu_mem_ctx 8192, got %d", cfg.Runtime.MistralRS.PagedAttnGPUMemCtx)
+	}
+	if cfg.Runtime.MistralRS.PagedAttnCacheDType != "f8e4m3" {
+		t.Fatalf("expected paged_attn_cache_dtype f8e4m3, got %q", cfg.Runtime.MistralRS.PagedAttnCacheDType)
+	}
+}
+
+func TestLoadProviderPresetConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+runtime:
+  providers:
+    - name: "amd-npu"
+      preset: "lemonade"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if len(cfg.Runtime.Providers) != 1 {
+		t.Fatalf("expected one provider, got %d", len(cfg.Runtime.Providers))
+	}
+	if got := cfg.Runtime.Providers[0].Preset; got != "lemonade" {
+		t.Fatalf("expected preset lemonade, got %q", got)
 	}
 }
 
