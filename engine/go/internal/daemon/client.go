@@ -158,7 +158,6 @@ func (c *Client) StreamInference(ctx context.Context, stream pb.Runtime_StreamIn
 
 			req, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
-				cancel()
 				return clientStream.CloseSend()
 			}
 			if err != nil {
