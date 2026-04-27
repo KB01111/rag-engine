@@ -118,7 +118,7 @@ func newProviderHTTPClient(timeout time.Duration) *http.Client {
 		Transport: &http.Transport{
 			Proxy:               http.ProxyFromEnvironment,
 			MaxIdleConns:        64,
-			MaxIdleConnsPerHost: 8,
+			MaxIdleConnsPerHost: 64,
 			IdleConnTimeout:     90 * time.Second,
 			DisableCompression:  false,
 		},
