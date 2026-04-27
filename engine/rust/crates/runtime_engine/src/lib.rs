@@ -975,18 +975,23 @@ mod openai_backend {
                         }
                     }
                 }
-            }).chain(stream::once(async move {
-                if !*error_flag_clone.lock().await {
-                    Ok(InferenceChunk {
-                        token: String::new(),
-                        complete: true,
-                        metrics: HashMap::new(),
+            }).chain(
+                stream::once(async move { *error_flag_clone.lock().await })
+                    .then(|had_error| async move {
+                        if !had_error {
+                            stream::once(async move {
+                                Ok(InferenceChunk {
+                                    token: String::new(),
+                                    complete: true,
+                                    metrics: HashMap::new(),
+                                })
+                            }).left_stream()
+                        } else {
+                            stream::empty().right_stream()
+                        }
                     })
-                } else {
-                    // Don't emit completion chunk if there was an error
-                    Err(anyhow!("stream completed with errors"))
-                }
-            }));
+                    .flatten()
+            );
 
             Ok(Box::pin(transformed_stream))
         }
