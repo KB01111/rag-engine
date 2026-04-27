@@ -905,7 +905,8 @@ impl Mcp for EngineService {
         request: Request<DisconnectRequest>,
     ) -> Result<Response<()>, Status> {
         let span = span_for_request("mcp.disconnect", &request);
-        span.in_scope(|| tracing::trace!("grpc request received"));
+        let _guard = span.enter();
+        tracing::trace!("grpc request received");
         self.state
             .store
             .delete_mcp_connection(&request.into_inner().connection_id)
