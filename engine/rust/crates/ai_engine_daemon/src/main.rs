@@ -1523,6 +1523,9 @@ fn runtime_status(error: anyhow::Error) -> Status {
             runtime_engine::RuntimeError::ModelNotFound { .. } => {
                 Status::not_found(error.to_string())
             }
+            runtime_engine::RuntimeError::CloudBackendUnavailable { .. } => {
+                Status::failed_precondition(error.to_string())
+            }
             runtime_engine::RuntimeError::Other(_) => Status::internal(error.to_string()),
         }
     } else {
