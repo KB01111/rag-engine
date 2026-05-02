@@ -2470,7 +2470,8 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextSessionAppendRequest>,
     ) -> Result<Response<engine::ContextSessionHistory>, Status> {
         let span = span_for_request("context.append_session", &request);
-        span.in_scope(|| tracing::trace!("grpc request received"));
+        let _guard = span.enter();
+        tracing::trace!("grpc request received");
         let request = request.into_inner();
         let session_id = request.session_id.clone();
         self.engine
