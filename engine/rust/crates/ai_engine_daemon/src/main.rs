@@ -2330,7 +2330,8 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextFileWriteRequest>,
     ) -> Result<Response<engine::ContextFileWriteResponse>, Status> {
         let span = span_for_request("context.write_file", &request);
-        span.in_scope(|| tracing::trace!("grpc request received"));
+        let _guard = span.enter();
+        tracing::trace!("grpc request received");
         let request = request.into_inner();
         let version = self
             .engine
