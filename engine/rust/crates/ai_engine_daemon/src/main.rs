@@ -441,7 +441,8 @@ impl Runtime for EngineService {
         request: Request<LoadModelRequest>,
     ) -> Result<Response<ModelInfo>, Status> {
         let span = span_for_request("runtime.load_model", &request);
-        span.in_scope(|| tracing::trace!("grpc request received"));
+        let _guard = span.enter();
+        tracing::trace!("grpc request received");
         let request = request.into_inner();
         let info = self
             .state
