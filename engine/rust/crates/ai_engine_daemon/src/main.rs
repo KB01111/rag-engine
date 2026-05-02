@@ -458,7 +458,8 @@ impl Runtime for EngineService {
         request: Request<engine::UnloadModelRequest>,
     ) -> Result<Response<()>, Status> {
         let span = span_for_request("runtime.unload_model", &request);
-        span.in_scope(|| tracing::trace!("grpc request received"));
+        let _guard = span.enter();
+        tracing::trace!("grpc request received");
         self.state
             .runtime
             .unload_model(&request.into_inner().model_id)
