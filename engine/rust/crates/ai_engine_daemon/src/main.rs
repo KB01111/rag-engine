@@ -2417,7 +2417,8 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextFileMoveRequest>,
     ) -> Result<Response<engine::ContextFileMoveResponse>, Status> {
         let span = span_for_request("context.move_file", &request);
-        span.in_scope(|| tracing::trace!("grpc request received"));
+        let _guard = span.enter();
+        tracing::trace!("grpc request received");
         let request = request.into_inner();
         let version = self
             .engine
