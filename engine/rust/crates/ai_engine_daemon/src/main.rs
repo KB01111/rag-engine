@@ -2375,7 +2375,8 @@ impl ContextRpc for ContextGrpcService {
         request: Request<engine::ContextFileDeleteRequest>,
     ) -> Result<Response<engine::ContextFileDeleteResponse>, Status> {
         let span = span_for_request("context.delete_file", &request);
-        span.in_scope(|| tracing::trace!("grpc request received"));
+        let _guard = span.enter();
+        tracing::trace!("grpc request received");
         let request = request.into_inner();
         let deleted = self
             .engine
